@@ -3,7 +3,7 @@ package host
 import (
 	"context"
 	"errors"
-	"log/slog"
+	"io"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -46,7 +46,7 @@ func (r *fakeResource) Apply(context.Context, Sys) error {
 }
 
 func newTestEngine() *engine {
-	return &engine{logger: slog.New(slog.DiscardHandler)}
+	return &engine{log: io.Discard}
 }
 
 func collectChecked(t *testing.T, list ResourceList) ([]Checked, bool) {

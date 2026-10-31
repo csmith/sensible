@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -69,7 +68,7 @@ func (o *OpenSSH) Start(ctx context.Context) (*AgentPipe, error) {
 		_ = closeAll()
 		return nil, err
 	}
-	session.Stderr = &logWriter{host: o.Name}
+	session.Stderr = &agentStderr{host: o.Name}
 	// The forced command replaces whatever's asked for.
 	if err := session.Start("sensible-agent"); err != nil {
 		_ = closeAll()
@@ -159,13 +158,13 @@ func authorizedKey(key ssh.PublicKey, name string) string {
 	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key))) + " " + features.SensibleUser + "@" + name
 }
 
-type logWriter struct {
+type agentStderr struct {
 	host string
 }
 
-func (w *logWriter) Write(p []byte) (int, error) {
+func (w *agentStderr) Write(p []byte) (int, error) {
 	for line := range strings.SplitSeq(strings.TrimRight(string(p), "\n"), "\n") {
-		slog.Debug("Agent stderr", "host", w.host, "line", line)
+		debugf("%s agent: %s", w.host, line)
 	}
 	return len(p), nil
 }

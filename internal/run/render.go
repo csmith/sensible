@@ -16,6 +16,16 @@ import (
 
 const minLabelWidth = 12
 
+// Debug enables output from debugf.
+var Debug bool
+
+// debugf writes a line to stderr if Debug is set.
+func debugf(format string, args ...any) {
+	if Debug {
+		_, _ = fmt.Fprintf(os.Stderr, format+"\n", args...)
+	}
+}
+
 // renderer writes the compact plan and apply output: a label column of host
 // names, then one line per change.
 type renderer struct {
@@ -81,22 +91,25 @@ func (r *renderer) hostError(name string, err error) {
 	r.line(name, "✗ "+err.Error())
 }
 
-func (r *renderer) plan(runs []*hostRun, changes []*dnsChange, dnsUnchanged int, dnsErrs []error) {
+func (r *renderer) plan(runs []*hostRun, dns dnsPlan) {
 	for _, h := range runs {
 		if h.agent == nil {
 			continue
 		}
 		r.block(h.name, hostPlanLines(h))
 	}
-	lines := make([]string, 0, len(changes)+len(dnsErrs))
-	for _, c := range changes {
+	lines := make([]string, 0, len(dns.changes)+len(dns.warnings)+len(dns.errs))
+	for _, c := range dns.changes {
 		lines = append(lines, c.String())
 	}
-	for _, err := range dnsErrs {
+	for _, w := range dns.warnings {
+		lines = append(lines, "! "+w)
+	}
+	for _, err := range dns.errs {
 		lines = append(lines, "✗ "+err.Error())
 	}
-	if dnsUnchanged > 0 {
-		lines = append(lines, fmt.Sprintf("✓ %d unchanged", dnsUnchanged))
+	if dns.unchanged > 0 {
+		lines = append(lines, fmt.Sprintf("✓ %d unchanged", dns.unchanged))
 	}
 	r.block("dns", lines)
 }

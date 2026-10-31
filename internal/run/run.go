@@ -251,11 +251,11 @@ func (r *Runner) Execute(ctx context.Context, targets []target, apply, yes bool)
 	out.agents(runs)
 
 	r.checkAll(runs)
-	changes, dnsUnchanged, dnsErrs := r.planDNS(ctx, runs)
-	out.plan(runs, changes, dnsUnchanged, dnsErrs)
+	dns := r.planDNS(ctx, runs)
+	out.plan(runs, dns)
 
-	s := summarise(runs, changes)
-	failed := len(dnsErrs) > 0 || anyFailed(runs)
+	s := summarise(runs, dns.changes)
+	failed := len(dns.errs) > 0 || anyFailed(runs)
 	if s.empty() {
 		out.line("", "No changes")
 		return failedErr(failed)
@@ -274,7 +274,7 @@ func (r *Runner) Execute(ctx context.Context, targets []target, apply, yes bool)
 	}
 
 	r.applyAll(runs, out)
-	for _, c := range changes {
+	for _, c := range dns.changes {
 		err := c.apply(ctx)
 		failed = failed || err != nil
 		out.dnsResult(c, err)

@@ -3,13 +3,14 @@ package host
 import (
 	"context"
 	"errors"
-	"log/slog"
+	"fmt"
+	"io"
 )
 
 // engine checks and applies a host's resources in order.
 type engine struct {
-	sys    Sys
-	logger *slog.Logger
+	sys Sys
+	log io.Writer
 }
 
 // check reports each resource's state. Unlike apply, it carries on past
@@ -85,13 +86,8 @@ func (e *engine) apply(ctx context.Context, list ResourceList, send func(Applied
 		default:
 		}
 
-		e.log(res)
-		if sendErr = send(res); sendErr != nil {
-			e.logger.Error("Lost the connection to the controller; stopping", "error", sendErr)
-			break
-		}
-		if ctx.Err() != nil {
-			e.logger.Error("Cancelled; stopping", "error", ctx.Err())
+		e.record(res)
+		if sendErr = send(res); sendErr != nil || ctx.Err() != nil {
 			break
 		}
 	}
@@ -105,7 +101,7 @@ func (e *engine) apply(ctx context.Context, list ResourceList, send func(Applied
 			res.Status, res.Error = StatusFailed, err.Error()
 			failed = true
 		}
-		e.log(res)
+		e.record(res)
 		if sendErr == nil {
 			sendErr = send(res)
 		}
@@ -133,15 +129,15 @@ func (e *engine) applyOne(ctx context.Context, st *runState, r Resource) Applied
 	return res
 }
 
-func (e *engine) log(res Applied) {
-	attrs := []any{"id", res.ID, "status", res.Status}
+func (e *engine) record(res Applied) {
+	kind := "resource"
 	if res.Handler {
-		attrs = append(attrs, "handler", true)
+		kind = "handler"
 	}
 	if res.Error != "" {
-		e.logger.Error("Applied resource", append(attrs, "error", res.Error)...)
+		_, _ = fmt.Fprintf(e.log, "%s %s: %s: %s\n", kind, res.ID, res.Status, res.Error)
 	} else {
-		e.logger.Info("Applied resource", attrs...)
+		_, _ = fmt.Fprintf(e.log, "%s %s: %s\n", kind, res.ID, res.Status)
 	}
 }
 

@@ -5,12 +5,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log/slog"
 	"os"
 	"strings"
 
 	"github.com/csmith/envflag/v2"
-	"github.com/csmith/slogflags"
 
 	"chameth.com/sensible/internal/host"
 	"chameth.com/sensible/internal/run"
@@ -19,6 +17,7 @@ import (
 var (
 	configDir = flag.String("config", ".", "Configuration directory")
 	sourceDir = flag.String("source", "", "Source checkout to build agents from (default: found automatically)")
+	debug     = flag.Bool("debug", false, "Show debugging output")
 )
 
 const usage = `Usage: sensible [flags] <command> [args]
@@ -42,7 +41,7 @@ func main() {
 		flag.PrintDefaults()
 	}
 	envflag.Parse(envflag.WithPrefix("SENSIBLE_"))
-	_ = slogflags.Logger(slogflags.WithSetDefault(true), slogflags.WithWriter(os.Stderr))
+	run.Debug = *debug
 
 	args := flag.Args()
 	if len(args) == 0 {
@@ -52,7 +51,7 @@ func main() {
 
 	if args[0] == "agent" {
 		if err := host.Serve(context.Background(), os.Stdin, os.Stdout); err != nil {
-			slog.Error("Agent failed", "error", err)
+			_, _ = fmt.Fprintf(os.Stderr, "agent: %v\n", err)
 			os.Exit(1)
 		}
 		return
@@ -60,7 +59,7 @@ func main() {
 
 	if err := command(context.Background(), args[0], args[1:]); err != nil {
 		if !errors.Is(err, errUsage) {
-			slog.Error("Failed", "error", err)
+			_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		}
 		os.Exit(1)
 	}

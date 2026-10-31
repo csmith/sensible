@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"log/syslog"
 	"os"
 	"os/signal"
@@ -30,32 +29,33 @@ func Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	}
 	a := &agent{
 		sys:        NewSys(),
-		logger:     agentLogger(),
+		log:        systemLog(),
 		executable: exe,
 		exec:       syscall.Exec,
 	}
 	return a.serve(ctx, in, out)
 }
 
-// agentLogger logs to the system log as well as the default logger, so
-// there's a record on the host if the controller goes away.
-func agentLogger() *slog.Logger {
+// systemLog is where the agent records what it does, so there's a record on
+// the host if the controller goes away. stdout is the protocol, so it falls
+// back to stderr.
+func systemLog() io.Writer {
 	w, err := syslog.New(syslog.LOG_INFO|syslog.LOG_DAEMON, "sensible-agent")
 	if err != nil {
-		return slog.Default()
+		return os.Stderr
 	}
-	return slog.New(slog.NewMultiHandler(slog.Default().Handler(), slog.NewTextHandler(w, nil)))
+	return w
 }
 
 type agent struct {
 	sys        Sys
-	logger     *slog.Logger
+	log        io.Writer
 	executable string
 	exec       func(argv0 string, argv []string, envv []string) error
 }
 
 func (a *agent) serve(ctx context.Context, in io.Reader, out io.Writer) error {
-	sess := &session{agent: a, conn: NewConn(in, out), engine: &engine{sys: a.sys, logger: a.logger}}
+	sess := &session{agent: a, conn: NewConn(in, out), engine: &engine{sys: a.sys, log: a.log}}
 	if err := a.hello(sess.conn); err != nil {
 		return err
 	}
@@ -90,7 +90,7 @@ func (s *session) handle(ctx context.Context, msg any) error {
 	switch msg := msg.(type) {
 	case Upgrade:
 		if err := s.agent.upgrade(msg.Binary); err != nil {
-			s.agent.logger.Error("Upgrade failed", "error", err)
+			_, _ = fmt.Fprintf(s.agent.log, "upgrade failed: %v\n", err)
 			return s.conn.Send(Error{Message: "upgrading: " + err.Error()})
 		}
 		return nil
@@ -124,7 +124,7 @@ func (s *session) apply(ctx context.Context) error {
 		err = s.conn.Send(Done{Failed: failed})
 	}
 	if err != nil {
-		s.agent.logger.Error("Exiting after losing the connection to the controller", "error", err)
+		_, _ = fmt.Fprintf(s.agent.log, "exiting after losing the connection to the controller: %v\n", err)
 	}
 	return err
 }
@@ -165,7 +165,7 @@ func (a *agent) upgrade(binary []byte) error {
 		return err
 	}
 	syncDir(filepath.Dir(a.executable))
-	a.logger.Info("Upgraded; re-executing", "path", a.executable)
+	_, _ = fmt.Fprintf(a.log, "upgraded %s; re-executing\n", a.executable)
 	return a.exec(a.executable, os.Args, os.Environ())
 }
 

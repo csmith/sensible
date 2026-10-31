@@ -3,7 +3,6 @@ package run
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net/netip"
 	"strings"
 
@@ -20,28 +19,34 @@ func newDNSClient(user, key string) dnsClient {
 	return &api.Client{Authenticator: &api.ApiKeyAuthenticator{User: user, Key: key}}
 }
 
+// dnsPlan is the DNS changes for a run, with how many records are already
+// as they should be.
+type dnsPlan struct {
+	changes   []*dnsChange
+	unchanged int
+	warnings  []string
+	errs      []error
+}
+
 // planDNS works out the A and AAAA records for every host with a DNS
 // hostname whose facts came back. Addresses from facts are only used if
 // they're valid, as a compromised host could report anything.
-// planDNS also returns how many records are already as they should be.
-func (r *Runner) planDNS(ctx context.Context, runs []*hostRun) ([]*dnsChange, int, []error) {
+func (r *Runner) planDNS(ctx context.Context, runs []*hostRun) dnsPlan {
 	type account struct{ user, key string }
 	zones := map[account]*dnsZones{}
-	var changes []*dnsChange
-	var errs []error
-	unchanged := 0
+	var p dnsPlan
 	for _, h := range runs {
 		if h.agent == nil || h.dns.Hostname == "" {
 			continue
 		}
 		user, err := h.dns.AuthUser.Reveal()
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: auth_user: %w", h.dns.Hostname, err))
+			p.errs = append(p.errs, fmt.Errorf("%s: auth_user: %w", h.dns.Hostname, err))
 			continue
 		}
 		key, err := h.dns.AuthKey.Reveal()
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: auth_key: %w", h.dns.Hostname, err))
+			p.errs = append(p.errs, fmt.Errorf("%s: auth_key: %w", h.dns.Hostname, err))
 			continue
 		}
 		z := zones[account{user, key}]
@@ -57,23 +62,26 @@ func (r *Runner) planDNS(ctx context.Context, runs []*hostRun) ([]*dnsChange, in
 			addr, ok := dnsAddress(want.rtype, want.fact)
 			if !ok {
 				if want.fact != "" {
-					slog.Warn("Ignoring invalid address fact", "host", h.name, "type", want.rtype, "value", want.fact)
+					p.warnings = append(
+						p.warnings,
+						fmt.Sprintf("ignoring invalid %s address %q from %s", want.rtype, want.fact, h.name),
+					)
 				}
 				continue
 			}
 			change, err := z.plan(ctx, h.dns.Hostname, want.rtype, []string{addr})
 			if err != nil {
-				errs = append(errs, fmt.Errorf("%s %s: %w", want.rtype, h.dns.Hostname, err))
+				p.errs = append(p.errs, fmt.Errorf("%s %s: %w", want.rtype, h.dns.Hostname, err))
 				continue
 			}
 			if change != nil {
-				changes = append(changes, change)
+				p.changes = append(p.changes, change)
 			} else {
-				unchanged++
+				p.unchanged++
 			}
 		}
 	}
-	return changes, unchanged, errs
+	return p
 }
 
 func dnsAddress(rtype, fact string) (string, bool) {

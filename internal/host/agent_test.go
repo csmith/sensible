@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -76,7 +75,7 @@ func startAgent(t *testing.T, execErr error) *testAgent {
 	ta := &testAgent{done: make(chan error, 1)}
 	ta.agent = &agent{
 		sys:        sys,
-		logger:     slog.New(slog.DiscardHandler),
+		log:        io.Discard,
 		executable: exe,
 		exec: func(argv0 string, _ []string, _ []string) error {
 			ta.execed = append(ta.execed, argv0)
