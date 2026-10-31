@@ -1,0 +1,41 @@
+set -eu
+trap {{q (print "rm -f " (q .AgentTmp))}} EXIT
+
+os=$(. /etc/os-release && printf ' %s %s ' "${ID:-}" "${ID_LIKE:-}")
+case $os in
+  *" debian "*) family=debian; sshd=ssh ;;
+  *" arch "*) family=arch; sshd=sshd ;;
+  *) echo "unsupported OS:$os" >&2; exit 1 ;;
+esac
+
+if ! command -v sudo >/dev/null 2>&1; then
+  if [ "$family" = debian ]; then
+    DEBIAN_FRONTEND=noninteractive apt-get update -q
+    DEBIAN_FRONTEND=noninteractive apt-get install -qy sudo
+  else
+    pacman -Syu --noconfirm --needed sudo
+  fi
+fi
+
+if ! id {{q .User}} >/dev/null 2>&1; then
+  useradd --system --user-group --shell /bin/sh --home-dir {{q .Home}} --no-create-home {{q .User}}
+fi
+if [ "$(getent passwd {{q .User}} | cut -d: -f6,7)" != {{q (print .Home ":/bin/sh")}} ]; then
+  usermod --shell /bin/sh --home {{q .Home}} {{q .User}}
+fi
+mkdir -p {{q .Home}}
+chown root:root {{q .Home}}
+chmod 0755 {{q .Home}}
+printf '%s\n' {{q (print .User ":" .Password)}} | chpasswd
+
+printf '%s  %s\n' {{q .AgentHash}} {{q .AgentTmp}} | sha256sum -c - >/dev/null
+mkdir -p {{q .AgentDir}}
+install -o root -g root -m 0755 {{q .AgentTmp}} {{q (print .AgentPath ".new")}}
+mv -f {{q (print .AgentPath ".new")}} {{q .AgentPath}}
+
+mkdir -p /etc/ssh/authorized_keys
+chown root:root /etc/ssh/authorized_keys
+chmod 0755 /etc/ssh/authorized_keys
+{{range .Files}}
+{{.}}{{end}}
+systemctl reload "$sshd"

@@ -1,0 +1,35 @@
+# Managed by sensible. Local changes will be overwritten; put them in
+# ~/.zshrc.local instead.
+path=(~/.bin(N/) $path)
+export EDITOR=vim
+
+export ZSH=/usr/share/oh-my-zsh
+# $ZSH isn't writable, and sensible updates it.
+ZSH_CACHE_DIR=~/.cache/oh-my-zsh
+zstyle ':omz:update' mode disabled
+
+ZSH_THEME={{ quote .Theme }}
+HYPHEN_INSENSITIVE=true
+plugins=({{ join .Plugins " " }})
+
+source $ZSH/oh-my-zsh.sh
+
+# Show just the host, coloured by account, in place of user@host.
+prompt_context() {
+  prompt_segment {{ quote .PromptColour }} black %m
+}
+
+# As the theme's, but without marking root, which the colour already does.
+prompt_status() {
+  local -a symbols
+
+  [[ $RETVAL -ne 0 ]] && symbols+="%{%F{red}%}✘"
+  [[ $(jobs -l | wc -l) -gt 0 ]] && symbols+="%{%F{cyan}%}⚙"
+
+  [[ -n "$symbols" ]] && prompt_segment black default "$symbols"
+}
+
+# Not `[[ ]] && source`, which would leave the first prompt showing a failure.
+if [[ -r ~/.zshrc.local ]]; then
+  source ~/.zshrc.local
+fi

@@ -1,0 +1,8 @@
+{
+  "RunSSH": true,
+  "CorpDNS": false,
+  "OperatorUser": "chris",
+  "AdvertiseRoutes": ["0.0.0.0/0", "::/0"],
+  "AutoUpdate": {"Check": true, "Apply": false},
+  "RelayServerPort": 40000
+}

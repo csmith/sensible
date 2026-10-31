@@ -1,0 +1,28 @@
+packages:
+  install: []
+  remove: []
+aur:
+  packages: []
+users: {}
+sudoers: {}
+pam_rssh:
+  keys: []
+sshd:
+  enabled: true
+  settings:
+    PermitRootLogin: "no"
+    PasswordAuthentication: "no"
+    KbdInteractiveAuthentication: "no"
+    X11Forwarding: "no"
+    AuthorizedKeysFile: .ssh/authorized_keys
+    MaxAuthTries: 4
+    LogLevel: VERBOSE
+tailscale:
+  settings: {}
+zsh:
+  plugins: [git, docker, docker-compose, extract, encode64]
+docker:
+  enabled: true
+  users: []
+dns:
+  hostname: ""

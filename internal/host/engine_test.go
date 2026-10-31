@@ -1,0 +1,247 @@
+package host
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// fakeResource is a resource whose state each test controls.
+type fakeResource struct {
+	id       string
+	inSync   bool
+	needs    *fakeResource
+	checkErr error
+	applyErr error
+	notify   ResourceList
+	log      *[]string
+
+	applied bool
+}
+
+func (r *fakeResource) ID() string             { return r.id }
+func (r *fakeResource) Notifies() ResourceList { return r.notify }
+
+func (r *fakeResource) Check(context.Context, Sys) (Change, error) {
+	if r.checkErr != nil {
+		return Change{}, r.checkErr
+	}
+	if r.needs != nil && !r.needs.applied {
+		return Change{}, ErrNotYetCheckable
+	}
+	return Change{InSync: r.inSync || r.applied, Diff: "change " + r.id}, nil
+}
+
+func (r *fakeResource) Apply(context.Context, Sys) error {
+	*r.log = append(*r.log, r.id)
+	if r.applyErr != nil {
+		return r.applyErr
+	}
+	r.applied = true
+	return nil
+}
+
+func newTestEngine() *engine {
+	return &engine{logger: slog.New(slog.DiscardHandler)}
+}
+
+func collectChecked(t *testing.T, list ResourceList) ([]Checked, bool) {
+	t.Helper()
+	var got []Checked
+	failed, err := newTestEngine().check(
+		context.Background(),
+		list,
+		func(c Checked) error {
+			got = append(got, c)
+			return nil
+		},
+	)
+	require.NoError(t, err)
+	return got, failed
+}
+
+func collectApplied(t *testing.T, list ResourceList) ([]Applied, bool) {
+	t.Helper()
+	var got []Applied
+	failed, err := newTestEngine().apply(
+		context.Background(),
+		list,
+		func(a Applied) error {
+			got = append(got, a)
+			return nil
+		},
+	)
+	require.NoError(t, err)
+	return got, failed
+}
+
+func statuses[T Checked | Applied](results []T) []string {
+	var out []string
+	for _, r := range results {
+		switch r := any(r).(type) {
+		case Checked:
+			out = append(out, r.ID+" "+string(r.Status))
+		case Applied:
+			out = append(out, r.ID+" "+string(r.Status))
+		}
+	}
+	return out
+}
+
+func TestEngineCheck_Statuses(t *testing.T) {
+	var log []string
+	repo := &fakeResource{id: "repo", log: &log}
+
+	got, failed := collectChecked(
+		t,
+		ResourceList{
+			&fakeResource{id: "early", needs: &fakeResource{}, log: &log},
+			&fakeResource{id: "ok", inSync: true, log: &log},
+			repo,
+			&fakeResource{id: "pkg", needs: repo, log: &log},
+			&fakeResource{id: "broken", checkErr: errors.New("boom"), log: &log},
+			&fakeResource{id: "after", log: &log},
+		},
+	)
+
+	assert.True(t, failed)
+	assert.Equal(
+		t,
+		[]string{"early failed", "ok in-sync", "repo drifted", "pkg deferred", "broken failed", "after drifted"},
+		statuses(got),
+	)
+	assert.Equal(t, "change repo", got[2].Diff)
+	assert.Equal(t, "boom", got[4].Error)
+	assert.Empty(t, log, "check mustn't apply anything")
+}
+
+func TestEngineCheck_SkipsOwnedDirAfterFailure(t *testing.T) {
+	var log []string
+	got, _ := collectChecked(
+		t,
+		ResourceList{
+			&fakeResource{id: "broken", checkErr: errors.New("boom"), log: &log},
+			OwnedDir{Path: "/etc/sudoers.d"},
+		},
+	)
+
+	assert.Equal(t, StatusSkipped, got[1].Status)
+}
+
+func TestEngineApply_AppliesDeferredAndRunsHandlersOnce(t *testing.T) {
+	var log []string
+	reload := &fakeResource{id: "reload", log: &log}
+	repo := &fakeResource{id: "repo", log: &log, notify: ResourceList{reload}}
+	never := &fakeResource{id: "never", log: &log}
+	reloadAgain := &fakeResource{id: "reload", log: &log}
+
+	got, failed := collectApplied(
+		t,
+		ResourceList{
+			&fakeResource{id: "quiet", inSync: true, log: &log, notify: ResourceList{never}},
+			repo,
+			&fakeResource{id: "pkg", needs: repo, log: &log, notify: ResourceList{reloadAgain}},
+		},
+	)
+
+	assert.False(t, failed)
+	assert.Equal(t, []string{"quiet in-sync", "repo changed", "pkg changed", "reload changed"}, statuses(got))
+	assert.True(t, got[3].Handler)
+	assert.Equal(t, "change pkg", got[2].Diff)
+	assert.Equal(t, []string{"repo", "pkg", "reload"}, log)
+}
+
+func TestEngineApply_FailureSkipsRestButRunsDueHandlers(t *testing.T) {
+	var log []string
+	reload := &fakeResource{id: "reload", log: &log}
+	restart := &fakeResource{id: "restart", log: &log}
+
+	got, failed := collectApplied(
+		t,
+		ResourceList{
+			&fakeResource{id: "config", log: &log, notify: ResourceList{reload}},
+			&fakeResource{id: "bad", applyErr: errors.New("boom"), log: &log, notify: ResourceList{restart}},
+			&fakeResource{id: "later", log: &log},
+			OwnedDir{Path: "/etc/sudoers.d"},
+		},
+	)
+
+	assert.True(t, failed)
+	assert.Equal(
+		t,
+		[]string{"config changed", "bad failed", "later skipped", "owned-dir:/etc/sudoers.d skipped", "reload changed"},
+		statuses(got),
+	)
+	assert.Equal(t, "boom", got[1].Error)
+	assert.Equal(t, []string{"config", "bad", "reload"}, log)
+}
+
+func TestEngineApply_NotYetCheckableFailsDuringApply(t *testing.T) {
+	var log []string
+	got, failed := collectApplied(t, ResourceList{&fakeResource{id: "pkg", needs: &fakeResource{}, log: &log}})
+
+	assert.True(t, failed)
+	assert.Equal(t, StatusFailed, got[0].Status)
+}
+
+func TestEngineApply_DuplicateIDsAreHandledByPosition(t *testing.T) {
+	var log []string
+	got, _ := collectApplied(
+		t,
+		ResourceList{
+			&fakeResource{id: "user:chris", inSync: true, log: &log},
+			&fakeResource{id: "user:chris", log: &log},
+		},
+	)
+
+	assert.Equal(t, []string{"user:chris in-sync", "user:chris changed"}, statuses(got))
+}
+
+func TestEngineApply_LostConnectionStopsAfterCurrentResource(t *testing.T) {
+	var log []string
+	reload := &fakeResource{id: "reload", log: &log}
+	lost := errors.New("broken pipe")
+
+	failed, err := newTestEngine().apply(
+		context.Background(),
+		ResourceList{
+			&fakeResource{id: "config", log: &log, notify: ResourceList{reload}},
+			&fakeResource{id: "next", log: &log},
+		},
+		func(Applied) error { return lost },
+	)
+
+	require.ErrorIs(t, err, lost)
+	assert.False(t, failed)
+	assert.Equal(t, []string{"config", "reload"}, log)
+}
+
+func TestEngine_OwnedDirSeesFilesDeclaredEarlier(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/etc/sudoers.d/keep", "x\n")
+	sys.write("/etc/sudoers.d/stray", "")
+	e := newTestEngine()
+	e.sys = sys
+
+	var got []Applied
+	_, err := e.apply(
+		context.Background(),
+		ResourceList{
+			File{Path: "/etc/sudoers.d/keep", Content: "x\n"},
+			OwnedDir{Path: "/etc/sudoers.d"},
+		},
+		func(a Applied) error {
+			got = append(got, a)
+			return nil
+		},
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"file:/etc/sudoers.d/keep in-sync", "owned-dir:/etc/sudoers.d changed"}, statuses(got))
+	assert.True(t, sys.exists("/etc/sudoers.d/keep"))
+	assert.False(t, sys.exists("/etc/sudoers.d/stray"))
+}

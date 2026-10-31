@@ -1,0 +1,6 @@
+FROM docker.io/library/archlinux:latest
+RUN pacman -Syu --noconfirm openssh iproute2 && pacman -Scc --noconfirm
+RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh && systemctl enable sshd && ssh-keygen -A \
+ && printf 'PermitRootLogin prohibit-password\n' > /etc/ssh/sshd_config.d/00-test.conf
+COPY rootkey.pub /root/.ssh/authorized_keys
+CMD ["/sbin/init"]
