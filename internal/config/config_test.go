@@ -261,9 +261,14 @@ func TestOpen(t *testing.T) {
 	t.Run(
 		"valid",
 		func(t *testing.T) {
-			tr := newTestRepo(t, map[string]string{"hosts/alpha.yml": "", "os/arch.yml": "", "hosts/.alpha.yml.swp": ""})
-			r := tr.open(t)
-			assert.Equal(t, "alpha.example.com", r.Inventory().Hosts["alpha"].Address)
+			assert.Equal(
+				t,
+				"alpha.example.com",
+				newTestRepo(
+					t,
+					map[string]string{"hosts/alpha.yml": "", "os/arch.yml": "", "hosts/.alpha.yml.swp": ""},
+				).open(t).Inventory().Hosts["alpha"].Address,
+			)
 		},
 	)
 
