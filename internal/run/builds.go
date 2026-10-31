@@ -27,8 +27,8 @@ type Build struct {
 	Hash string
 }
 
-// Builder builds agents from the source checkout the tool runs from, caching
-// them by the hash of their source.
+// Builder builds agents from the tool's source checkout, caching them by the
+// hash of their source.
 type Builder struct {
 	root     string
 	cacheDir string
@@ -37,8 +37,10 @@ type Builder struct {
 	builds map[string]Build
 }
 
-func NewBuilder() (*Builder, error) {
-	root, err := moduleRoot()
+// NewBuilder builds from sourceDir, or if it's empty from the checkout the
+// binary was built in or is run from.
+func NewBuilder(sourceDir string) (*Builder, error) {
+	root, err := sourceRoot(sourceDir)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +201,22 @@ func moduleRoot() (string, error) {
 			return root, nil
 		}
 	}
-	return "", fmt.Errorf("can't find the %s source checkout; run sensible from inside it", modulePath)
+	return "", fmt.Errorf("can't find the %s source checkout to build agents from; set --source", modulePath)
+}
+
+func sourceRoot(dir string) (string, error) {
+	if dir == "" {
+		return moduleRoot()
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	content, err := os.ReadFile(filepath.Join(abs, "go.mod"))
+	if err != nil || moduleName(content) != modulePath {
+		return "", fmt.Errorf("%s isn't the %s source checkout", dir, modulePath)
+	}
+	return abs, nil
 }
 
 func findModule(dir, module string) (string, bool) {

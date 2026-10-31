@@ -28,6 +28,8 @@ import (
 
 type BootstrapOptions struct {
 	ConfigDir string
+	// SourceDir is the checkout agents are built from; empty finds it.
+	SourceDir string
 	Host      string
 	// User is "root" or "chris". With Rotate it may be empty, in which case
 	// the host's existing sensible access is used.
@@ -74,7 +76,7 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 	if err != nil {
 		return err
 	}
-	builder, err := NewBuilder()
+	builder, err := NewBuilder(opts.SourceDir)
 	if err != nil {
 		return err
 	}

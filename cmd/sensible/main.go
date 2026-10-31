@@ -16,7 +16,10 @@ import (
 	"chameth.com/sensible/internal/run"
 )
 
-var configDir = flag.String("config", ".", "Configuration directory")
+var (
+	configDir = flag.String("config", ".", "Configuration directory")
+	sourceDir = flag.String("source", "", "Source checkout to build agents from (default: found automatically)")
+)
 
 const usage = `Usage: sensible [flags] <command> [args]
 
@@ -90,17 +93,31 @@ func command(ctx context.Context, name string, args []string) error {
 	case name == "bootstrap" && len(args) == 1:
 		return run.Bootstrap(
 			ctx,
-			run.BootstrapOptions{ConfigDir: *configDir, Host: args[0], User: *user, Rotate: *rotate, HostKey: *hostKey},
+			run.BootstrapOptions{
+				ConfigDir: *configDir,
+				SourceDir: *sourceDir,
+				Host:      args[0],
+				User:      *user,
+				Rotate:    *rotate,
+				HostKey:   *hostKey,
+			},
 		)
 	case name == "plan" || name == "apply":
 		return run.Run(
 			ctx,
-			run.Options{ConfigDir: *configDir, Hosts: args, Addrs: addrs, Apply: name == "apply", Yes: *yes},
+			run.Options{
+				ConfigDir: *configDir,
+				SourceDir: *sourceDir,
+				Hosts:     args,
+				Addrs:     addrs,
+				Apply:     name == "apply",
+				Yes:       *yes,
+			},
 		)
 	case name == "facts" && len(args) == 1:
-		return run.Facts(ctx, *configDir, args[0], addrs[args[0]], os.Stdout)
+		return run.Facts(ctx, *configDir, *sourceDir, args[0], addrs[args[0]], os.Stdout)
 	case name == "config" && len(args) == 1:
-		return run.ShowConfig(ctx, *configDir, args[0], *osFamily, addrs[args[0]], os.Stdout)
+		return run.ShowConfig(ctx, *configDir, *sourceDir, args[0], *osFamily, addrs[args[0]], os.Stdout)
 	case name == "secret" && len(args) == 1 && args[0] == "encrypt":
 		return run.EncryptSecret(*configDir, os.Stdin, os.Stdout)
 	case name == "secret" && len(args) == 3 && args[0] == "show":

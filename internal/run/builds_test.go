@@ -70,3 +70,15 @@ func TestBuilder_buildsAndCachesAgent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, build, again)
 }
+
+func TestSourceRoot(t *testing.T) {
+	root, err := moduleRoot()
+	require.NoError(t, err)
+
+	got, err := sourceRoot(root)
+	require.NoError(t, err)
+	assert.Equal(t, root, got)
+
+	_, err = sourceRoot(t.TempDir())
+	require.ErrorContains(t, err, "isn't the "+modulePath+" source checkout")
+}

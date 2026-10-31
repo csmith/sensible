@@ -23,6 +23,8 @@ import (
 // Options select the hosts for Run and what to do with them.
 type Options struct {
 	ConfigDir string
+	// SourceDir is the checkout agents are built from; empty finds it.
+	SourceDir string
 	// Hosts limits the run to these inventory names. Empty means all hosts.
 	Hosts []string
 	// Addrs overrides inventory addresses, keyed by host name.
@@ -43,7 +45,7 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
-	builder, err := NewBuilder()
+	builder, err := NewBuilder(opts.SourceDir)
 	if err != nil {
 		return err
 	}
