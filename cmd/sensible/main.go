@@ -16,7 +16,7 @@ import (
 	"chameth.com/sensible/internal/run"
 )
 
-var configDir = flag.String("config", "config", "Configuration directory")
+var configDir = flag.String("config", ".", "Configuration directory")
 
 const usage = `Usage: sensible [flags] <command> [args]
 
