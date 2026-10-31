@@ -2,13 +2,14 @@ users:
   chris:
     shell: /usr/bin/zsh
     ssh_keys: [ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILIjMaD22DotPk2trvvETKFxrwRFtnS/89b92mtRdMeJ]
-    prompt_colour: white
   root:
     shell: /usr/bin/zsh
-    prompt_colour: red
 sudoers:
   000-chris: [chris ALL=(ALL:ALL) ALL]
 zsh:
   plugins: [git, autojump, docker, docker-compose, extract, encode64]
+  prompt_colours:
+    chris: white
+    root: red
 docker:
   enabled: false

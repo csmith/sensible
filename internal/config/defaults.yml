@@ -21,6 +21,7 @@ tailscale:
   settings: {}
 zsh:
   plugins: [git, docker, docker-compose, extract, encode64]
+  prompt_colours: {}
 docker:
   enabled: true
   users: []

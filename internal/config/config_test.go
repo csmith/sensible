@@ -69,7 +69,8 @@ users:
   chris:
     shell: /usr/bin/zsh
     groups: [wheel]
-    prompt_colour: white
+zsh:
+  prompt_colours: {chris: white, root: red}
 tailscale:
   settings:
     ssh: true
@@ -85,8 +86,10 @@ packages:
 packages:
   install: [docker, vim]
 users:
-  chris: {prompt_colour: green, groups: [docker]}
+  chris: {groups: [docker]}
   root: {shell: /bin/sh}
+zsh:
+  prompt_colours: {chris: green}
 tailscale:
   settings:
     advertise-exit-node: false
@@ -105,11 +108,12 @@ sshd:
 	assert.Equal(
 		t,
 		map[string]UserConfig{
-			"chris": {Shell: "/usr/bin/zsh", Groups: []string{"wheel", "docker"}, PromptColour: "green"},
+			"chris": {Shell: "/usr/bin/zsh", Groups: []string{"wheel", "docker"}},
 			"root":  {Shell: "/bin/sh"},
 		},
 		c.Users,
 	)
+	assert.Equal(t, map[string]string{"chris": "green", "root": "red"}, c.Zsh.PromptColours)
 	assert.Equal(
 		t,
 		map[string]string{
@@ -126,7 +130,7 @@ sshd:
 	c, err = r.HostConfig("beta", "debian")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"zsh", "vim"}, c.Packages.Install)
-	assert.Equal(t, "white", c.Users["chris"].PromptColour)
+	assert.Equal(t, map[string]string{"chris": "white", "root": "red"}, c.Zsh.PromptColours)
 	assert.True(t, c.SSHD.Enabled)
 }
 
@@ -198,6 +202,11 @@ func TestHostConfig_errors(t *testing.T) {
 			name:  "malformed secret",
 			files: map[string]string{"all.yml": "dns:\n  auth_key: !age not armored\n"},
 			want:  []string{"all.yml", "armored"},
+		},
+		{
+			name:  "prompt colour under users",
+			files: map[string]string{"hosts/alpha.yml": "users:\n  chris: {prompt_colour: green}\n"},
+			want:  []string{"hosts/alpha.yml", "prompt_colour"},
 		},
 		{
 			name:  "wrong type",

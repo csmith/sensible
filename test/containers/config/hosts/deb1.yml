@@ -1,2 +1,2 @@
-users:
-  chris: { prompt_colour: yellow }
+zsh:
+  prompt_colours: { chris: yellow }

@@ -78,7 +78,7 @@ func zsh(h Host) ([]host.Resource, error) {
 			zshrc{
 				Theme:        "agnoster",
 				Plugins:      plugins,
-				PromptColour: h.Config.Users[name].PromptColour,
+				PromptColour: h.Config.Zsh.PromptColours[name],
 			},
 		)
 		if err != nil {

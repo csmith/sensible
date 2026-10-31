@@ -17,14 +17,14 @@ func testHost(osFamily string) Host {
 			Packages: config.PackagesConfig{Install: []string{"htop"}, Remove: []string{"nano"}},
 			AUR:      config.AURConfig{Packages: []string{"widget-bin"}},
 			Users: map[string]config.UserConfig{
-				"alice": {Shell: "/usr/bin/zsh", SSHKeys: []string{"ssh-ed25519 AAAA alice"}, PromptColour: "blue"},
+				"alice": {Shell: "/usr/bin/zsh", SSHKeys: []string{"ssh-ed25519 AAAA alice"}},
 				"bob":   {Shell: "/bin/bash", SSHKeys: []string{"ssh-ed25519 AAAA bob"}},
 			},
 			Sudoers:   map[string][]string{"000-alice": {"alice ALL=(ALL:ALL) ALL"}},
 			PamRSSH:   config.PamRSSHConfig{Keys: []string{"ssh-ed25519 AAAA sudo"}},
 			SSHD:      config.SSHDConfig{Enabled: true, Settings: map[string]string{"MaxAuthTries": "3"}},
 			Tailscale: config.TailscaleConfig{Settings: map[string]string{"advertise-exit-node": "true"}},
-			Zsh:       config.ZshConfig{Plugins: []string{"git"}},
+			Zsh:       config.ZshConfig{Plugins: []string{"git"}, PromptColours: map[string]string{"alice": "blue"}},
 			Docker:    config.DockerConfig{Enabled: true, Users: []string{"alice"}},
 		},
 		Facts: host.Facts{
@@ -354,9 +354,7 @@ func TestResources_zshrc(t *testing.T) {
 			func(t *testing.T) {
 				h := testHost(tt.osFamily)
 				h.Config.AUR.Packages = nil
-				u := h.Config.Users["alice"]
-				u.PromptColour = tt.colour
-				h.Config.Users["alice"] = u
+				h.Config.Zsh.PromptColours["alice"] = tt.colour
 				rs, err := Resources(h)
 				require.NoError(t, err)
 				f, ok := find[host.File](rs, "file:/home/alice/.zshrc")

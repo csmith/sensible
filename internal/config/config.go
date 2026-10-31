@@ -90,8 +90,6 @@ type UserConfig struct {
 	Shell   string   `yaml:"shell"`
 	Groups  []string `yaml:"groups"`
 	SSHKeys []string `yaml:"ssh_keys"`
-	// PromptColour colours the host segment of the user's zsh prompt.
-	PromptColour string `yaml:"prompt_colour"`
 }
 
 type PamRSSHConfig struct {
@@ -109,6 +107,8 @@ type TailscaleConfig struct {
 
 type ZshConfig struct {
 	Plugins []string `yaml:"plugins"`
+	// PromptColours colours the host segment of each user's prompt.
+	PromptColours map[string]string `yaml:"prompt_colours"`
 }
 
 type DockerConfig struct {
