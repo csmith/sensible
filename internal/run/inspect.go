@@ -154,7 +154,7 @@ func orEmpty(v any) any {
 	return v
 }
 
-// EncryptSecret encrypts in to the inventory's recipients and prints it as
+// EncryptSecret encrypts in to secrets.yml's recipients and prints it as
 // a !age scalar. One trailing newline is dropped, as `<<<` adds one.
 func EncryptSecret(configDir string, in io.Reader, out io.Writer) error {
 	repo, err := config.Open(configDir, nil)
@@ -198,7 +198,7 @@ func ShowSecret(configDir, file, path string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	identity, err := config.OnePasswordIdentity(repo.Inventory().Secrets.Identity)()
+	identity, err := repo.CommandIdentity()()
 	if err != nil {
 		return err
 	}

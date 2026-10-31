@@ -26,8 +26,10 @@ func newTestRepo(t *testing.T, files map[string]string) *testRepo {
 	tr := &testRepo{dir: t.TempDir(), identity: id}
 
 	if _, ok := files["hosts.yml"]; !ok {
-		files["hosts.yml"] = "secrets:\n  recipients: [" + id.Recipient().String() + "]\n" +
-			"hosts:\n  alpha:\n    address: alpha.example.com\n  beta: {}\n"
+		files["hosts.yml"] = "hosts:\n  alpha:\n    address: alpha.example.com\n  beta: {}\n"
+	}
+	if _, ok := files["secrets.yml"]; !ok {
+		files["secrets.yml"] = "recipients: [" + id.Recipient().String() + "]\n"
 	}
 	for name, content := range files {
 		p := filepath.Join(tr.dir, name)
@@ -239,7 +241,8 @@ func TestOpen(t *testing.T) {
 		{"credentials for unknown host", map[string]string{"credentials/gamma.yml": ""}, "gamma"},
 		{"wrong extension", map[string]string{"hosts/alpha.yaml": ""}, "alpha.yaml"},
 		{"unknown inventory key", map[string]string{"hosts.yml": "hosts:\n  a: {addr: x}\n"}, "addr"},
-		{"bad recipient", map[string]string{"hosts.yml": "secrets:\n  recipients: [nope]\n"}, "recipients"},
+		{"bad recipient", map[string]string{"secrets.yml": "recipients: [nope]\n"}, "recipients"},
+		{"unknown secrets key", map[string]string{"secrets.yml": "identity: op://x\n"}, "identity"},
 	}
 	for _, tt := range tests {
 		t.Run(
@@ -347,7 +350,7 @@ func TestSecret_zeroReveal(t *testing.T) {
 }
 
 func TestEncrypt_noRecipients(t *testing.T) {
-	_, err := newTestRepo(t, map[string]string{"hosts.yml": "hosts:\n  alpha: {}\n"}).open(t).Encrypt("x")
+	_, err := newTestRepo(t, map[string]string{"secrets.yml": ""}).open(t).Encrypt("x")
 	assert.Error(t, err)
 }
 
@@ -401,7 +404,17 @@ func TestCommandIdentity(t *testing.T) {
 	id, err := age.GenerateX25519Identity()
 	require.NoError(t, err)
 
-	got, err := commandIdentity("echo", "# comment\n"+id.String())()
+	got, err := newTestRepo(
+		t,
+		map[string]string{"secrets.yml": "identity_command: [echo, \"" + id.String() + "\"]\n"},
+	).open(t).CommandIdentity()()
+	require.NoError(t, err)
+	assert.Equal(t, id.String(), got.(*age.X25519Identity).String())
+
+	_, err = newTestRepo(t, map[string]string{"secrets.yml": ""}).open(t).CommandIdentity()()
+	require.ErrorContains(t, err, "identity_command")
+
+	got, err = commandIdentity("echo", "# comment\n"+id.String())()
 	require.NoError(t, err)
 	assert.Equal(t, id.String(), got.(*age.X25519Identity).String())
 

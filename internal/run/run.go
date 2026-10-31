@@ -89,12 +89,12 @@ func openRepo(dir string, out io.Writer) (*config.Repo, error) {
 	repo, err := config.Open(
 		dir,
 		func() (age.Identity, error) {
-			id, err := config.OnePasswordIdentity(repo.Inventory().Secrets.Identity)()
+			id, err := repo.CommandIdentity()()
 			if err != nil {
-				_, _ = fmt.Fprintf(out, "%-*s age identity ✗\n", minLabelWidth, "1Password")
+				_, _ = fmt.Fprintf(out, "%-*s age identity ✗\n", minLabelWidth, "secrets")
 				return nil, err
 			}
-			_, _ = fmt.Fprintf(out, "%-*s age identity ✓\n", minLabelWidth, "1Password")
+			_, _ = fmt.Fprintf(out, "%-*s age identity ✓\n", minLabelWidth, "secrets")
 			return id, nil
 		},
 	)

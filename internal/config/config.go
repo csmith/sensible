@@ -17,15 +17,7 @@ import (
 
 // Inventory is the parsed hosts.yml.
 type Inventory struct {
-	Secrets SecretsConfig        `yaml:"secrets"`
-	Hosts   map[string]HostEntry `yaml:"hosts"`
-}
-
-type SecretsConfig struct {
-	// Recipients are age public keys; secrets are encrypted to all of them.
-	Recipients []string `yaml:"recipients"`
-	// Identity is a 1Password reference (op://...) to the age identity.
-	Identity string `yaml:"identity"`
+	Hosts map[string]HostEntry `yaml:"hosts"`
 }
 
 type HostEntry struct {
@@ -106,14 +98,15 @@ type DNSConfig struct {
 
 // Repo is a configuration directory.
 type Repo struct {
-	dir        string
-	inventory  Inventory
-	recipients []age.Recipient
-	keys       *keyring
+	dir             string
+	inventory       Inventory
+	recipients      []age.Recipient
+	identityCommand []string
+	keys            *keyring
 }
 
-// Open reads hosts.yml from dir and checks the directory's layout. A nil
-// identity means OnePasswordIdentity with the inventory's secrets.identity.
+// Open reads hosts.yml and secrets.yml from dir and checks the directory's
+// layout. A nil identity means CommandIdentity.
 func Open(dir string, identity IdentitySource) (*Repo, error) {
 	r := &Repo{dir: dir}
 
@@ -128,15 +121,12 @@ func Open(dir string, identity IdentitySource) (*Repo, error) {
 		return nil, fmt.Errorf("%s: %w", r.path("hosts.yml"), err)
 	}
 
-	if len(r.inventory.Secrets.Recipients) > 0 {
-		r.recipients, err = age.ParseRecipients(strings.NewReader(strings.Join(r.inventory.Secrets.Recipients, "\n")))
-		if err != nil {
-			return nil, fmt.Errorf("%s: secrets.recipients: %w", r.path("hosts.yml"), err)
-		}
+	if err := r.readSecrets(); err != nil {
+		return nil, err
 	}
 
 	if identity == nil {
-		identity = r.defaultIdentity()
+		identity = r.CommandIdentity()
 	}
 	r.keys = &keyring{source: identity}
 

@@ -399,8 +399,10 @@ func testRepo(t *testing.T) (*config.Repo, string) {
 	id, err := age.GenerateX25519Identity()
 	require.NoError(t, err)
 	dir := t.TempDir()
-	hostsYAML := "secrets:\n  recipients: [" + id.Recipient().String() + "]\nhosts:\n  acidburn:\n    address: 192.0.2.1\n"
+	hostsYAML := "hosts:\n  acidburn:\n    address: 192.0.2.1\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "hosts.yml"), []byte(hostsYAML), 0o600))
+	secretsYAML := "recipients: [" + id.Recipient().String() + "]\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "secrets.yml"), []byte(secretsYAML), 0o600))
 	repo, err := config.Open(dir, func() (age.Identity, error) { return id, nil })
 	require.NoError(t, err)
 	return repo, dir

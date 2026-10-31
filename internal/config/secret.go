@@ -86,7 +86,7 @@ func nodeError(node ast.Node, msg string) error {
 // YAML text for a !age scalar.
 func (r *Repo) Encrypt(plaintext string) (string, error) {
 	if len(r.recipients) == 0 {
-		return "", errors.New("no secrets.recipients in hosts.yml")
+		return "", errors.New("no recipients in secrets.yml")
 	}
 	var buf bytes.Buffer
 	a := armor.NewWriter(&buf)
@@ -145,9 +145,15 @@ func (k *keyring) identity() (age.Identity, error) {
 // calls it at most once, and only if a secret is revealed.
 type IdentitySource func() (age.Identity, error)
 
-// OnePasswordIdentity reads the identity with `op read <ref>`.
-func OnePasswordIdentity(ref string) IdentitySource {
-	return commandIdentity("op", "read", ref)
+// CommandIdentity runs secrets.yml's identity_command and parses its
+// output as an age identity.
+func (r *Repo) CommandIdentity() IdentitySource {
+	if len(r.identityCommand) == 0 {
+		return func() (age.Identity, error) {
+			return nil, errors.New("no identity_command in secrets.yml")
+		}
+	}
+	return commandIdentity(r.identityCommand[0], r.identityCommand[1:]...)
 }
 
 func commandIdentity(name string, args ...string) IdentitySource {
@@ -170,12 +176,29 @@ func commandIdentity(name string, args ...string) IdentitySource {
 	}
 }
 
-func (r *Repo) defaultIdentity() IdentitySource {
-	ref := r.inventory.Secrets.Identity
-	if ref == "" {
-		return func() (age.Identity, error) {
-			return nil, errors.New("no secrets.identity in hosts.yml")
+func (r *Repo) readSecrets() error {
+	type secretsFile struct {
+		// Recipients are age public keys; secrets are encrypted to all of them.
+		Recipients []string `yaml:"recipients"`
+		// IdentityCommand prints the age identity, e.g. [op, read, op://...].
+		IdentityCommand []string `yaml:"identity_command"`
+	}
+
+	file := r.path("secrets.yml")
+	node, err := r.readLayer("secrets.yml", true)
+	if err != nil || node == nil {
+		return err
+	}
+	var s secretsFile
+	if err := decode(context.Background(), node, &s); err != nil {
+		return fmt.Errorf("%s: %w", file, err)
+	}
+	if len(s.Recipients) > 0 {
+		r.recipients, err = age.ParseRecipients(strings.NewReader(strings.Join(s.Recipients, "\n")))
+		if err != nil {
+			return fmt.Errorf("%s: recipients: %w", file, err)
 		}
 	}
-	return OnePasswordIdentity(ref)
+	r.identityCommand = s.IdentityCommand
+	return nil
 }

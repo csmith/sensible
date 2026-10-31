@@ -15,16 +15,12 @@ set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 work="$here/.work"
-mkdir -p "$work/bin" "$work/config/os" "$work/config/hosts"
+mkdir -p "$work/config/os" "$work/config/hosts"
 
 [[ -f "$work/rootkey" ]] || ssh-keygen -q -t ed25519 -N '' -C test-root -f "$work/rootkey"
 cp "$work/rootkey.pub" "$here/rootkey.pub"
 [[ -f "$work/age.key" ]] || (cd "$here/../.." && go run filippo.io/age/cmd/age-keygen -o "$work/age.key" 2>/dev/null)
 recipient=$(grep 'public key' "$work/age.key" | awk '{print $NF}')
-
-# Stands in for the 1Password CLI.
-printf '#!/bin/sh\ncat %q\n' "$work/age.key" > "$work/bin/op"
-chmod +x "$work/bin/op"
 
 docker build -q -t sensible-test-debian -f "$here/Containerfile.debian" "$here" >/dev/null
 docker build -q -t sensible-test-arch -f "$here/Containerfile.arch" "$here" >/dev/null
@@ -39,10 +35,11 @@ start deb1 sensible-test-debian 2211
 start arch1 sensible-test-arch 2212
 
 cp -r "$here/config/." "$work/config/"
+cat > "$work/config/secrets.yml" <<YAML
+recipients: [$recipient]
+identity_command: [cat, "$work/age.key"]
+YAML
 cat > "$work/config/hosts.yml" <<YAML
-secrets:
-  recipients: [$recipient]
-  identity: op://test/age
 hosts:
   deb1:
     address: 127.0.0.1:2211
@@ -53,7 +50,6 @@ rm -f "$work/config/known_hosts"
 rm -rf "$work/config/credentials"
 
 cat > "$work/env.sh" <<ENV
-export PATH="$work/bin:\$PATH"
 export SENSIBLE_CONFIG="$work/config"
 export SSH_AUTH_SOCK="\${XDG_RUNTIME_DIR:-/tmp}/sensible-test-agent.sock"
 if ! ssh-add -l >/dev/null 2>&1; then
