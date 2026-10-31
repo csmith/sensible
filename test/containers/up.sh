@@ -4,7 +4,7 @@
 # afterwards to use them, e.g.:
 #
 #   ./up.sh && source .work/env.sh
-#   go build -o .work/sensible ../../cmd/sensible
+#   go generate ../../... && go build -o .work/sensible ../../cmd/sensible
 #   .work/sensible bootstrap deb1 --user root --host-key "$(fingerprint 2211)"
 #   .work/sensible apply --yes
 #

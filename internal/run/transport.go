@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -169,8 +170,8 @@ func (w *agentStderr) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Local runs the agent on this machine with sudo, straight from the build
-// cache.
+// Local runs the agent on this machine with sudo, from a copy in the user's
+// cache directory.
 type Local struct {
 	Builds Builds
 }
@@ -180,7 +181,15 @@ func (l *Local) Start(ctx context.Context) (*AgentPipe, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.CommandContext(ctx, "sudo", build.Path, "agent")
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return nil, err
+	}
+	path, err := extractAgent(filepath.Join(cache, "sensible", "agents"), build)
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, "sudo", path, "agent")
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

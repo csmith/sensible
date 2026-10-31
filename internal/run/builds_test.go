@@ -1,84 +1,78 @@
 package run
 
 import (
+	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
+	"debug/elf"
+	"encoding/hex"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestFindModule(t *testing.T) {
-	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "go.mod"), "module example.com/tool\n\ngo 1.27\n")
-	writeFile(t, filepath.Join(root, "nested", "go.mod"), "module example.com/other\n")
-	deep := filepath.Join(root, "nested", "a", "b")
-	require.NoError(t, os.MkdirAll(deep, 0o700))
+func TestEmbeddedBuilds_decompressesAndHashesAgent(t *testing.T) {
+	binary := []byte("arm64 agent")
+	var compressed bytes.Buffer
+	zw := gzip.NewWriter(&compressed)
+	_, err := zw.Write(binary)
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+	e := &EmbeddedBuilds{
+		files:  fstest.MapFS{"agents/linux-arm64.gz": {Data: compressed.Bytes()}},
+		builds: map[string]Build{},
+	}
 
-	found, ok := findModule(deep, "example.com/tool")
-	assert.True(t, ok)
-	assert.Equal(t, root, found)
+	build, err := e.Build(t.Context(), "arm64")
+	require.NoError(t, err)
+	sum := sha256.Sum256(binary)
+	assert.Equal(t, Build{Binary: binary, Hash: hex.EncodeToString(sum[:])}, build)
 
-	_, ok = findModule(deep, "example.com/missing")
-	assert.False(t, ok)
+	_, err = e.Build(t.Context(), "amd64")
+	require.ErrorContains(t, err, "no agent for amd64")
 }
 
-func TestSourceKey(t *testing.T) {
-	root := t.TempDir()
-	writeFile(t, filepath.Join(root, "go.mod"), "module example.com/tool\n")
-	writeFile(t, filepath.Join(root, "go.sum"), "")
-	writeFile(t, filepath.Join(root, "cmd", "tool", "main.go"), "package main\n")
-	writeFile(t, filepath.Join(root, "internal", "x", "x_test.go"), "package x\n")
-	writeFile(t, filepath.Join(root, "config", "hosts.yml"), "hosts: {}\n")
-
-	key := func() string {
-		k, err := sourceKey(root, "amd64", "go1.27")
+func TestEmbeddedBuilds_agentsMatchTheirArch(t *testing.T) {
+	machines := map[string]elf.Machine{"amd64": elf.EM_X86_64, "arm64": elf.EM_AARCH64}
+	e := NewEmbeddedBuilds()
+	for _, arch := range agentArchs {
+		if _, err := fs.Stat(e.files, "agents/linux-"+arch+".gz"); errors.Is(err, fs.ErrNotExist) {
+			t.Skipf("no %s agent embedded; run go generate ./...", arch)
+		}
+		build, err := e.Build(t.Context(), arch)
 		require.NoError(t, err)
-		return k
+		f, err := elf.NewFile(bytes.NewReader(build.Binary))
+		require.NoError(t, err)
+		assert.Equal(t, machines[arch], f.Machine, arch)
+		assert.Equal(t, elf.ET_EXEC, f.Type, arch)
 	}
-	original := key()
-
-	writeFile(t, filepath.Join(root, "internal", "x", "x_test.go"), "package x\n// changed\n")
-	writeFile(t, filepath.Join(root, "config", "hosts.yml"), "hosts: {a: {}}\n")
-	assert.Equal(t, original, key(), "tests and config don't affect the build")
-
-	writeFile(t, filepath.Join(root, "internal", "x", "zshrc.tmpl"), "embedded")
-	assert.NotEqual(t, original, key())
-
-	other, err := sourceKey(root, "arm64", "go1.27")
-	require.NoError(t, err)
-	assert.NotEqual(t, key(), other)
 }
 
-func TestBuilder_buildsAndCachesAgent(t *testing.T) {
-	if testing.Short() {
-		t.Skip("builds the whole tool")
-	}
-	root, err := moduleRoot()
-	require.NoError(t, err)
-	b := &Builder{root: root, cacheDir: t.TempDir(), builds: map[string]Build{}}
+func TestExtractAgent(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "agents")
+	build := Build{Binary: []byte("agent"), Hash: "abc123"}
 
-	build, err := b.Build(t.Context(), "arm64")
+	path, err := extractAgent(dir, build)
 	require.NoError(t, err)
-	hash, err := fileHash(build.Path)
+	assert.Equal(t, filepath.Join(dir, "abc123"), path)
+	content, err := os.ReadFile(path)
 	require.NoError(t, err)
-	assert.Equal(t, hash, build.Hash)
+	assert.Equal(t, build.Binary, content)
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
 
-	fresh := &Builder{root: root, cacheDir: b.cacheDir, builds: map[string]Build{}}
-	again, err := fresh.Build(t.Context(), "arm64")
+	require.NoError(t, os.WriteFile(path, []byte("upgraded in place"), 0o700))
+	again, err := extractAgent(dir, build)
 	require.NoError(t, err)
-	assert.Equal(t, build, again)
-}
-
-func TestSourceRoot(t *testing.T) {
-	root, err := moduleRoot()
+	assert.Equal(t, path, again)
+	content, err = os.ReadFile(path)
 	require.NoError(t, err)
-
-	got, err := sourceRoot(root)
-	require.NoError(t, err)
-	assert.Equal(t, root, got)
-
-	_, err = sourceRoot(t.TempDir())
-	require.ErrorContains(t, err, "isn't the "+modulePath+" source checkout")
+	assert.Equal(t, []byte("upgraded in place"), content, "an existing copy is reused")
 }

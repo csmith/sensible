@@ -23,8 +23,6 @@ import (
 // Options select the hosts for Run and what to do with them.
 type Options struct {
 	ConfigDir string
-	// SourceDir is the checkout agents are built from; empty finds it.
-	SourceDir string
 	// Hosts limits the run to these inventory names. Empty means all hosts.
 	Hosts []string
 	// Addrs overrides inventory addresses, keyed by host name.
@@ -45,10 +43,7 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
-	builder, err := NewBuilder(opts.SourceDir)
-	if err != nil {
-		return err
-	}
+	builder := NewEmbeddedBuilds()
 	targets := make([]target, len(names))
 	for i, name := range names {
 		targets[i] = newTarget(repo, name, opts.Addrs[name], builder)
@@ -448,8 +443,6 @@ type Builds interface {
 	Build(ctx context.Context, goarch string) (Build, error)
 }
 
-var agentArchs = []string{"amd64", "arm64"}
-
 // connect starts an agent and upgrades it if it isn't the current build.
 func connect(ctx context.Context, t Transport, builds Builds) (*agent, bool, error) {
 	pipe, err := t.Start(ctx)
@@ -508,11 +501,7 @@ func (a *agent) hello(earlyExit error) (host.Hello, error) {
 
 // upgrade replaces the agent with the given build.
 func (a *agent) upgrade(b Build, earlyExit error) error {
-	binary, err := os.ReadFile(b.Path)
-	if err != nil {
-		return err
-	}
-	if err := a.conn.Send(host.Upgrade{Binary: binary}); err != nil {
+	if err := a.conn.Send(host.Upgrade{Binary: b.Binary}); err != nil {
 		return err
 	}
 	hello, err := a.hello(earlyExit)

@@ -16,7 +16,6 @@ import (
 
 var (
 	configDir = flag.String("config", ".", "Configuration directory")
-	sourceDir = flag.String("source", "", "Source checkout to build agents from (default: found automatically)")
 	debug     = flag.Bool("debug", false, "Show debugging output")
 )
 
@@ -94,7 +93,6 @@ func command(ctx context.Context, name string, args []string) error {
 			ctx,
 			run.BootstrapOptions{
 				ConfigDir: *configDir,
-				SourceDir: *sourceDir,
 				Host:      args[0],
 				User:      *user,
 				Rotate:    *rotate,
@@ -106,7 +104,6 @@ func command(ctx context.Context, name string, args []string) error {
 			ctx,
 			run.Options{
 				ConfigDir: *configDir,
-				SourceDir: *sourceDir,
 				Hosts:     args,
 				Addrs:     addrs,
 				Apply:     name == "apply",
@@ -114,9 +111,9 @@ func command(ctx context.Context, name string, args []string) error {
 			},
 		)
 	case name == "facts" && len(args) == 1:
-		return run.Facts(ctx, *configDir, *sourceDir, args[0], addrs[args[0]], os.Stdout)
+		return run.Facts(ctx, *configDir, args[0], addrs[args[0]], os.Stdout)
 	case name == "config" && len(args) == 1:
-		return run.ShowConfig(ctx, *configDir, *sourceDir, args[0], *osFamily, addrs[args[0]], os.Stdout)
+		return run.ShowConfig(ctx, *configDir, args[0], *osFamily, addrs[args[0]], os.Stdout)
 	case name == "secret" && len(args) == 1 && args[0] == "encrypt":
 		return run.EncryptSecret(*configDir, os.Stdin, os.Stdout)
 	case name == "secret" && len(args) == 3 && args[0] == "show":

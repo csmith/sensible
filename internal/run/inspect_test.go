@@ -20,7 +20,7 @@ func TestShowConfig_masksSecrets(t *testing.T) {
 	)
 	var out bytes.Buffer
 
-	require.NoError(t, ShowConfig(t.Context(), dir, "", "acidburn", "debian", "", &out))
+	require.NoError(t, ShowConfig(t.Context(), dir, "acidburn", "debian", "", &out))
 
 	assert.Contains(t, out.String(), "hostname: acidburn.example.com")
 	assert.Contains(t, out.String(), "auth_key: <secret>")

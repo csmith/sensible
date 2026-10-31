@@ -164,11 +164,9 @@ func newFakeBuilds(t *testing.T) fakeBuilds {
 	t.Helper()
 	builds := fakeBuilds{}
 	for _, arch := range agentArchs {
-		path := filepath.Join(t.TempDir(), arch)
-		require.NoError(t, os.WriteFile(path, []byte("agent for "+arch), 0o600))
-		hash, err := fileHash(path)
-		require.NoError(t, err)
-		builds[arch] = Build{Path: path, Hash: hash}
+		binary := []byte("agent for " + arch)
+		sum := sha256.Sum256(binary)
+		builds[arch] = Build{Binary: binary, Hash: hex.EncodeToString(sum[:])}
 	}
 	return builds
 }

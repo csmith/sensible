@@ -23,12 +23,12 @@ import (
 )
 
 // Facts prints a host's facts as its agent reports them.
-func Facts(ctx context.Context, configDir, sourceDir, name, addr string, out io.Writer) error {
+func Facts(ctx context.Context, configDir, name, addr string, out io.Writer) error {
 	repo, err := openRepo(configDir, os.Stderr)
 	if err != nil {
 		return err
 	}
-	facts, err := fetchFacts(ctx, repo, sourceDir, name, addr)
+	facts, err := fetchFacts(ctx, repo, name, addr)
 	if err != nil {
 		return err
 	}
@@ -37,14 +37,11 @@ func Facts(ctx context.Context, configDir, sourceDir, name, addr string, out io.
 	return enc.Encode(facts)
 }
 
-func fetchFacts(ctx context.Context, repo *config.Repo, sourceDir, name, addr string) (host.Facts, error) {
+func fetchFacts(ctx context.Context, repo *config.Repo, name, addr string) (host.Facts, error) {
 	if _, ok := repo.Inventory().Hosts[name]; !ok {
 		return host.Facts{}, unknownHost(repo.Inventory(), name)
 	}
-	builder, err := NewBuilder(sourceDir)
-	if err != nil {
-		return host.Facts{}, err
-	}
+	builder := NewEmbeddedBuilds()
 	t := newTarget(repo, name, addr, builder)
 	if t.err != nil {
 		return host.Facts{}, t.err
@@ -59,13 +56,13 @@ func fetchFacts(ctx context.Context, repo *config.Repo, sourceDir, name, addr st
 
 // ShowConfig prints a host's merged configuration with secrets masked. The
 // OS family picks the os/ layer; if it's empty, it's read from the host.
-func ShowConfig(ctx context.Context, configDir, sourceDir, name, osFamily, addr string, out io.Writer) error {
+func ShowConfig(ctx context.Context, configDir, name, osFamily, addr string, out io.Writer) error {
 	repo, err := openRepo(configDir, os.Stderr)
 	if err != nil {
 		return err
 	}
 	if osFamily == "" {
-		facts, err := fetchFacts(ctx, repo, sourceDir, name, addr)
+		facts, err := fetchFacts(ctx, repo, name, addr)
 		if err != nil {
 			return err
 		}

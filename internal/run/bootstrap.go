@@ -1,6 +1,7 @@
 package run
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -27,8 +28,6 @@ import (
 
 type BootstrapOptions struct {
 	ConfigDir string
-	// SourceDir is the checkout agents are built from; empty finds it.
-	SourceDir string
 	Host      string
 	// User is "root" or "chris". With Rotate it may be empty, in which case
 	// the host's existing sensible access is used.
@@ -75,15 +74,11 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 	if err != nil {
 		return err
 	}
-	builder, err := NewBuilder(opts.SourceDir)
-	if err != nil {
-		return err
-	}
 	b := &bootstrapper{
 		name:               opts.Host,
 		address:            entry.Address,
 		creds:              creds,
-		builds:             builder,
+		builds:             NewEmbeddedBuilds(),
 		known:              entry.HostKeys,
 		confirm:            confirmOnTerminal,
 		hostKeyFingerprint: opts.HostKey,
@@ -239,12 +234,12 @@ func (b *bootstrapper) install(ctx context.Context, user string, keyring sshagen
 	if err != nil {
 		return err
 	}
-	binary, err := os.Open(build.Path)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = binary.Close() }()
-	tmp, err := runRemote(client, `umask 077 && t=$(mktemp) && cat > "$t" && printf '%s\n' "$t"`, binary, false)
+	tmp, err := runRemote(
+		client,
+		`umask 077 && t=$(mktemp) && cat > "$t" && printf '%s\n' "$t"`,
+		bytes.NewReader(build.Binary),
+		false,
+	)
 	if err != nil {
 		return fmt.Errorf("uploading agent: %w", err)
 	}

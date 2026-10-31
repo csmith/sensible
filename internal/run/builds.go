@@ -1,8 +1,7 @@
 package run
 
 import (
-	"bufio"
-	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,233 +10,88 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
-	"strings"
 	"sync"
 )
 
-const modulePath = "chameth.com/sensible"
+//go:generate go run gen_agents.go amd64 arm64
+
+var agentArchs = []string{"amd64", "arm64"}
 
 // Build is an agent binary for one architecture.
 type Build struct {
-	Path string
+	Binary []byte
 	// Hash is the hex SHA-256 of the binary, as the agent reports in Hello.
 	Hash string
 }
 
-// Builder builds agents from the tool's source checkout, caching them by the
-// hash of their source.
-type Builder struct {
-	root     string
-	cacheDir string
+// EmbeddedBuilds provides the agents embedded in this binary by go generate.
+type EmbeddedBuilds struct {
+	files fs.FS
 
 	mu     sync.Mutex
 	builds map[string]Build
 }
 
-// NewBuilder builds from sourceDir, or if it's empty from the checkout the
-// binary was built in or is run from.
-func NewBuilder(sourceDir string) (*Builder, error) {
-	root, err := sourceRoot(sourceDir)
-	if err != nil {
-		return nil, err
-	}
-	cache, err := os.UserCacheDir()
-	if err != nil {
-		return nil, err
-	}
-	return &Builder{
-		root:     root,
-		cacheDir: filepath.Join(cache, "sensible", "agents"),
-		builds:   map[string]Build{},
-	}, nil
+func NewEmbeddedBuilds() *EmbeddedBuilds {
+	return &EmbeddedBuilds{files: agentFiles, builds: map[string]Build{}}
 }
 
-// Build returns the agent for GOOS=linux and the given GOARCH, building it
-// if the source has changed since it was last built.
-func (b *Builder) Build(ctx context.Context, goarch string) (Build, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if build, ok := b.builds[goarch]; ok {
+// Build returns the agent for GOOS=linux and the given GOARCH.
+func (e *EmbeddedBuilds) Build(_ context.Context, goarch string) (Build, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if build, ok := e.builds[goarch]; ok {
 		return build, nil
 	}
 
-	version, err := b.goVersion(ctx)
-	if err != nil {
-		return Build{}, err
-	}
-	key, err := sourceKey(b.root, goarch, version)
-	if err != nil {
-		return Build{}, err
-	}
-	path := filepath.Join(b.cacheDir, key+"-"+goarch)
-	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
-		if err := b.compile(ctx, goarch, path); err != nil {
-			return Build{}, err
-		}
+	f, err := e.files.Open("agents/linux-" + goarch + ".gz")
+	if errors.Is(err, fs.ErrNotExist) {
+		return Build{}, fmt.Errorf("no agent for %s in this binary (run go generate before building)", goarch)
 	} else if err != nil {
 		return Build{}, err
 	}
-
-	hash, err := fileHash(path)
+	defer func() { _ = f.Close() }()
+	r, err := gzip.NewReader(f)
 	if err != nil {
-		return Build{}, err
+		return Build{}, fmt.Errorf("reading %s agent: %w", goarch, err)
 	}
-	build := Build{Path: path, Hash: hash}
-	b.builds[goarch] = build
+	binary, err := io.ReadAll(r)
+	if err != nil {
+		return Build{}, fmt.Errorf("reading %s agent: %w", goarch, err)
+	}
+
+	sum := sha256.Sum256(binary)
+	build := Build{Binary: binary, Hash: hex.EncodeToString(sum[:])}
+	e.builds[goarch] = build
 	return build, nil
 }
 
-func (b *Builder) goVersion(ctx context.Context) (string, error) {
-	cmd := exec.CommandContext(ctx, "go", "env", "GOVERSION")
-	cmd.Dir = b.root
-	out, err := cmd.Output()
+// extractAgent writes the build to dir, named by its hash so an existing
+// copy is reused, and returns its path.
+func extractAgent(dir string, b Build) (string, error) {
+	path := filepath.Join(dir, b.Hash)
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	tmp, err := os.CreateTemp(dir, ".agent-*")
 	if err != nil {
-		return "", fmt.Errorf("go env GOVERSION: %w", err)
+		return "", err
 	}
-	return strings.TrimSpace(string(out)), nil
-}
-
-func (b *Builder) compile(ctx context.Context, goarch, path string) error {
-	if err := os.MkdirAll(b.cacheDir, 0o700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(b.cacheDir, ".build-*")
-	if err != nil {
-		return err
-	}
-	_ = tmp.Close()
 	defer func() { _ = os.Remove(tmp.Name()) }()
-
-	cmd := exec.CommandContext(ctx, "go", "build", "-trimpath", "-o", tmp.Name(), "./cmd/sensible")
-	cmd.Dir = b.root
-	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+goarch, "CGO_ENABLED=0")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("building agent for %s: %w\n%s", goarch, err, out)
-	}
-	return os.Rename(tmp.Name(), path)
-}
-
-// sourceKey hashes everything that goes into a build, other than tests.
-func sourceKey(root, goarch, goVersion string) (string, error) {
-	h := sha256.New()
-	_, _ = fmt.Fprintf(h, "%s\x00%s\x00", goarch, goVersion)
-	for _, file := range []string{"go.mod", "go.sum"} {
-		if err := hashFile(h, root, file); err != nil {
-			return "", err
-		}
-	}
-	for _, dir := range []string{"cmd", "internal"} {
-		if err := filepath.WalkDir(filepath.Join(root, dir), sourceHasher(h, root)); err != nil {
-			return "", err
-		}
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-func sourceHasher(h io.Writer, root string) fs.WalkDirFunc {
-	return func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if d.Name() == "testdata" || strings.HasPrefix(d.Name(), ".") {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if strings.HasSuffix(d.Name(), "_test.go") {
-			return nil
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		return hashFile(h, root, rel)
-	}
-}
-
-func hashFile(h io.Writer, root, rel string) error {
-	content, err := os.ReadFile(filepath.Join(root, rel))
-	if err != nil {
-		return err
-	}
-	_, _ = fmt.Fprintf(h, "%s\x00%d\x00", filepath.ToSlash(rel), len(content))
-	_, _ = h.Write(content)
-	return nil
-}
-
-func fileHash(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
+	if _, err := tmp.Write(b.Binary); err != nil {
+		_ = tmp.Close()
 		return "", err
 	}
-	defer func() { _ = f.Close() }()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	if err := tmp.Chmod(0o700); err != nil {
+		_ = tmp.Close()
 		return "", err
 	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-// moduleRoot finds the checkout the tool runs from. `go run` builds into a
-// temporary directory, so the source file's own path is tried first, then
-// the working directory and the executable's directory.
-func moduleRoot() (string, error) {
-	var starts []string
-	if _, file, _, ok := runtime.Caller(0); ok && filepath.IsAbs(file) {
-		starts = append(starts, filepath.Dir(file))
-	}
-	if wd, err := os.Getwd(); err == nil {
-		starts = append(starts, wd)
-	}
-	if exe, err := os.Executable(); err == nil {
-		starts = append(starts, filepath.Dir(exe))
-	}
-	for _, dir := range starts {
-		if root, ok := findModule(dir, modulePath); ok {
-			return root, nil
-		}
-	}
-	return "", fmt.Errorf("can't find the %s source checkout to build agents from; set --source", modulePath)
-}
-
-func sourceRoot(dir string) (string, error) {
-	if dir == "" {
-		return moduleRoot()
-	}
-	abs, err := filepath.Abs(dir)
-	if err != nil {
+	if err := tmp.Close(); err != nil {
 		return "", err
 	}
-	content, err := os.ReadFile(filepath.Join(abs, "go.mod"))
-	if err != nil || moduleName(content) != modulePath {
-		return "", fmt.Errorf("%s isn't the %s source checkout", dir, modulePath)
-	}
-	return abs, nil
-}
-
-func findModule(dir, module string) (string, bool) {
-	for {
-		if content, err := os.ReadFile(filepath.Join(dir, "go.mod")); err == nil && moduleName(content) == module {
-			return dir, true
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", false
-		}
-		dir = parent
-	}
-}
-
-func moduleName(gomod []byte) string {
-	s := bufio.NewScanner(bytes.NewReader(gomod))
-	for s.Scan() {
-		if name, ok := strings.CutPrefix(strings.TrimSpace(s.Text()), "module "); ok {
-			return strings.Trim(strings.TrimSpace(name), `"`)
-		}
-	}
-	return ""
+	return path, os.Rename(tmp.Name(), path)
 }
