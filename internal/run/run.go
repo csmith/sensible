@@ -49,14 +49,9 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
-	known, err := loadKnownHosts(repo.KnownHostsPath())
-	if err != nil {
-		return err
-	}
-
 	targets := make([]target, len(names))
 	for i, name := range names {
-		targets[i] = newTarget(repo, name, opts.Addrs[name], builder, known)
+		targets[i] = newTarget(repo, name, opts.Addrs[name], builder)
 	}
 
 	r := &Runner{
@@ -155,15 +150,16 @@ type target struct {
 	err         error
 }
 
-func newTarget(repo *config.Repo, name, addr string, builds Builds, known ssh.HostKeyCallback) target {
+func newTarget(repo *config.Repo, name, addr string, builds Builds) target {
 	t := target{name: name}
 	if isLocal(name) {
 		t.local = true
 		t.transport = &Local{Builds: builds}
 		return t
 	}
+	entry := repo.Inventory().Hosts[name]
 	if addr == "" {
-		addr = repo.Inventory().Hosts[name].Address
+		addr = entry.Address
 	}
 	if addr == "" {
 		t.err = errors.New("no address in hosts.yml")
@@ -189,8 +185,8 @@ func newTarget(repo *config.Repo, name, addr string, builds Builds, known ssh.Ho
 		Address:           addr,
 		Signer:            signer,
 		Password:          password,
-		HostKey:           inventoryHostKey(name, known),
-		HostKeyAlgorithms: knownHostKeyAlgorithms(repo.KnownHostsPath(), name),
+		HostKey:           checkHostKey(name, entry.HostKeys),
+		HostKeyAlgorithms: hostKeyAlgorithms(entry.HostKeys),
 	}
 	return t
 }

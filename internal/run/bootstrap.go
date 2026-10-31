@@ -19,7 +19,6 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	sshagent "golang.org/x/crypto/ssh/agent"
-	"golang.org/x/crypto/ssh/knownhosts"
 
 	"chameth.com/sensible/internal/config"
 	"chameth.com/sensible/internal/features"
@@ -36,7 +35,7 @@ type BootstrapOptions struct {
 	User   string
 	Rotate bool
 	// HostKey is the SHA256 fingerprint the host's key must have when it
-	// isn't in known_hosts yet. Empty means asking on the terminal.
+	// has no host_keys yet. Empty means asking on the terminal.
 	HostKey string
 }
 
@@ -80,18 +79,12 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 	if err != nil {
 		return err
 	}
-	known, err := loadKnownHosts(repo.KnownHostsPath())
-	if err != nil {
-		return err
-	}
-
 	b := &bootstrapper{
 		name:               opts.Host,
 		address:            entry.Address,
 		creds:              creds,
 		builds:             builder,
-		known:              known,
-		algos:              knownHostKeyAlgorithms(repo.KnownHostsPath(), opts.Host),
+		known:              entry.HostKeys,
 		confirm:            confirmOnTerminal,
 		hostKeyFingerprint: opts.HostKey,
 	}
@@ -107,13 +100,15 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 		return err
 	}
 
-	if b.newHostKey != nil {
-		if err := appendKnownHost(repo.KnownHostsPath(), opts.Host, b.newHostKey); err != nil {
-			return err
-		}
-	}
+	// Credentials go first: a host key that can't be added is reported for
+	// adding by hand, which is easier than bootstrapping again.
 	if err := repo.WriteCredentials(opts.Host, creds.keyPEM, creds.password, time.Now()); err != nil {
 		return err
+	}
+	if b.newHostKey != nil {
+		if err := repo.AddHostKey(opts.Host, b.newHostKey); err != nil {
+			return err
+		}
 	}
 	_, _ = fmt.Fprintf(out, "%-*s✓ bootstrapped\n", minLabelWidth, opts.Host)
 	return nil
@@ -165,8 +160,7 @@ type bootstrapper struct {
 	address string
 	creds   credentials
 	builds  Builds
-	known   ssh.HostKeyCallback
-	algos   []string
+	known   []config.HostKey
 	confirm func(prompt string) (bool, error)
 	// hostKeyFingerprint, if set, replaces the confirmation of a new key.
 	hostKeyFingerprint string
@@ -219,7 +213,7 @@ func (b *bootstrapper) install(ctx context.Context, user string, keyring sshagen
 			User:              user,
 			Auth:              auth,
 			HostKeyCallback:   b.hostKey(),
-			HostKeyAlgorithms: b.algos,
+			HostKeyAlgorithms: hostKeyAlgorithms(b.known),
 		},
 	)
 	if err != nil {
@@ -266,14 +260,12 @@ func (b *bootstrapper) install(ctx context.Context, user string, keyring sshagen
 	return nil
 }
 
-// hostKey checks the host's key under its inventory name, asking about keys
-// that aren't known yet.
+// hostKey checks the host's key against its host_keys, asking about the key
+// if it has none yet.
 func (b *bootstrapper) hostKey() ssh.HostKeyCallback {
-	return func(_ string, remote net.Addr, key ssh.PublicKey) error {
-		err := b.known(net.JoinHostPort(b.name, "22"), remote, key)
-		var keyErr *knownhosts.KeyError
-		if !errors.As(err, &keyErr) || len(keyErr.Want) > 0 {
-			return err
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		if len(b.known) > 0 {
+			return checkHostKey(b.name, b.known)(hostname, remote, key)
 		}
 		if b.hostKeyFingerprint != "" {
 			if got := ssh.FingerprintSHA256(key); got != b.hostKeyFingerprint {
@@ -408,8 +400,8 @@ var (
 )
 
 func (b *bootstrapper) transport(signer ssh.Signer, password string) *OpenSSH {
-	hostKey := inventoryHostKey(b.name, b.known)
-	algos := b.algos
+	hostKey := checkHostKey(b.name, b.known)
+	algos := hostKeyAlgorithms(b.known)
 	if b.newHostKey != nil {
 		hostKey = ssh.FixedHostKey(b.newHostKey)
 		algos = keyAlgorithms(b.newHostKey.Type())

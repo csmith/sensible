@@ -1,11 +1,11 @@
 package run
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"net"
 	"os"
@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/knownhosts"
 
+	"chameth.com/sensible/internal/config"
 	"chameth.com/sensible/internal/features"
 )
 
@@ -106,43 +106,28 @@ func dialSSH(ctx context.Context, address string, cfg *ssh.ClientConfig) (*ssh.C
 	return ssh.NewClient(c, chans, reqs), nil
 }
 
-// inventoryHostKey checks host keys under the inventory name, whatever
+// checkHostKey accepts only the host's keys from hosts.yml, whatever
 // address was dialled.
-func inventoryHostKey(name string, known ssh.HostKeyCallback) ssh.HostKeyCallback {
-	return func(_ string, remote net.Addr, key ssh.PublicKey) error {
-		return known(net.JoinHostPort(name, "22"), remote, key)
-	}
-}
-
-func loadKnownHosts(path string) (ssh.HostKeyCallback, error) {
-	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
-		return knownhosts.New()
-	}
-	return knownhosts.New(path)
-}
-
-// knownHostKeyAlgorithms lists the types of the keys known for name.
-func knownHostKeyAlgorithms(path, name string) []string {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return preferredHostKeyAlgorithms
-	}
-	want := knownhosts.Normalize(name)
-	var algos []string
-	for len(content) > 0 {
-		marker, hosts, key, _, rest, err := ssh.ParseKnownHosts(content)
-		if err != nil {
-			break
+func checkHostKey(name string, known []config.HostKey) ssh.HostKeyCallback {
+	return func(_ string, _ net.Addr, key ssh.PublicKey) error {
+		if len(known) == 0 {
+			return fmt.Errorf("%s has no host_keys in hosts.yml", name)
 		}
-		content = rest
-		if marker != "" {
-			continue
-		}
-		for _, h := range hosts {
-			if h == want {
-				algos = append(algos, keyAlgorithms(key.Type())...)
+		for _, k := range known {
+			if bytes.Equal(k.Marshal(), key.Marshal()) {
+				return nil
 			}
 		}
+		return fmt.Errorf("%s host key %s %s isn't in its host_keys", name, key.Type(), ssh.FingerprintSHA256(key))
+	}
+}
+
+// hostKeyAlgorithms lists the types of the known keys, so a host isn't asked
+// for a type it has no known key of.
+func hostKeyAlgorithms(known []config.HostKey) []string {
+	algos := make([]string, 0, len(known))
+	for _, k := range known {
+		algos = append(algos, keyAlgorithms(k.Type())...)
 	}
 	if len(algos) == 0 {
 		return preferredHostKeyAlgorithms
@@ -150,7 +135,7 @@ func knownHostKeyAlgorithms(path, name string) []string {
 	return algos
 }
 
-// preferredHostKeyAlgorithms puts ed25519 first for hosts not in known_hosts
+// preferredHostKeyAlgorithms puts ed25519 first for hosts with no known keys
 // yet, so the key shown for confirmation is the one consoles usually list.
 var preferredHostKeyAlgorithms = []string{
 	ssh.KeyAlgoED25519,
@@ -166,18 +151,6 @@ func keyAlgorithms(keyType string) []string {
 		return []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSA}
 	}
 	return []string{keyType}
-}
-
-func appendKnownHost(path, name string, key ssh.PublicKey) error {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintln(f, knownhosts.Line([]string{name}, key)); err != nil {
-		_ = f.Close()
-		return err
-	}
-	return f.Close()
 }
 
 // authorizedKey is the sensible account's authorized_keys line, without

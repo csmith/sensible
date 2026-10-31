@@ -8,15 +8,13 @@ import (
 	"encoding/pem"
 	"io"
 	"net"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/knownhosts"
 
+	"chameth.com/sensible/internal/config"
 	"chameth.com/sensible/internal/host"
 )
 
@@ -125,7 +123,7 @@ type sshFixture struct {
 	builds    fakeBuilds
 }
 
-func newSSHFixture(t *testing.T, serverPassword string, knownHostsLine func(*sshServer) string) *sshFixture {
+func newSSHFixture(t *testing.T, serverPassword string, hostKeys func(*sshServer) []config.HostKey) *sshFixture {
 	t.Helper()
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
@@ -141,11 +139,7 @@ func newSSHFixture(t *testing.T, serverPassword string, knownHostsLine func(*ssh
 		&fakeAgent{hash: builds["amd64"].Hash, facts: host.Facts{OSFamily: "debian"}},
 	)
 
-	path := filepath.Join(t.TempDir(), "known_hosts")
-	require.NoError(t, os.WriteFile(path, []byte(knownHostsLine(server)+"\n"), 0o600))
-	known, err := loadKnownHosts(path)
-	require.NoError(t, err)
-
+	known := hostKeys(server)
 	return &sshFixture{
 		keyPEM: string(pem.EncodeToMemory(block)),
 		server: server,
@@ -155,18 +149,18 @@ func newSSHFixture(t *testing.T, serverPassword string, knownHostsLine func(*ssh
 			Address:           server.addr,
 			Signer:            signer,
 			Password:          "hunter2",
-			HostKey:           inventoryHostKey("acidburn", known),
-			HostKeyAlgorithms: knownHostKeyAlgorithms(path, "acidburn"),
+			HostKey:           checkHostKey("acidburn", known),
+			HostKeyAlgorithms: hostKeyAlgorithms(known),
 		},
 	}
 }
 
-func knownUnderInventoryName(s *sshServer) string {
-	return knownhosts.Line([]string{"acidburn"}, s.hostKey.PublicKey())
+func serverKey(s *sshServer) []config.HostKey {
+	return []config.HostKey{{PublicKey: s.hostKey.PublicKey()}}
 }
 
-func TestOpenSSH_connectsAndChecksHostKeyUnderInventoryName(t *testing.T) {
-	f := newSSHFixture(t, "hunter2", knownUnderInventoryName)
+func TestOpenSSH_connectsAndChecksHostKey(t *testing.T) {
+	f := newSSHFixture(t, "hunter2", serverKey)
 
 	a, upgraded, err := connect(t.Context(), f.transport, f.builds)
 	require.NoError(t, err)
@@ -180,24 +174,19 @@ func TestOpenSSH_connectsAndChecksHostKeyUnderInventoryName(t *testing.T) {
 }
 
 func TestOpenSSH_wrongPasswordIsReportedAsRejectedCredentials(t *testing.T) {
-	f := newSSHFixture(t, "something else", knownUnderInventoryName)
+	f := newSSHFixture(t, "something else", serverKey)
 
 	_, _, err := connect(t.Context(), f.transport, f.builds)
 
 	assert.ErrorIs(t, err, errCredentialsRejected)
 }
 
-func TestOpenSSH_rejectsKeyKnownOnlyUnderAddress(t *testing.T) {
-	f := newSSHFixture(
-		t,
-		"hunter2",
-		func(s *sshServer) string { return knownhosts.Line([]string{s.addr}, s.hostKey.PublicKey()) },
-	)
+func TestOpenSSH_rejectsHostWithNoKeys(t *testing.T) {
+	f := newSSHFixture(t, "hunter2", func(*sshServer) []config.HostKey { return nil })
 
 	_, _, err := connect(t.Context(), f.transport, f.builds)
 
-	var keyErr *knownhosts.KeyError
-	assert.ErrorAs(t, err, &keyErr)
+	assert.ErrorContains(t, err, "no host_keys")
 }
 
 func TestOpenSSH_rejectsChangedHostKey(t *testing.T) {
@@ -208,12 +197,10 @@ func TestOpenSSH_rejectsChangedHostKey(t *testing.T) {
 	f := newSSHFixture(
 		t,
 		"hunter2",
-		func(*sshServer) string { return knownhosts.Line([]string{"acidburn"}, otherKey.PublicKey()) },
+		func(*sshServer) []config.HostKey { return []config.HostKey{{PublicKey: otherKey.PublicKey()}} },
 	)
 
 	_, _, err = connect(t.Context(), f.transport, f.builds)
 
-	var keyErr *knownhosts.KeyError
-	require.ErrorAs(t, err, &keyErr)
-	assert.NotEmpty(t, keyErr.Want)
+	assert.ErrorContains(t, err, ssh.FingerprintSHA256(f.server.hostKey.PublicKey()))
 }

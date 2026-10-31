@@ -45,11 +45,7 @@ func fetchFacts(ctx context.Context, repo *config.Repo, sourceDir, name, addr st
 	if err != nil {
 		return host.Facts{}, err
 	}
-	known, err := loadKnownHosts(repo.KnownHostsPath())
-	if err != nil {
-		return host.Facts{}, err
-	}
-	t := newTarget(repo, name, addr, builder, known)
+	t := newTarget(repo, name, addr, builder)
 	if t.err != nil {
 		return host.Facts{}, t.err
 	}

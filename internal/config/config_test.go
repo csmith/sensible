@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,6 +13,7 @@ import (
 	"filippo.io/age"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/ssh"
 )
 
 type testRepo struct {
@@ -241,6 +244,7 @@ func TestOpen(t *testing.T) {
 		{"credentials for unknown host", map[string]string{"credentials/gamma.yml": ""}, "gamma"},
 		{"wrong extension", map[string]string{"hosts/alpha.yaml": ""}, "alpha.yaml"},
 		{"unknown inventory key", map[string]string{"hosts.yml": "hosts:\n  a: {addr: x}\n"}, "addr"},
+		{"invalid host key", map[string]string{"hosts.yml": "hosts:\n  a: {host_keys: [ssh-ed25519 nope]}\n"}, "host key"},
 		{"bad recipient", map[string]string{"secrets.yml": "recipients: [nope]\n"}, "recipients"},
 		{"unknown secrets key", map[string]string{"secrets.yml": "identity: op://x\n"}, "identity"},
 	}
@@ -260,7 +264,6 @@ func TestOpen(t *testing.T) {
 			tr := newTestRepo(t, map[string]string{"hosts/alpha.yml": "", "os/arch.yml": "", "hosts/.alpha.yml.swp": ""})
 			r := tr.open(t)
 			assert.Equal(t, "alpha.example.com", r.Inventory().Hosts["alpha"].Address)
-			assert.Equal(t, filepath.Join(tr.dir, "known_hosts"), r.KnownHostsPath())
 		},
 	)
 
@@ -271,6 +274,102 @@ func TestOpen(t *testing.T) {
 			assert.Error(t, err)
 		},
 	)
+}
+
+func TestOpen_hostKeys(t *testing.T) {
+	key := testHostKey(t)
+	keys := newTestRepo(
+		t,
+		map[string]string{"hosts.yml": "hosts:\n  alpha:\n    host_keys: [" + key.String() + " root@alpha]\n"},
+	).open(t).Inventory().Hosts["alpha"].HostKeys
+	require.Len(t, keys, 1)
+	assert.Equal(t, key.Marshal(), keys[0].Marshal())
+}
+
+func TestAddHostKey(t *testing.T) {
+	tests := []struct {
+		name  string
+		hosts string
+		host  string
+		want  string
+	}{
+		{
+			name:  "block mapping keeps comments and layout",
+			hosts: "# Hosts\nhosts:\n  # first\n  alpha:\n      address: a # inline\n\n  # second\n  beta:\n      address: b\n",
+			host:  "alpha",
+			want: "# Hosts\nhosts:\n  # first\n  alpha:\n      address: a # inline\n      host_keys:\n        - KEY\n" +
+				"\n  # second\n  beta:\n      address: b\n",
+		},
+		{
+			name:  "block scalar value",
+			hosts: "hosts:\n  alpha:\n    address: |\n      a\n  beta:\n",
+			host:  "alpha",
+			want:  "hosts:\n  alpha:\n    address: |\n      a\n    host_keys:\n      - KEY\n  beta:\n",
+		},
+		{
+			name:  "empty entry without trailing newline",
+			hosts: "hosts:\n  alpha:\n    address: a\n  beta:",
+			host:  "beta",
+			want:  "hosts:\n  alpha:\n    address: a\n  beta:\n    host_keys:\n      - KEY\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				key := testHostKey(t)
+				tr := newTestRepo(t, map[string]string{"hosts.yml": tt.hosts})
+				r := tr.open(t)
+
+				require.NoError(t, r.AddHostKey(tt.host, key.PublicKey))
+
+				content, err := os.ReadFile(filepath.Join(tr.dir, "hosts.yml"))
+				require.NoError(t, err)
+				assert.Equal(t, strings.ReplaceAll(tt.want, "KEY", key.String()), string(content))
+				keys := tr.open(t).Inventory().Hosts[tt.host].HostKeys
+				require.Len(t, keys, 1)
+				assert.Equal(t, key.Marshal(), keys[0].Marshal())
+				assert.Equal(t, keys, r.Inventory().Hosts[tt.host].HostKeys)
+			},
+		)
+	}
+}
+
+func TestAddHostKey_unsupportedLayoutIsLeftAlone(t *testing.T) {
+	for _, hosts := range []string{
+		"hosts:\n  alpha: {address: a}\n",
+		"hosts:\n  alpha: ~\n",
+		"hosts:\n  alpha:\n    host_keys: []\n",
+	} {
+		t.Run(
+			hosts,
+			func(t *testing.T) {
+				key := testHostKey(t)
+				tr := newTestRepo(t, map[string]string{"hosts.yml": hosts})
+
+				err := tr.open(t).AddHostKey("alpha", key.PublicKey)
+
+				require.ErrorContains(t, err, key.String())
+				content, err := os.ReadFile(filepath.Join(tr.dir, "hosts.yml"))
+				require.NoError(t, err)
+				assert.Equal(t, hosts, string(content))
+			},
+		)
+	}
+}
+
+func testHostKey(t *testing.T) HostKey {
+	t.Helper()
+	return HostKey{testPublicKey(t)}
+}
+
+func testPublicKey(t *testing.T) ssh.PublicKey {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	key, err := ssh.NewPublicKey(pub)
+	require.NoError(t, err)
+	return key
 }
 
 func TestSecrets_encryptAndReveal(t *testing.T) {

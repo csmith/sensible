@@ -7,12 +7,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"time"
 
 	"filippo.io/age"
 	"github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
+	"github.com/goccy/go-yaml/parser"
+	"github.com/goccy/go-yaml/token"
+	"golang.org/x/crypto/ssh"
 )
 
 // Inventory is the parsed hosts.yml.
@@ -23,6 +28,29 @@ type Inventory struct {
 type HostEntry struct {
 	// Address is the host's public or LAN address. Empty for the local host.
 	Address string `yaml:"address"`
+	// HostKeys are the host's SSH public keys, which connections must match.
+	HostKeys []HostKey `yaml:"host_keys"`
+}
+
+// HostKey is an SSH public key written as in authorized_keys.
+type HostKey struct {
+	ssh.PublicKey
+}
+
+func (k *HostKey) UnmarshalText(b []byte) error {
+	key, _, _, rest, err := ssh.ParseAuthorizedKey(b)
+	if err != nil {
+		return fmt.Errorf("invalid host key %q: %w", b, err)
+	}
+	if len(rest) > 0 {
+		return fmt.Errorf("invalid host key %q: expected a single key", b)
+	}
+	k.PublicKey = key
+	return nil
+}
+
+func (k HostKey) String() string {
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(k.PublicKey)))
 }
 
 // Credentials are the generated contents of credentials/<host>.yml.
@@ -140,11 +168,6 @@ func (r *Repo) Inventory() Inventory {
 	return r.inventory
 }
 
-// KnownHostsPath is the known_hosts file, keyed by inventory name.
-func (r *Repo) KnownHostsPath() string {
-	return r.path("known_hosts")
-}
-
 // HostConfig merges the layers for the named host. osFamily is the host's
 // Facts.OSFamily, used to choose os/<family>.yml.
 func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
@@ -254,17 +277,142 @@ func (r *Repo) WriteCredentials(host, sshKey, sudoPassword string, rotated time.
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	return writeAtomic(filepath.Join(dir, host+".yml"), []byte(content))
+	return writeAtomic(filepath.Join(dir, host+".yml"), []byte(content), 0o600)
 }
 
-func writeAtomic(path string, content []byte) error {
+// AddHostKey adds a key to the host's host_keys in hosts.yml, leaving the
+// rest of the file as it was.
+func (r *Repo) AddHostKey(name string, key ssh.PublicKey) error {
+	if err := r.checkHost(name); err != nil {
+		return err
+	}
+	file := r.path("hosts.yml")
+	manual := fmt.Errorf("add it to %s by hand:\n  %s:\n    host_keys:\n      - %s", file, name, HostKey{key})
+
+	src, err := os.ReadFile(file)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(file)
+	if err != nil {
+		return err
+	}
+	updated, err := insertHostKey(src, name, HostKey{key})
+	if err != nil {
+		return fmt.Errorf("%w; %w", err, manual)
+	}
+
+	// The edit is textual, so check it changed exactly what was meant to.
+	want := Inventory{Hosts: map[string]HostEntry{}}
+	for n, e := range r.inventory.Hosts {
+		if n == name {
+			e.HostKeys = append(slices.Clone(e.HostKeys), HostKey{key})
+		}
+		want.Hosts[n] = e
+	}
+	var got Inventory
+	root, err := parseLayer(file, updated)
+	if err == nil {
+		err = decode(context.Background(), root, &got)
+	}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		return fmt.Errorf("couldn't update the layout of %s; %w", file, manual)
+	}
+
+	if err := writeAtomic(file, updated, info.Mode().Perm()); err != nil {
+		return err
+	}
+	r.inventory = got
+	return nil
+}
+
+// insertHostKey adds a host_keys list to the end of the host's entry.
+func insertHostKey(src []byte, name string, key HostKey) ([]byte, error) {
+	f, err := parser.ParseBytes(src, 0)
+	if err != nil {
+		return nil, err
+	}
+	if len(f.Docs) != 1 {
+		return nil, errors.New("expected a single document")
+	}
+	hosts, ok := mappingValue(f.Docs[0].Body, "hosts").(*ast.MappingNode)
+	if !ok || hosts.IsFlowStyle {
+		return nil, errors.New("hosts isn't a block mapping")
+	}
+	var entry *ast.MappingValueNode
+	for _, v := range hosts.Values {
+		if keyString(v.Key) == name {
+			entry = v
+		}
+	}
+	if entry == nil {
+		return nil, fmt.Errorf("no entry for %s", name)
+	}
+
+	start := entry.Key.GetToken().Position
+	indent := start.Column + 1
+	switch v := entry.Value.(type) {
+	case *ast.NullNode:
+	case *ast.MappingNode:
+		if v.IsFlowStyle {
+			return nil, fmt.Errorf("%s isn't a block mapping", name)
+		}
+		if mappingValue(v, "host_keys") != nil {
+			return nil, fmt.Errorf("%s already has host_keys", name)
+		}
+		indent = v.Values[0].Key.GetToken().Position.Column - 1
+	default:
+		return nil, fmt.Errorf("%s isn't a mapping", name)
+	}
+
+	// The entry runs until the next token as far left as its key. Block
+	// scalar contents have no column.
+	last := start.Line
+	for tk := entry.Key.GetToken().Next; tk != nil; tk = tk.Next {
+		if tk.Type == token.CommentType {
+			continue
+		}
+		if tk.Position.Line > start.Line && tk.Position.Column > 0 && tk.Position.Column <= start.Column {
+			break
+		}
+		last = max(last, tk.Position.Line+strings.Count(strings.TrimRight(tk.Value, "\n"), "\n"))
+	}
+
+	text := string(src)
+	if !strings.HasSuffix(text, "\n") {
+		text += "\n"
+	}
+	lines := strings.SplitAfter(text, "\n")
+	pad := strings.Repeat(" ", indent)
+	return []byte(
+		strings.Join(
+			slices.Insert(lines, last, fmt.Sprintf("%shost_keys:\n%s  - %s\n", pad, pad, key)),
+			"",
+		),
+	), nil
+}
+
+func mappingValue(node ast.Node, key string) ast.Node {
+	m, ok := node.(*ast.MappingNode)
+	if !ok {
+		return nil
+	}
+	for _, v := range m.Values {
+		if keyString(v.Key) == key {
+			return v.Value
+		}
+	}
+	return nil
+}
+
+func writeAtomic(path string, content []byte, perm os.FileMode) error {
 	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
 		return err
 	}
 	defer func() { _ = os.Remove(f.Name()) }()
 
-	if err := f.Chmod(0o600); err != nil {
+	if err := f.Chmod(perm); err != nil {
 		_ = f.Close()
 		return err
 	}

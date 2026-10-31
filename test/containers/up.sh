@@ -46,7 +46,6 @@ hosts:
   arch1:
     address: 127.0.0.1:2212
 YAML
-rm -f "$work/config/known_hosts"
 rm -rf "$work/config/credentials"
 
 cat > "$work/env.sh" <<ENV

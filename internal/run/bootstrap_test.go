@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 
+	"chameth.com/sensible/internal/config"
 	"chameth.com/sensible/internal/features"
 	"chameth.com/sensible/internal/host"
 )
@@ -106,27 +107,26 @@ func testKey(t *testing.T) ssh.PublicKey {
 }
 
 type hostKeyFixture struct {
-	known    ssh.PublicKey
-	callback ssh.HostKeyCallback
-	remote   net.Addr
-	prompts  []string
+	known   ssh.PublicKey
+	remote  net.Addr
+	prompts []string
 }
 
 func newHostKeyFixture(t *testing.T) *hostKeyFixture {
 	t.Helper()
-	f := &hostKeyFixture{known: testKey(t), remote: &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 22}}
-	path := filepath.Join(t.TempDir(), "known_hosts")
-	require.NoError(t, appendKnownHost(path, "acidburn", f.known))
-	var err error
-	f.callback, err = loadKnownHosts(path)
-	require.NoError(t, err)
-	return f
+	return &hostKeyFixture{known: testKey(t), remote: &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 22}}
 }
 
+// bootstrapper is for a host that already has the fixture's key if it's
+// acidburn, and has no keys otherwise.
 func (f *hostKeyFixture) bootstrapper(name string, answer bool) *bootstrapper {
+	var known []config.HostKey
+	if name == "acidburn" {
+		known = []config.HostKey{{PublicKey: f.known}}
+	}
 	return &bootstrapper{
 		name:  name,
-		known: f.callback,
+		known: known,
 		confirm: func(prompt string) (bool, error) {
 			f.prompts = append(f.prompts, prompt)
 			return answer, nil
@@ -134,7 +134,7 @@ func (f *hostKeyFixture) bootstrapper(name string, answer bool) *bootstrapper {
 	}
 }
 
-func TestBootstrapHostKey_knownKeyMatchesUnderInventoryName(t *testing.T) {
+func TestBootstrapHostKey_knownKeyMatches(t *testing.T) {
 	f := newHostKeyFixture(t)
 	b := f.bootstrapper("acidburn", false)
 
@@ -222,21 +222,19 @@ func TestNewCredentials(t *testing.T) {
 
 func TestRotate_setsPasswordAndKeyThroughExistingAgent(t *testing.T) {
 	repo, _ := testRepo(t)
-	f := newSSHFixture(t, "hunter2", knownUnderInventoryName)
+	f := newSSHFixture(t, "hunter2", serverKey)
 	require.NoError(t, repo.WriteCredentials("acidburn", f.keyPEM, "hunter2", time.Now()))
 	existing, err := repo.Credentials("acidburn")
 	require.NoError(t, err)
 	creds, err := newCredentials("acidburn")
 	require.NoError(t, err)
 
-	known, err := loadKnownHosts(writeKnownHosts(t, knownUnderInventoryName(f.server)))
-	require.NoError(t, err)
 	b := &bootstrapper{
 		name:    "acidburn",
 		address: f.server.addr,
 		creds:   creds,
 		builds:  f.builds,
-		known:   known,
+		known:   serverKey(f.server),
 	}
 	require.NoError(t, b.rotate(t.Context(), existing))
 
@@ -251,11 +249,4 @@ func TestRotate_setsPasswordAndKeyThroughExistingAgent(t *testing.T) {
 	}
 	assert.Equal(t, features.AccessFiles(creds.authorizedKey), files)
 	assert.Contains(t, f.server.agent.messages(), "Apply")
-}
-
-func writeKnownHosts(t *testing.T, line string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "known_hosts")
-	require.NoError(t, os.WriteFile(path, []byte(line+"\n"), 0o600))
-	return path
 }
