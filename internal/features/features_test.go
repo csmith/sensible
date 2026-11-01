@@ -369,7 +369,7 @@ func TestResources_stack(t *testing.T) {
 	assert.Equal(
 		t,
 		[]host.Resource{
-			host.Dir{Path: "/srv/volumes", Owner: "root", Group: "root", Mode: 0o755},
+			host.Dir{Path: "/srv/volumes", Owner: "root", Group: "root", Mode: 0o700},
 			host.Dir{Path: "/srv/volumes/twowords", Owner: "root", Group: "root", Mode: 0o755},
 			host.Dir{Path: "/srv/volumes/twowords/blobs", Owner: "33"},
 			host.Dir{Path: "/srv/volumes/twowords-centralpark", Owner: "root", Group: "root", Mode: 0o755},

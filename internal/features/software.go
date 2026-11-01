@@ -283,7 +283,7 @@ func docker(h Host) ([]host.Resource, error) {
 func stacks(h Host) ([]host.Resource, error) {
 	var rs []host.Resource
 	if len(h.Config.Volumes) > 0 {
-		rs = append(rs, host.Dir{Path: config.VolumesDir, Owner: "root", Group: "root", Mode: 0o755})
+		rs = append(rs, host.Dir{Path: config.VolumesDir, Owner: "root", Group: "root", Mode: 0o700})
 	}
 	owners := map[string]bool{}
 	for _, v := range h.Config.Volumes {
