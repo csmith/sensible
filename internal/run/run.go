@@ -252,11 +252,15 @@ func (r *Runner) Execute(ctx context.Context, targets []target, apply, yes bool)
 
 	s := summarise(runs, dns.changes)
 	failed := len(dns.errs) > 0 || anyFailed(runs)
-	out.line("")
 	if s.empty() {
-		out.line(out.p.bold("No changes"))
+		// With failures, there may be changes that couldn't be planned.
+		if !failed {
+			out.line("")
+			out.line(out.p.bold("No changes"))
+		}
 		return failedErr(failed)
 	}
+	out.line("")
 	if !apply || yes {
 		out.line(out.p.bold(s.String()))
 	}

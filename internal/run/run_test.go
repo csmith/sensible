@@ -370,6 +370,15 @@ func TestExecute_nothingToDo(t *testing.T) {
 	assert.Empty(t, f.confirmed)
 }
 
+func TestExecute_failuresDontClaimNoChanges(t *testing.T) {
+	f := newRunnerFixture(t, testResources)
+
+	err := f.runner.Execute(t.Context(), []target{{name: "smarts", err: errors.New("no credentials")}}, false, false)
+
+	require.ErrorIs(t, err, errFailed)
+	assert.NotContains(t, f.out.String(), "No changes")
+}
+
 func TestExecute_compileErrorIsReportedForThatHost(t *testing.T) {
 	f := newRunnerFixture(t, testResources)
 	f.runner.Compile = func(t target, _ host.Facts) (host.ResourceList, error) {
