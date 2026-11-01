@@ -842,3 +842,77 @@ func TestHostConfig_conflictingCommands(t *testing.T) {
 	).open(t).HostConfig("alpha", "debian")
 	assert.ErrorContains(t, err, "role a and role b set jobs.copy.command differently")
 }
+
+func newBackupsRepo(t *testing.T) *testRepo {
+	t.Helper()
+	return newTestRepo(
+		t,
+		map[string]string{"hosts.d/hosts.yml": "alpha:\n  roles: {backups: }\n", "roles/backups/role.yml": ""},
+	)
+}
+
+func TestHostConfig_resticEnv(t *testing.T) {
+	tr := newBackupsRepo(t)
+	password, err := tr.open(t).Encrypt("hunter2")
+	require.NoError(t, err)
+	key, err := tr.open(t).Encrypt("b2key")
+	require.NoError(t, err)
+	writeFile(
+		t,
+		tr.dir,
+		"roles/backups/role.yml",
+		"restic:\n  repository: rclone:b2:backups\n  password: "+nest(password)+"\n"+
+			"  environment:\n"+
+			"    RCLONE_CONFIG_B2_TYPE: b2\n"+
+			"    RCLONE_CONFIG_B2_HARD_DELETE: false\n"+
+			"    RCLONE_CONFIG_B2_KEY: "+nest(nest(key))+"\n",
+	)
+
+	c, err := tr.open(t).HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	assert.Equal(
+		t,
+		map[string]string{
+			"RESTIC_REPOSITORY":            "rclone:b2:backups",
+			"RESTIC_PASSWORD":              "hunter2",
+			"RCLONE_CONFIG_B2_TYPE":        "b2",
+			"RCLONE_CONFIG_B2_HARD_DELETE": "false",
+			"RCLONE_CONFIG_B2_KEY":         "b2key",
+		},
+		c.Restic.Env,
+	)
+	assert.ElementsMatch(t, []string{"hunter2", "b2key"}, c.Restic.Secrets)
+}
+
+func TestHostConfig_resticErrors(t *testing.T) {
+	tests := []struct {
+		name, restic, want string
+	}{
+		{"no repository", "restic:\n  password: PASSWORD\n", "restic needs a repository"},
+		{"no password", "restic:\n  repository: r\n", "restic.password: secret is not set"},
+		{"plain password", "restic:\n  repository: r\n  password: hunter2\n", "secrets must be encrypted"},
+		{
+			"environment overriding restic's",
+			"restic:\n  repository: r\n  password: PASSWORD\n  environment: {RESTIC_REPOSITORY: other}\n",
+			"RESTIC_REPOSITORY is set from restic's own settings",
+		},
+		{
+			"environment that isn't a scalar",
+			"restic:\n  repository: r\n  password: PASSWORD\n  environment: {A: [b]}\n",
+			"expected a scalar or an !age secret",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				tr := newBackupsRepo(t)
+				password, err := tr.open(t).Encrypt("hunter2")
+				require.NoError(t, err)
+				writeFile(t, tr.dir, "roles/backups/role.yml", strings.ReplaceAll(tt.restic, "PASSWORD", nest(password)))
+				_, err = tr.open(t).HostConfig("alpha", "debian")
+				assert.ErrorContains(t, err, tt.want)
+			},
+		)
+	}
+}

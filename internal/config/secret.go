@@ -76,6 +76,33 @@ func (s *Secret) UnmarshalYAML(ctx context.Context, node ast.Node) error {
 	return nil
 }
 
+// Value is a plain scalar, or a Secret.
+type Value struct {
+	plain  string
+	secret Secret
+}
+
+func (v *Value) UnmarshalYAML(ctx context.Context, node ast.Node) error {
+	if tag, ok := node.(*ast.TagNode); ok && tag.Start.Value == ageTag {
+		*v = Value{}
+		return v.secret.UnmarshalYAML(ctx, node)
+	}
+	scalar, ok := node.(ast.ScalarNode)
+	if !ok || node.Type() == ast.NullType || node.Type() == ast.TagType {
+		return nodeError(node, "expected a scalar or an !age secret")
+	}
+	*v = Value{plain: fmt.Sprint(scalar.GetValue())}
+	return nil
+}
+
+func (v Value) reveal() (value string, secret bool, err error) {
+	if v.secret.IsZero() {
+		return v.plain, false, nil
+	}
+	value, err = v.secret.Reveal()
+	return value, true, err
+}
+
 func nodeError(node ast.Node, msg string) error {
 	pos := node.GetToken().Position
 	return fmt.Errorf("[%d:%d] %s", pos.Line, pos.Column, msg)

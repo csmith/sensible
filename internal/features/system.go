@@ -184,13 +184,24 @@ const jobUnitPrefix = "sensible-"
 
 var jobName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
-// jobs runs each job from a systemd timer. Units for jobs no role declares
+// jobs runs each job, and the backup job, from a systemd timer. Units for jobs no role declares
 // any more are removed.
 func jobs(h Host) ([]host.Resource, error) {
+	all := maps.Clone(h.Config.Jobs)
+	if j, ok := backupJobConfig(h); ok {
+		if _, ok := all[backupJob]; ok {
+			return nil, fmt.Errorf("host %s: job %s is the backup job's name", h.Name, backupJob)
+		}
+		if all == nil {
+			all = map[string]config.JobConfig{}
+		}
+		all[backupJob] = j
+	}
+
 	var files, timers []host.Resource
 	var watch []string
-	for _, name := range slices.Sorted(maps.Keys(h.Config.Jobs)) {
-		j := h.Config.Jobs[name]
+	for _, name := range slices.Sorted(maps.Keys(all)) {
+		j := all[name]
 		switch {
 		case !jobName.MatchString(name):
 			return nil, fmt.Errorf("host %s: invalid job name %q; use lower case letters, digits, \"-\" and \"_\"", h.Name, name)

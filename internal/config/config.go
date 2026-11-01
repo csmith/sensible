@@ -107,21 +107,23 @@ type Command []string
 // Config is one host's configuration, merged from its roles. A nil module
 // is one no role mentions, which doesn't run.
 type Config struct {
-	Packages  *PackagesConfig       `yaml:"packages"`
-	AUR       *AURConfig            `yaml:"aur"`
-	Users     map[string]UserConfig `yaml:"users"`
-	Sudoers   map[string]Set        `yaml:"sudoers"`
-	PamRSSH   *PamRSSHConfig        `yaml:"pam_rssh"`
-	SSHD      *SSHDConfig           `yaml:"sshd"`
-	Tailscale *TailscaleConfig      `yaml:"tailscale"`
-	Zsh       *ZshConfig            `yaml:"zsh"`
-	Docker    *DockerConfig         `yaml:"docker"`
-	Vim       *VimConfig            `yaml:"vim"`
-	Hostname  *HostnameConfig       `yaml:"hostname"`
-	Timezone  *TimezoneConfig       `yaml:"timezone"`
-	Locale    *LocaleConfig         `yaml:"locale"`
-	NTP       *NTPConfig            `yaml:"ntp"`
-	Jobs      map[string]JobConfig  `yaml:"jobs"`
+	Packages  *PackagesConfig         `yaml:"packages"`
+	AUR       *AURConfig              `yaml:"aur"`
+	Users     map[string]UserConfig   `yaml:"users"`
+	Sudoers   map[string]Set          `yaml:"sudoers"`
+	PamRSSH   *PamRSSHConfig          `yaml:"pam_rssh"`
+	SSHD      *SSHDConfig             `yaml:"sshd"`
+	Tailscale *TailscaleConfig        `yaml:"tailscale"`
+	Zsh       *ZshConfig              `yaml:"zsh"`
+	Docker    *DockerConfig           `yaml:"docker"`
+	Vim       *VimConfig              `yaml:"vim"`
+	Hostname  *HostnameConfig         `yaml:"hostname"`
+	Timezone  *TimezoneConfig         `yaml:"timezone"`
+	Locale    *LocaleConfig           `yaml:"locale"`
+	NTP       *NTPConfig              `yaml:"ntp"`
+	Jobs      map[string]JobConfig    `yaml:"jobs"`
+	Backups   map[string]BackupConfig `yaml:"backups"`
+	Restic    *ResticConfig           `yaml:"restic"`
 	// Stacks come from the host's roles that have a docker-compose.yml,
 	// rather than from a module, and are in name order.
 	Stacks []Stack `yaml:"-"`
@@ -211,6 +213,61 @@ type JobConfig struct {
 	Schedule string `yaml:"schedule"`
 	// User runs the command. Empty means root.
 	User string `yaml:"user"`
+}
+
+// BackupConfig is something to back up: a directory, or what a command
+// prints.
+type BackupConfig struct {
+	Path    string  `yaml:"path"`
+	Command Command `yaml:"command"`
+}
+
+// ResticConfig is where and how a host's backups are kept.
+type ResticConfig struct {
+	Repository string `yaml:"repository"`
+	Password   Secret `yaml:"password"`
+	// Environment is added to restic's, e.g. for the repository's
+	// credentials.
+	Environment map[string]Value `yaml:"environment"`
+	// Options are restic's -o options.
+	Options map[string]string `yaml:"options"`
+	// Keep are the counts for forget's --keep-* flags, e.g. "daily".
+	Keep map[string]int `yaml:"keep"`
+	// Schedule is when backups run, as a systemd calendar expression. Empty
+	// means daily.
+	Schedule string `yaml:"schedule"`
+
+	// Env is the environment restic runs with: the repository, password and
+	// Environment, decrypted. HostConfig sets it.
+	Env map[string]string `yaml:"-"`
+	// Secrets are the decrypted values in Env.
+	Secrets []string `yaml:"-"`
+}
+
+func (c *ResticConfig) reveal() error {
+	if c.Repository == "" {
+		return errors.New("restic needs a repository")
+	}
+	password, err := c.Password.Reveal()
+	if err != nil {
+		return fmt.Errorf("restic.password: %w", err)
+	}
+	c.Env = map[string]string{"RESTIC_REPOSITORY": c.Repository, "RESTIC_PASSWORD": password}
+	c.Secrets = []string{password}
+	for name, v := range c.Environment {
+		if _, ok := c.Env[name]; ok {
+			return fmt.Errorf("restic.environment: %s is set from restic's own settings", name)
+		}
+		value, secret, err := v.reveal()
+		if err != nil {
+			return fmt.Errorf("restic.environment.%s: %w", name, err)
+		}
+		c.Env[name] = value
+		if secret {
+			c.Secrets = append(c.Secrets, value)
+		}
+	}
+	return nil
 }
 
 // DNSCredentials are the DNS provider's API credentials.

@@ -58,7 +58,8 @@ func Resources(h Host) (host.ResourceList, error) {
 		tailscale,
 		docker,
 		stacks,
-		// After stacks, as jobs may use them.
+		backups,
+		// After stacks and backups, as jobs may use them.
 		jobs,
 		// After everything that writes sudoers files.
 		sudoersCleanUp,
