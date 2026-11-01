@@ -80,12 +80,14 @@ func openRepo(dir string, out io.Writer) (*config.Repo, error) {
 		dir,
 		func() (age.Identity, error) {
 			r := newRenderer(out)
+			// The heading goes first, as the identity command may prompt.
+			r.section("Resolving secrets", nil)
 			id, err := repo.CommandIdentity()()
 			if err != nil {
-				r.section("Resolving secrets", []string{r.p.fail("✗ age identity")})
+				r.item(r.p.fail("✗ age identity"))
 				return nil, err
 			}
-			r.section("Resolving secrets", []string{r.p.ok("✓") + " age identity"})
+			r.item(r.p.ok("✓") + " age identity")
 			return id, nil
 		},
 	)
