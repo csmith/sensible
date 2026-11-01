@@ -102,7 +102,8 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 			return err
 		}
 	}
-	_, _ = fmt.Fprintf(out, "%-*s✓ bootstrapped\n", minLabelWidth, opts.Host)
+	p := paletteFor(out)
+	_, _ = fmt.Fprintf(out, "%s%s bootstrapped\n", p.bold(fmt.Sprintf("%-*s", minLabelWidth, opts.Host)), p.ok("✓"))
 	return nil
 }
 

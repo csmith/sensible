@@ -79,12 +79,14 @@ func openRepo(dir string, out io.Writer) (*config.Repo, error) {
 	repo, err := config.Open(
 		dir,
 		func() (age.Identity, error) {
+			p := paletteFor(out)
+			label := p.bold(fmt.Sprintf("%-*s", minLabelWidth, "secrets"))
 			id, err := repo.CommandIdentity()()
 			if err != nil {
-				_, _ = fmt.Fprintf(out, "%-*s age identity ✗\n", minLabelWidth, "secrets")
+				_, _ = fmt.Fprintf(out, "%s age identity %s\n", label, p.fail("✗"))
 				return nil, err
 			}
-			_, _ = fmt.Fprintf(out, "%-*s age identity ✓\n", minLabelWidth, "secrets")
+			_, _ = fmt.Fprintf(out, "%s age identity %s\n", label, p.ok("✓"))
 			return id, nil
 		},
 	)

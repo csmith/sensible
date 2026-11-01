@@ -487,3 +487,21 @@ func TestUnknownHost(t *testing.T) {
 	require.ErrorContains(t, unknownHost(inv, "acidburn.929w.net"), "address of acidburn")
 	require.ErrorContains(t, unknownHost(inv, "nope"), "acidburn, smarts")
 }
+
+func TestPaletteDiff(t *testing.T) {
+	text := "owner: 0 → 1000\n--- /etc/x\n@@ -1 +1 @@\n-old\n+new\n same\n"
+
+	assert.Equal(
+		t,
+		[]string{
+			"  owner: 0 → 1000",
+			"  \x1b[1m--- /etc/x\x1b[0m",
+			"  \x1b[36m@@ -1 +1 @@\x1b[0m",
+			"  \x1b[31m-old\x1b[0m",
+			"  \x1b[32m+new\x1b[0m",
+			"   same",
+		},
+		palette(true).diff(text, "  "),
+	)
+	assert.Equal(t, indent(text, "  "), palette(false).diff(text, "  "))
+}
