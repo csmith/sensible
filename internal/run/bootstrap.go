@@ -79,7 +79,7 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 		}
 	}
 	r := newRenderer(out)
-	r.section("Bootstrapping "+opts.Host, nil)
+	r.section("Bootstrapping " + opts.Host)
 	b := &bootstrapper{
 		name:               opts.Host,
 		address:            entry.Address,

@@ -81,7 +81,7 @@ func openRepo(dir string, out io.Writer) (*config.Repo, error) {
 		func() (age.Identity, error) {
 			r := newRenderer(out)
 			// The heading goes first, as the identity command may prompt.
-			r.section("Resolving secrets", nil)
+			r.section("Resolving secrets")
 			id, err := repo.CommandIdentity()()
 			if err != nil {
 				r.item(r.p.fail("✗ age identity"))
@@ -230,6 +230,9 @@ type hostRun struct {
 	resources host.ResourceList
 	checked   []host.Checked
 	failed    bool
+	// done is closed when the host's current step, connecting or checking,
+	// has finished.
+	done chan struct{}
 }
 
 var errFailed = errors.New("one or more targets failed")
@@ -246,11 +249,17 @@ func (r *Runner) Execute(ctx context.Context, targets []target, apply, yes bool)
 			}
 		}
 	}()
+	// Each section's heading is shown before waiting for what it reports.
 	out.agents(runs)
 
 	r.checkAll(runs)
-	dns := r.planDNS(ctx, runs)
-	out.plan(runs, dns)
+	out.plan(runs)
+	var dns dnsPlan
+	if slices.ContainsFunc(runs, func(h *hostRun) bool { return h.agent != nil && h.dnsName != "" }) {
+		out.section("Resolving DNS changes")
+		dns = r.planDNS(ctx, runs)
+		out.dns(dns)
+	}
 
 	s := summarise(runs, dns.changes)
 	failed := len(dns.errs) > 0 || anyFailed(runs)
@@ -278,7 +287,7 @@ func (r *Runner) Execute(ctx context.Context, targets []target, apply, yes bool)
 
 	r.applyAll(runs, out)
 	if len(dns.changes) > 0 {
-		out.section("Applying DNS changes", nil)
+		out.section("Applying DNS changes")
 	}
 	for _, c := range dns.changes {
 		err := c.apply(ctx)
@@ -302,17 +311,21 @@ func failedErr(failed bool) error {
 	return nil
 }
 
+// connect starts connecting to each target, closing its done when finished.
 func (r *Runner) connect(ctx context.Context, targets []target) []*hostRun {
 	runs := make([]*hostRun, len(targets))
-	var wg sync.WaitGroup
 	for i, t := range targets {
-		h := &hostRun{target: t}
+		h := &hostRun{target: t, done: make(chan struct{})}
 		runs[i] = h
-		if h.err == nil {
-			wg.Go(func() { h.connect(ctx, r.Builds) })
+		if h.err != nil {
+			close(h.done)
+			continue
 		}
+		go func() {
+			defer close(h.done)
+			h.connect(ctx, r.Builds)
+		}()
 	}
-	wg.Wait()
 	return runs
 }
 
@@ -328,21 +341,27 @@ func (h *hostRun) connect(ctx context.Context, builds Builds) {
 	}
 }
 
+// checkAll starts checking each connected host, closing its done when
+// finished.
 func (r *Runner) checkAll(runs []*hostRun) {
-	var wg sync.WaitGroup
 	for _, h := range runs {
+		h.done = make(chan struct{})
 		if h.agent == nil || h.err != nil {
+			close(h.done)
 			continue
 		}
 		var err error
 		h.resources, err = r.Compile(h.target, h.facts)
 		if err != nil {
 			h.err = err
+			close(h.done)
 			continue
 		}
-		wg.Go(h.check)
+		go func() {
+			defer close(h.done)
+			h.check()
+		}()
 	}
-	wg.Wait()
 }
 
 func (h *hostRun) check() {

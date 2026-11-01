@@ -104,13 +104,8 @@ func (r *renderer) header(title string) string {
 	return r.p.paint("1;34", ">") + " " + r.p.bold(title)
 }
 
-func (r *renderer) section(title string, lines []string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.writeLocked(r.header(title))
-	for _, l := range lines {
-		r.writeLocked(itemIndent + l)
-	}
+func (r *renderer) section(title string) {
+	r.line(r.header(title))
 }
 
 const itemIndent = "  "
@@ -130,28 +125,37 @@ func (r *renderer) writeLocked(text string) {
 	_, _ = fmt.Fprintln(r.w, text)
 }
 
+// agents shows each host's connection in order, as it finishes.
 func (r *renderer) agents(runs []*hostRun) {
-	lines := make([]string, 0, len(runs))
+	r.section("Connecting to agents")
 	for _, h := range runs {
+		<-h.done
 		switch {
 		case h.err != nil:
-			lines = append(lines, r.p.fail("✗ "+h.name+": "+h.err.Error()))
+			r.item(r.p.fail("✗ " + h.name + ": " + h.err.Error()))
 		case h.upgraded:
-			lines = append(lines, r.p.handler("↑")+" "+h.name+r.p.dim("  upgraded"))
+			r.item(r.p.handler("↑") + " " + h.name + r.p.dim("  upgraded"))
 		default:
-			lines = append(lines, r.p.ok("✓")+" "+h.name)
+			r.item(r.p.ok("✓") + " " + h.name)
 		}
 	}
-	r.section("Connecting to agents", lines)
 }
 
-func (r *renderer) plan(runs []*hostRun, dns dnsPlan) {
+// plan shows each connected host's plan in order, as it finishes.
+func (r *renderer) plan(runs []*hostRun) {
 	for _, h := range runs {
 		if h.agent == nil {
 			continue
 		}
-		r.section("Resolving changes on "+h.name, hostPlanLines(h, r.p))
+		r.section("Resolving changes on " + h.name)
+		<-h.done
+		for _, l := range hostPlanLines(h, r.p) {
+			r.item(l)
+		}
 	}
+}
+
+func (r *renderer) dns(dns dnsPlan) {
 	lines := make([]string, 0, len(dns.changes)+len(dns.warnings)+len(dns.errs)+1)
 	for _, c := range dns.changes {
 		mark, rest, _ := strings.Cut(c.String(), " ")
@@ -174,8 +178,8 @@ func (r *renderer) plan(runs []*hostRun, dns dnsPlan) {
 	if dns.unchanged > 0 {
 		lines = append(lines, r.p.dim(fmt.Sprintf("✓ %d unchanged", dns.unchanged)))
 	}
-	if len(lines) > 0 {
-		r.section("Resolving DNS changes", lines)
+	for _, l := range lines {
+		r.item(l)
 	}
 }
 

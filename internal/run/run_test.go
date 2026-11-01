@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"filippo.io/age"
 	api "github.com/mydnshost/mydnshost-go-api"
@@ -36,6 +37,8 @@ type fakeAgent struct {
 	upgradeError string
 	// silent exits before Hello, as sudo does when it rejects a password.
 	silent bool
+	// gate, if set, is called with each message's type before it's handled.
+	gate func(msg string)
 
 	mu       sync.Mutex
 	received []string
@@ -57,15 +60,19 @@ func (f *fakeAgent) serve(r io.ReadCloser, w io.WriteCloser) {
 		return
 	}
 	var resources host.ResourceList
-	var checked []host.Checked
+	checked := make([]host.Checked, 0, len(resources))
 	for {
 		msg, err := conn.Receive()
 		if err != nil {
 			return
 		}
+		name := strings.TrimPrefix(fmt.Sprintf("%T", msg), "host.")
 		f.mu.Lock()
-		f.received = append(f.received, strings.TrimPrefix(fmt.Sprintf("%T", msg), "host."))
+		f.received = append(f.received, name)
 		f.mu.Unlock()
+		if f.gate != nil {
+			f.gate(name)
+		}
 		switch m := msg.(type) {
 		case host.Upgrade:
 			if f.upgradeError != "" {
@@ -81,41 +88,51 @@ func (f *fakeAgent) serve(r io.ReadCloser, w io.WriteCloser) {
 		case host.FactsRequest:
 			_ = conn.Send(host.FactsReply{Facts: f.facts})
 		case host.Check:
-			f.mu.Lock()
-			f.checks = append(f.checks, m.Resources)
-			f.mu.Unlock()
-			resources, checked = m.Resources, nil
-			for _, res := range resources {
-				c := host.Checked{ID: res.ID(), Status: host.StatusInSync}
-				if f.status != nil {
-					c.Status = f.status(res)
-				}
-				if c.Status == host.StatusDrifted {
-					c.Diff = "- old\n+ new\n"
-				}
-				checked = append(checked, c)
-				_ = conn.Send(c)
-			}
-			_ = conn.Send(host.Done{})
+			resources = m.Resources
+			checked = f.check(conn, resources)
 		case host.Apply:
-			failed := false
-			for i, res := range resources {
-				a := host.Applied{ID: res.ID(), Status: host.StatusInSync}
-				switch {
-				case failed:
-					a.Status = host.StatusSkipped
-				case res.ID() == f.applyFailure:
-					a.Status, a.Error, failed = host.StatusFailed, "boom", true
-				case checked[i].Status != host.StatusInSync:
-					a.Status = host.StatusChanged
-				}
-				_ = conn.Send(a)
-			}
-			_ = conn.Send(host.Done{Failed: failed})
+			f.apply(conn, resources, checked)
 		case host.Bye:
 			return
 		}
 	}
+}
+
+func (f *fakeAgent) check(conn *host.Conn, resources host.ResourceList) []host.Checked {
+	f.mu.Lock()
+	f.checks = append(f.checks, resources)
+	f.mu.Unlock()
+	checked := make([]host.Checked, 0, len(resources))
+	for _, res := range resources {
+		c := host.Checked{ID: res.ID(), Status: host.StatusInSync}
+		if f.status != nil {
+			c.Status = f.status(res)
+		}
+		if c.Status == host.StatusDrifted {
+			c.Diff = "- old\n+ new\n"
+		}
+		checked = append(checked, c)
+		_ = conn.Send(c)
+	}
+	_ = conn.Send(host.Done{})
+	return checked
+}
+
+func (f *fakeAgent) apply(conn *host.Conn, resources host.ResourceList, checked []host.Checked) {
+	failed := false
+	for i, res := range resources {
+		a := host.Applied{ID: res.ID(), Status: host.StatusInSync}
+		switch {
+		case failed:
+			a.Status = host.StatusSkipped
+		case res.ID() == f.applyFailure:
+			a.Status, a.Error, failed = host.StatusFailed, "boom", true
+		case checked[i].Status != host.StatusInSync:
+			a.Status = host.StatusChanged
+		}
+		_ = conn.Send(a)
+	}
+	_ = conn.Send(host.Done{Failed: failed})
 }
 
 func (f *fakeAgent) messages() []string {
@@ -301,6 +318,54 @@ func TestExecute_planShowsChangesAndReportsUnreachableHosts(t *testing.T) {
 	assert.Contains(t, out, "\n\n1 change on 1 target; 1 more will be checked during apply\n")
 	assert.Empty(t, f.confirmed)
 	assert.Equal(t, []string{"FactsRequest", "Check", "Bye"}, changed.messages())
+}
+
+// headingWatcher closes each channel once its heading has been written.
+type headingWatcher struct {
+	out      bytes.Buffer
+	headings map[string]chan struct{}
+}
+
+func (w *headingWatcher) Write(p []byte) (int, error) {
+	n, _ := w.out.Write(p)
+	for heading, ch := range w.headings {
+		if strings.Contains(w.out.String(), "> "+heading+"\n") {
+			close(ch)
+			delete(w.headings, heading)
+		}
+	}
+	return n, nil
+}
+
+func TestExecute_headingsAreShownBeforeWaiting(t *testing.T) {
+	f := newRunnerFixture(t, testResources)
+	w := &headingWatcher{
+		headings: map[string]chan struct{}{
+			"Connecting to agents":          make(chan struct{}),
+			"Resolving changes on acidburn": make(chan struct{}),
+		},
+	}
+	f.runner.Out = w
+	waits := map[string]chan struct{}{
+		"FactsRequest": w.headings["Connecting to agents"],
+		"Check":        w.headings["Resolving changes on acidburn"],
+	}
+	var timedOut []string
+	agent := &fakeAgent{
+		gate: func(msg string) {
+			if ch, ok := waits[msg]; ok {
+				select {
+				case <-ch:
+				case <-time.After(5 * time.Second):
+					timedOut = append(timedOut, msg)
+				}
+			}
+		},
+	}
+
+	require.NoError(t, f.runner.Execute(t.Context(), []target{f.target("acidburn", agent)}, false, false))
+	assert.Empty(t, timedOut)
+	assert.Contains(t, w.out.String(), "> Resolving changes on acidburn\n  ✓ 3 unchanged\n")
 }
 
 func TestExecute_appliesAfterConfirmation(t *testing.T) {
