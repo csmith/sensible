@@ -148,7 +148,7 @@ func (e *engine) record(res Applied) {
 // which is only safe if they all succeeded.
 func isCleanUp(r Resource) bool {
 	switch r.(type) {
-	case OwnedDir, ComposeProjects, DockerNetworks:
+	case OwnedDir, ComposeProjects, DockerNetworks, SystemdUnits:
 		return true
 	default:
 		return false

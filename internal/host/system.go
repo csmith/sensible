@@ -89,6 +89,77 @@ func (r ServiceAction) Apply(ctx context.Context, sys Sys) error {
 	return err
 }
 
+func (r SystemdReload) Check(ctx context.Context, _ Sys) (Change, error) {
+	modified := state(ctx).modified
+	if slices.ContainsFunc(r.Watch, func(id string) bool { return modified[id] }) {
+		return drift("reload, as unit files change\n"), nil
+	}
+	return Change{InSync: true}, nil
+}
+
+func (r SystemdReload) Apply(ctx context.Context, sys Sys) error {
+	_, err := runOK(ctx, sys, argv("systemctl", "daemon-reload"))
+	return err
+}
+
+// UnitsDir is where the system's own unit files go.
+const UnitsDir = "/etc/systemd/system"
+
+func (r SystemdUnits) Check(ctx context.Context, sys Sys) (Change, error) {
+	extra, err := r.undeclared(ctx, sys)
+	if err != nil {
+		return Change{}, err
+	}
+	var diff strings.Builder
+	for _, path := range extra {
+		diff.WriteString("stop, disable and remove " + path + "\n")
+	}
+	return Change{InSync: len(extra) == 0, Diff: diff.String()}, nil
+}
+
+func (r SystemdUnits) Apply(ctx context.Context, sys Sys) error {
+	extra, err := r.undeclared(ctx, sys)
+	if err != nil || len(extra) == 0 {
+		return err
+	}
+	for _, path := range extra {
+		if _, err := runOK(ctx, sys, argv("systemctl", "disable", "--now", filepath.Base(path))); err != nil {
+			return err
+		}
+	}
+	for _, path := range extra {
+		if err := sys.RemoveAll(path); err != nil {
+			return err
+		}
+	}
+	_, err = runOK(ctx, sys, argv("systemctl", "daemon-reload"))
+	return err
+}
+
+func (r SystemdUnits) undeclared(ctx context.Context, sys Sys) ([]string, error) {
+	if r.Prefix == "" {
+		return nil, errors.New("systemd units need a prefix")
+	}
+	extra, err := undeclaredIn(sys, state(ctx).declared, UnitsDir, false)
+	if err != nil {
+		return nil, err
+	}
+	var units []string
+	for _, path := range extra {
+		if !strings.HasPrefix(filepath.Base(path), r.Prefix) {
+			continue
+		}
+		info, err := sys.Lstat(path)
+		if err != nil {
+			return nil, err
+		}
+		if info.IsRegular() {
+			units = append(units, path)
+		}
+	}
+	return units, nil
+}
+
 func unitProperties(ctx context.Context, sys Sys, name string) (map[string]string, error) {
 	res, err := runOK(ctx, sys, argv("systemctl", "show", "--property=LoadState,ActiveState", name))
 	if err != nil {

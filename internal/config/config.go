@@ -79,6 +79,7 @@ type Config struct {
 	Timezone  *TimezoneConfig       `yaml:"timezone"`
 	Locale    *LocaleConfig         `yaml:"locale"`
 	NTP       *NTPConfig            `yaml:"ntp"`
+	Jobs      map[string]JobConfig  `yaml:"jobs"`
 	// Stacks come from the host's roles that have a docker-compose.yml,
 	// rather than from a module, and are in name order.
 	Stacks []Stack `yaml:"-"`
@@ -159,6 +160,15 @@ type LocaleConfig struct {
 type NTPConfig struct {
 	// Servers replace the distribution's default servers. Empty keeps them.
 	Servers []string `yaml:"servers"`
+}
+
+// JobConfig is a command run on a schedule by a systemd timer.
+type JobConfig struct {
+	Command []string `yaml:"command"`
+	// Schedule is a systemd calendar expression, as for OnCalendar.
+	Schedule string `yaml:"schedule"`
+	// User runs the command. Empty means root.
+	User string `yaml:"user"`
 }
 
 // DNSCredentials are the DNS provider's API credentials.

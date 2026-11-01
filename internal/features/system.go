@@ -2,11 +2,14 @@ package features
 
 import (
 	"fmt"
+	"maps"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
 
+	"chameth.com/sensible/internal/config"
 	"chameth.com/sensible/internal/host"
 )
 
@@ -175,4 +178,92 @@ func ntp(h Host) ([]host.Resource, error) {
 		host.OwnedDir{Path: timesyncdConfDir, Notify: restart},
 		host.Service{Name: "systemd-timesyncd", Enabled: true, Running: true},
 	), nil
+}
+
+const jobUnitPrefix = "sensible-"
+
+var jobName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+
+// jobs runs each job from a systemd timer. Units for jobs no role declares
+// any more are removed.
+func jobs(h Host) ([]host.Resource, error) {
+	var files, timers []host.Resource
+	var watch []string
+	for _, name := range slices.Sorted(maps.Keys(h.Config.Jobs)) {
+		j := h.Config.Jobs[name]
+		switch {
+		case !jobName.MatchString(name):
+			return nil, fmt.Errorf("host %s: invalid job name %q; use lower case letters, digits, \"-\" and \"_\"", h.Name, name)
+		case len(j.Command) == 0:
+			return nil, fmt.Errorf("host %s: job %s needs a command", h.Name, name)
+		case j.Schedule == "":
+			return nil, fmt.Errorf("host %s: job %s needs a schedule", h.Name, name)
+		default:
+		}
+		for _, f := range jobUnits(name, j) {
+			files = append(files, f)
+			watch = append(watch, f.ID())
+		}
+		timers = append(timers, host.Service{Name: jobUnitPrefix + name + ".timer", Enabled: true, Running: true})
+	}
+
+	rs := files
+	if len(watch) > 0 {
+		rs = append(rs, host.SystemdReload{Watch: watch})
+	}
+	return append(append(rs, timers...), host.SystemdUnits{Prefix: jobUnitPrefix}), nil
+}
+
+func jobUnits(name string, j config.JobConfig) []host.File {
+	unit := jobUnitPrefix + name
+	service := []string{
+		"[Unit]",
+		"Description=sensible job " + name,
+		"",
+		"[Service]",
+		"Type=oneshot",
+		"ExecStart=" + execLine(j.Command),
+	}
+	if j.User != "" {
+		service = append(service, "User="+j.User)
+	}
+	timer := []string{
+		"[Unit]",
+		"Description=Run sensible job " + name,
+		"",
+		"[Timer]",
+		"OnCalendar=" + j.Schedule,
+		"Persistent=true",
+		"",
+		"[Install]",
+		"WantedBy=timers.target",
+	}
+	return []host.File{
+		{
+			Path:    path.Join(host.UnitsDir, unit+".service"),
+			Content: managedLines(service),
+			Owner:   "root",
+			Group:   "root",
+			Mode:    0o644,
+		},
+		{
+			Path:     path.Join(host.UnitsDir, unit+".timer"),
+			Content:  managedLines(timer),
+			Owner:    "root",
+			Group:    "root",
+			Mode:     0o644,
+			Validate: []string{"systemd-analyze", "calendar", j.Schedule},
+		},
+	}
+}
+
+// execLine quotes argv for ExecStart, so systemd expands no specifiers or
+// variables in it.
+func execLine(argv []string) string {
+	quoted := make([]string, len(argv))
+	for i, arg := range argv {
+		arg = strings.NewReplacer(`\`, `\\`, `"`, `\"`, "%", "%%", "$", "$$", "\n", `\n`).Replace(arg)
+		quoted[i] = `"` + arg + `"`
+	}
+	return strings.Join(quoted, " ")
 }

@@ -1,6 +1,7 @@
 package features
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -42,6 +43,7 @@ func testHost(osFamily string) Host {
 			Locale:   &config.LocaleConfig{Lang: "en_GB.UTF-8", Generate: []string{"en_US.UTF-8"}},
 			NTP:      &config.NTPConfig{Servers: []string{"ntp.example.com"}},
 			Stacks:   []config.Stack{{Name: "web", Files: []config.StackFile{{Path: "docker-compose.yml"}}}},
+			Jobs:     map[string]config.JobConfig{"prune": {Command: []string{"docker", "image", "prune"}, Schedule: "daily"}},
 		},
 		Facts: host.Facts{
 			OSFamily: osFamily,
@@ -114,6 +116,11 @@ func TestResources_order(t *testing.T) {
 				"compose:/srv/compose/web",
 				"compose-projects:/srv/compose",
 				"docker-networks",
+				"file:/etc/systemd/system/sensible-prune.service",
+				"file:/etc/systemd/system/sensible-prune.timer",
+				"systemd-reload",
+				"service:sensible-prune.timer",
+				"systemd-units:sensible-",
 				"owned-dir:/etc/sudoers.d",
 			},
 		},
@@ -143,6 +150,11 @@ func TestResources_order(t *testing.T) {
 				"compose:/srv/compose/web",
 				"compose-projects:/srv/compose",
 				"docker-networks",
+				"file:/etc/systemd/system/sensible-prune.service",
+				"file:/etc/systemd/system/sensible-prune.timer",
+				"systemd-reload",
+				"service:sensible-prune.timer",
+				"systemd-units:sensible-",
 				"owned-dir:/etc/sudoers.d",
 			},
 		},
@@ -192,6 +204,9 @@ func TestResources_errors(t *testing.T) {
 		{"local timezone", func(h *Host) { h.Config.Timezone.Zone = "Local" }},
 		{"locale without lang", func(h *Host) { h.Config.Locale.Lang = "" }},
 		{"locale without charset", func(h *Host) { h.Config.Locale.Generate = []string{"en_US"} }},
+		{"invalid job name", func(h *Host) { h.Config.Jobs["Prune"] = h.Config.Jobs["prune"] }},
+		{"job without a command", func(h *Host) { h.Config.Jobs["prune"] = config.JobConfig{Schedule: "daily"} }},
+		{"job without a schedule", func(h *Host) { h.Config.Jobs["prune"] = config.JobConfig{Command: []string{"true"}} }},
 		{"pam_rssh without a release", func(h *Host) {
 			h.Config.AUR.Packages = nil
 			h.Facts.Release = "buster"
@@ -359,13 +374,8 @@ func TestResources_stack(t *testing.T) {
 		compose,
 	)
 
-	var stack []host.Resource
-	for i, r := range rs {
-		if r.ID() == "dir:/srv/volumes" {
-			stack = rs[i:]
-			break
-		}
-	}
+	got := ids(rs)
+	stack := []host.Resource(rs[slices.Index(got, "dir:/srv/volumes") : slices.Index(got, "docker-networks")+1])
 	assert.Equal(
 		t,
 		[]host.Resource{
@@ -394,7 +404,6 @@ func TestResources_stack(t *testing.T) {
 			compose,
 			host.ComposeProjects{Path: "/srv/compose"},
 			host.DockerNetworks{},
-			host.OwnedDir{Path: "/etc/sudoers.d"},
 		},
 		stack,
 	)
@@ -674,4 +683,35 @@ func TestResources_ntpRestartsOnChange(t *testing.T) {
 	d, ok := find[host.OwnedDir](rs, "owned-dir:"+timesyncdConfDir)
 	require.True(t, ok)
 	assert.Equal(t, restart, d.Notify)
+}
+
+func TestResources_jobs(t *testing.T) {
+	h := testHost(archLinux)
+	h.Config.Jobs = map[string]config.JobConfig{
+		"report": {Command: []string{"/usr/bin/report", `50% of "$HOME"`, `a\b`}, Schedule: "*-*-* 04:00", User: "alice"},
+	}
+	rs, err := Resources(h)
+	require.NoError(t, err)
+
+	service, ok := find[host.File](rs, "file:/etc/systemd/system/sensible-report.service")
+	require.True(t, ok)
+	assert.Contains(t, service.Content, "\nExecStart=\"/usr/bin/report\" \"50%% of \\\"$$HOME\\\"\" \"a\\\\b\"\n")
+	assert.Contains(t, service.Content, "\nUser=alice\n")
+	timer, ok := find[host.File](rs, "file:/etc/systemd/system/sensible-report.timer")
+	require.True(t, ok)
+	assert.Contains(t, timer.Content, "\nOnCalendar=*-*-* 04:00\n")
+	assert.Equal(t, []string{"systemd-analyze", "calendar", "*-*-* 04:00"}, timer.Validate)
+	reload, ok := find[host.SystemdReload](rs, "systemd-reload")
+	require.True(t, ok)
+	assert.Equal(t, []string{service.ID(), timer.ID()}, reload.Watch)
+}
+
+func TestResources_noJobsStillCleansUp(t *testing.T) {
+	h := testHost(archLinux)
+	h.Config.Jobs = nil
+	rs, err := Resources(h)
+	require.NoError(t, err)
+
+	assert.NotContains(t, ids(rs), "systemd-reload")
+	assert.Contains(t, ids(rs), "systemd-units:sensible-")
 }

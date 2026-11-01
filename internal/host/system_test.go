@@ -319,3 +319,73 @@ func TestTailscaleSet_Unavailable(t *testing.T) {
 	require.ErrorContains(t, err, "NeedsLogin")
 	assert.NotErrorIs(t, err, ErrNotYetCheckable)
 }
+
+func TestSystemdReload_OnlyAfterWatchedChanges(t *testing.T) {
+	sys := newTestSys(t)
+	sys.on("systemctl daemon-reload", "", 0)
+	st := newRunState()
+	ctx := withRunState(context.Background(), st)
+	r := SystemdReload{Watch: []string{"file:/etc/systemd/system/a.timer"}}
+
+	change, err := r.Check(ctx, sys)
+	require.NoError(t, err)
+	assert.True(t, change.InSync)
+
+	st.modified["file:/etc/systemd/system/a.timer"] = true
+	change, err = r.Check(ctx, sys)
+	require.NoError(t, err)
+	assert.False(t, change.InSync)
+	require.NoError(t, r.Apply(ctx, sys))
+	assert.Equal(t, []string{"systemctl daemon-reload"}, sys.ran)
+}
+
+func TestSystemdUnits_RemovesUndeclaredUnits(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/etc/systemd/system/sensible-keep.timer", "")
+	sys.write("/etc/systemd/system/sensible-old.service", "")
+	sys.write("/etc/systemd/system/sensible-old.timer", "")
+	sys.write("/etc/systemd/system/other.service", "")
+	sys.write("/etc/systemd/system/sensible-dir.wants/x", "")
+	sys.on("systemctl disable --now *", "", 0)
+	sys.on("systemctl daemon-reload", "", 0)
+	st := newRunState()
+	st.declare(File{Path: "/etc/systemd/system/sensible-keep.timer"})
+	ctx := withRunState(context.Background(), st)
+	r := SystemdUnits{Prefix: "sensible-"}
+
+	change, err := r.Check(ctx, sys)
+	require.NoError(t, err)
+	assert.Equal(
+		t,
+		"stop, disable and remove /etc/systemd/system/sensible-old.service\n"+
+			"stop, disable and remove /etc/systemd/system/sensible-old.timer\n",
+		change.Diff,
+	)
+
+	require.NoError(t, r.Apply(ctx, sys))
+	assert.Equal(
+		t,
+		[]string{
+			"systemctl disable --now sensible-old.service",
+			"systemctl disable --now sensible-old.timer",
+			"systemctl daemon-reload",
+		},
+		sys.ran,
+	)
+	assert.True(t, sys.exists("/etc/systemd/system/sensible-keep.timer"))
+	assert.True(t, sys.exists("/etc/systemd/system/other.service"))
+	assert.True(t, sys.exists("/etc/systemd/system/sensible-dir.wants/x"))
+	assert.False(t, sys.exists("/etc/systemd/system/sensible-old.service"))
+	assert.False(t, sys.exists("/etc/systemd/system/sensible-old.timer"))
+}
+
+func TestSystemdUnits_FailedDisableKeepsFiles(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/etc/systemd/system/sensible-old.timer", "")
+	sys.on("systemctl *", "", 1)
+
+	err := SystemdUnits{Prefix: "sensible-"}.Apply(context.Background(), sys)
+
+	require.Error(t, err)
+	assert.True(t, sys.exists("/etc/systemd/system/sensible-old.timer"))
+}
