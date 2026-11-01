@@ -79,14 +79,13 @@ func openRepo(dir string, out io.Writer) (*config.Repo, error) {
 	repo, err := config.Open(
 		dir,
 		func() (age.Identity, error) {
-			p := paletteFor(out)
-			label := p.bold(fmt.Sprintf("%-*s", minLabelWidth, "secrets"))
+			r := newRenderer(out)
 			id, err := repo.CommandIdentity()()
 			if err != nil {
-				_, _ = fmt.Fprintf(out, "%s age identity %s\n", label, p.fail("✗"))
+				r.section("Resolving secrets", []string{r.p.fail("✗ age identity")})
 				return nil, err
 			}
-			_, _ = fmt.Fprintf(out, "%s age identity %s\n", label, p.ok("✓"))
+			r.section("Resolving secrets", []string{r.p.ok("✓") + " age identity"})
 			return id, nil
 		},
 	)
@@ -236,7 +235,7 @@ var errFailed = errors.New("one or more targets failed")
 // Execute connects to the targets, shows the combined plan and, if apply is
 // set and confirmed, applies it.
 func (r *Runner) Execute(ctx context.Context, targets []target, apply, yes bool) error {
-	out := newRenderer(r.Out, targets)
+	out := newRenderer(r.Out)
 	runs := r.connect(ctx, targets)
 	defer func() {
 		for _, h := range runs {
@@ -253,12 +252,13 @@ func (r *Runner) Execute(ctx context.Context, targets []target, apply, yes bool)
 
 	s := summarise(runs, dns.changes)
 	failed := len(dns.errs) > 0 || anyFailed(runs)
+	out.line("")
 	if s.empty() {
-		out.line("", "No changes")
+		out.line(out.p.bold("No changes"))
 		return failedErr(failed)
 	}
 	if !apply || yes {
-		out.line("", s.String())
+		out.line(out.p.bold(s.String()))
 	}
 	if !apply {
 		return failedErr(failed)
@@ -271,6 +271,9 @@ func (r *Runner) Execute(ctx context.Context, targets []target, apply, yes bool)
 	}
 
 	r.applyAll(runs, out)
+	if len(dns.changes) > 0 {
+		out.section("Applying DNS changes", nil)
+	}
 	for _, c := range dns.changes {
 		err := c.apply(ctx)
 		failed = failed || err != nil
@@ -364,12 +367,12 @@ func (h *hostRun) apply(out *renderer) {
 	done, err := h.agent.apply(func(a host.Applied) { out.applied(h, a) })
 	if err != nil {
 		h.err = err
-		out.hostError(h.name, err)
+		out.applyError(h, err)
 	}
 	if done.Failed {
 		h.failed = true
 	}
-	out.skippedSummary(h)
+	out.applyDone(h)
 }
 
 func (h *hostRun) pending() bool {

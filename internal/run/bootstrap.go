@@ -71,6 +71,15 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 	if err != nil {
 		return err
 	}
+	var signer ssh.Signer
+	var password string
+	if opts.User == "" {
+		if signer, password, err = revealCredentials(entry); err != nil {
+			return err
+		}
+	}
+	r := newRenderer(out)
+	r.section("Bootstrapping "+opts.Host, nil)
 	b := &bootstrapper{
 		name:               opts.Host,
 		address:            entry.Address,
@@ -80,30 +89,34 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 		confirm:            confirmOnTerminal,
 		hostKeyFingerprint: opts.HostKey,
 	}
+	step := "installed credentials and agent"
 	if opts.User == "" {
-		err = b.rotate(ctx, entry)
+		step = "replaced credentials"
+		err = b.rotate(ctx, signer, password)
 	} else {
 		err = b.install(ctx, opts.User, sshAgent(ctx))
 	}
 	if err != nil {
 		return err
 	}
+	r.item(r.p.ok("✓") + " " + step)
 	if err := b.verify(ctx); err != nil {
 		return err
 	}
+	r.item(r.p.ok("✓") + " connected as sensible")
 
 	// Credentials go first: a host key that can't be added is reported for
 	// adding by hand, which is easier than bootstrapping again.
 	if err := repo.WriteCredentials(opts.Host, creds.keyPEM, creds.password, time.Now()); err != nil {
 		return err
 	}
+	r.item(r.p.ok("✓") + " saved credentials")
 	if b.newHostKey != nil {
 		if err := repo.AddHostKey(opts.Host, b.newHostKey); err != nil {
 			return err
 		}
+		r.item(r.p.ok("✓") + " saved host key")
 	}
-	p := paletteFor(out)
-	_, _ = fmt.Fprintf(out, "%s%s bootstrapped\n", p.bold(fmt.Sprintf("%-*s", minLabelWidth, opts.Host)), p.ok("✓"))
 	return nil
 }
 
@@ -308,11 +321,7 @@ func runRemote(client *ssh.Client, command string, stdin io.Reader, forwardAgent
 }
 
 // rotate replaces the key and password through the host's existing agent.
-func (b *bootstrapper) rotate(ctx context.Context, existing config.HostEntry) error {
-	signer, password, err := revealCredentials(existing)
-	if err != nil {
-		return err
-	}
+func (b *bootstrapper) rotate(ctx context.Context, signer ssh.Signer, password string) error {
 	a, _, err := connect(ctx, b.transport(signer, password), b.builds)
 	if err != nil {
 		return err

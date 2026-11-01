@@ -14,8 +14,6 @@ import (
 	"chameth.com/sensible/internal/host"
 )
 
-const minLabelWidth = 12
-
 // Debug enables output from debugf.
 var Debug bool
 
@@ -70,75 +68,81 @@ func (p palette) diff(text, prefix string) []string {
 	return lines
 }
 
-// renderer writes the compact plan and apply output: a label column of host
-// names, then one line per change.
+// renderer writes output in sections: a header naming what's being done,
+// then a line per outcome.
 type renderer struct {
-	w     io.Writer
-	p     palette
-	width int
+	w io.Writer
+	p palette
 
-	mu       sync.Mutex
-	position map[string]int
-	skipped  map[string]int
+	mu sync.Mutex
+	// While applying, the host holding the floor streams its section live
+	// and the others' sections are held until it finishes.
+	floor    *hostRun
+	held     []*heldSection
+	started  map[*hostRun]bool
+	position map[*hostRun]int
+	skipped  map[*hostRun]int
 }
 
-func newRenderer(w io.Writer, targets []target) *renderer {
-	width := minLabelWidth
-	for _, t := range targets {
-		width = max(width, len(t.name)+1)
+type heldSection struct {
+	h        *hostRun
+	lines    []string
+	finished bool
+}
+
+func newRenderer(w io.Writer) *renderer {
+	return &renderer{
+		w:        w,
+		p:        paletteFor(w),
+		started:  map[*hostRun]bool{},
+		position: map[*hostRun]int{},
+		skipped:  map[*hostRun]int{},
 	}
-	return &renderer{w: w, p: paletteFor(w), width: width, position: map[string]int{}, skipped: map[string]int{}}
 }
 
-func (r *renderer) line(label, text string) {
+func (r *renderer) header(title string) string {
+	return r.p.paint("1;34", ">") + " " + r.p.bold(title)
+}
+
+func (r *renderer) section(title string, lines []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.lineLocked(label, text)
-}
-
-func (r *renderer) lineLocked(label, text string) {
-	if label != "" {
-		label = r.p.bold(fmt.Sprintf("%-*s", r.width, label))
-	} else {
-		label = strings.Repeat(" ", r.width)
+	r.writeLocked(r.header(title))
+	for _, l := range lines {
+		r.writeLocked(itemIndent + l)
 	}
-	_, _ = fmt.Fprintf(r.w, "%s%s\n", label, text)
 }
 
-// block writes lines with the label on the first only.
-func (r *renderer) block(label string, lines []string) {
+const itemIndent = "  "
+
+// item writes a line under the current section's header.
+func (r *renderer) item(text string) {
+	r.line(itemIndent + text)
+}
+
+func (r *renderer) line(text string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for i, l := range lines {
-		if i > 0 {
-			label = ""
-		}
-		r.lineLocked(label, l)
-	}
+	r.writeLocked(text)
+}
+
+func (r *renderer) writeLocked(text string) {
+	_, _ = fmt.Fprintln(r.w, text)
 }
 
 func (r *renderer) agents(runs []*hostRun) {
-	var parts []string
-	var failures []*hostRun
+	lines := make([]string, 0, len(runs))
 	for _, h := range runs {
 		switch {
 		case h.err != nil:
-			parts = append(parts, h.name+" "+r.p.fail("✗"))
-			failures = append(failures, h)
+			lines = append(lines, r.p.fail("✗ "+h.name+": "+h.err.Error()))
 		case h.upgraded:
-			parts = append(parts, h.name+" "+r.p.handler("↑ upgraded"))
+			lines = append(lines, r.p.handler("↑")+" "+h.name+r.p.dim("  upgraded"))
 		default:
-			parts = append(parts, h.name+" "+r.p.ok("✓"))
+			lines = append(lines, r.p.ok("✓")+" "+h.name)
 		}
 	}
-	r.line("agents", strings.Join(parts, "  "))
-	for _, h := range failures {
-		r.hostError(h.name, h.err)
-	}
-}
-
-func (r *renderer) hostError(name string, err error) {
-	r.line(name, r.p.fail("✗ "+err.Error()))
+	r.section("Connecting to agents", lines)
 }
 
 func (r *renderer) plan(runs []*hostRun, dns dnsPlan) {
@@ -146,9 +150,9 @@ func (r *renderer) plan(runs []*hostRun, dns dnsPlan) {
 		if h.agent == nil {
 			continue
 		}
-		r.block(h.name, hostPlanLines(h, r.p))
+		r.section("Resolving changes on "+h.name, hostPlanLines(h, r.p))
 	}
-	lines := make([]string, 0, len(dns.changes)+len(dns.warnings)+len(dns.errs))
+	lines := make([]string, 0, len(dns.changes)+len(dns.warnings)+len(dns.errs)+1)
 	for _, c := range dns.changes {
 		mark, rest, _ := strings.Cut(c.String(), " ")
 		switch mark {
@@ -170,7 +174,9 @@ func (r *renderer) plan(runs []*hostRun, dns dnsPlan) {
 	if dns.unchanged > 0 {
 		lines = append(lines, r.p.dim(fmt.Sprintf("✓ %d unchanged", dns.unchanged)))
 	}
-	r.block("dns", lines)
+	if len(lines) > 0 {
+		r.section("Resolving DNS changes", lines)
+	}
 }
 
 func hostPlanLines(h *hostRun, p palette) []string {
@@ -200,7 +206,7 @@ func hostPlanLines(h *hostRun, p palette) []string {
 			lines = append(lines, p.fail("✗ "+name+": "+c.Error))
 		}
 	}
-	if len(lines) == 0 {
+	if unchanged > 0 {
 		lines = append(lines, p.dim(fmt.Sprintf("✓ %d unchanged", unchanged)))
 	}
 	return lines
@@ -213,47 +219,102 @@ func (r *renderer) applied(h *hostRun, a host.Applied) {
 	defer r.mu.Unlock()
 	deferred := false
 	if !a.Handler {
-		i := r.position[h.name]
-		r.position[h.name]++
+		i := r.position[h]
+		r.position[h]++
 		deferred = i < len(h.checked) && h.checked[i].Status == host.StatusDeferred
 	}
 	name := displayID(a.ID)
 	switch a.Status {
 	case host.StatusChanged:
 		if a.Handler {
-			r.lineLocked(h.name, r.p.handler("↻")+" "+name)
+			r.applyLineLocked(h, r.p.handler("↻")+" "+name)
 		} else {
-			r.lineLocked(h.name, r.p.ok("✓")+" "+name)
+			r.applyLineLocked(h, r.p.ok("✓")+" "+name)
 		}
 	case host.StatusInSync:
 		if deferred {
-			r.lineLocked(h.name, r.p.dim("✓ "+name+"  unchanged"))
+			r.applyLineLocked(h, r.p.dim("✓ "+name+"  unchanged"))
 		}
 	case host.StatusSkipped:
-		r.skipped[h.name]++
+		r.skipped[h]++
 	case host.StatusFailed:
-		r.lineLocked(h.name, r.p.fail("✗ "+name+": "+a.Error))
+		r.applyLineLocked(h, r.p.fail("✗ "+name+": "+a.Error))
 		for _, l := range indent(a.Output, "  ") {
-			r.lineLocked("", l)
+			r.applyLineLocked(h, l)
 		}
 	default:
 	}
 }
 
-func (r *renderer) skippedSummary(h *hostRun) {
+func (r *renderer) applyError(h *hostRun, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if n := r.skipped[h.name]; n > 0 {
-		r.lineLocked(h.name, r.p.dim(fmt.Sprintf("- %d skipped", n)))
+	r.applyLineLocked(h, r.p.fail("✗ "+err.Error()))
+}
+
+// applyLineLocked adds a line to h's apply section, which streams if h holds
+// the floor and is held otherwise.
+func (r *renderer) applyLineLocked(h *hostRun, text string) {
+	if !r.started[h] {
+		r.started[h] = true
+		header := r.header("Applying changes on " + h.name)
+		if r.floor == nil {
+			r.floor = h
+			r.writeLocked(header)
+		} else {
+			r.held = append(r.held, &heldSection{h: h, lines: []string{header}})
+		}
+	}
+	text = itemIndent + text
+	if r.floor == h {
+		r.writeLocked(text)
+		return
+	}
+	for _, s := range r.held {
+		if s.h == h {
+			s.lines = append(s.lines, text)
+		}
+	}
+}
+
+// applyDone ends h's apply section, passing the floor on if h held it.
+func (r *renderer) applyDone(h *hostRun) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if n := r.skipped[h]; n > 0 {
+		r.applyLineLocked(h, r.p.dim(fmt.Sprintf("- %d skipped", n)))
+	}
+	if !r.started[h] {
+		r.applyLineLocked(h, r.p.dim("✓ nothing changed"))
+	}
+	if r.floor != h {
+		for _, s := range r.held {
+			if s.h == h {
+				s.finished = true
+			}
+		}
+		return
+	}
+	r.floor = nil
+	for len(r.held) > 0 {
+		next := r.held[0]
+		r.held = r.held[1:]
+		for _, l := range next.lines {
+			r.writeLocked(l)
+		}
+		if !next.finished {
+			r.floor = next.h
+			return
+		}
 	}
 }
 
 func (r *renderer) dnsResult(c *dnsChange, err error) {
 	if err != nil {
-		r.line("dns", r.p.fail(fmt.Sprintf("✗ %s %s: %v", c.rtype, c.fqdn, err)))
+		r.item(r.p.fail(fmt.Sprintf("✗ %s %s: %v", c.rtype, c.fqdn, err)))
 		return
 	}
-	r.line("dns", r.p.ok("✓")+fmt.Sprintf(" %s %s", c.rtype, c.fqdn))
+	r.item(r.p.ok("✓") + fmt.Sprintf(" %s %s", c.rtype, c.fqdn))
 }
 
 // displayID turns "file:/etc/x" into "file /etc/x".

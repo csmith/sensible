@@ -235,7 +235,9 @@ func TestRotate_setsPasswordAndKeyThroughExistingAgent(t *testing.T) {
 		builds:  f.builds,
 		known:   serverKey(f.server),
 	}
-	require.NoError(t, b.rotate(t.Context(), existing))
+	signer, password, err := revealCredentials(existing)
+	require.NoError(t, err)
+	require.NoError(t, b.rotate(t.Context(), signer, password))
 
 	require.Len(t, f.server.agent.checks, 1)
 	resources := f.server.agent.checks[0]

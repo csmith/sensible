@@ -287,17 +287,18 @@ func TestExecute_planShowsChangesAndReportsUnreachableHosts(t *testing.T) {
 
 	require.ErrorIs(t, err, errFailed)
 	out := f.out.String()
-	assert.Contains(t, out, "agents      acidburn ✓  smarts ✗  penderghast ✓\n")
-	assert.Contains(t, out, "smarts      ✗ no credentials\n")
+	assert.Contains(t, out, "> Connecting to agents\n  ✓ acidburn\n  ✗ smarts: no credentials\n  ✓ penderghast\n")
 	assert.Contains(
 		t,
 		out,
-		"acidburn    ~ file /etc/ssh/sshd_config.d/10-sensible.conf\n"+
-			"              - old\n              + new\n              ↻ then reload ssh\n"+
-			"            ? service docker  deferred\n",
+		"> Resolving changes on acidburn\n"+
+			"  ~ file /etc/ssh/sshd_config.d/10-sensible.conf\n"+
+			"    - old\n    + new\n    ↻ then reload ssh\n"+
+			"  ? service docker  deferred\n",
 	)
-	assert.Contains(t, out, "penderghast ✓ 3 unchanged\n")
-	assert.Contains(t, out, "1 change on 1 target; 1 more will be checked during apply\n")
+	assert.Contains(t, out, "> Resolving changes on penderghast\n  ✓ 3 unchanged\n")
+	assert.NotContains(t, out, "Resolving changes on smarts")
+	assert.Contains(t, out, "\n\n1 change on 1 target; 1 more will be checked during apply\n")
 	assert.Empty(t, f.confirmed)
 	assert.Equal(t, []string{"FactsRequest", "Check", "Bye"}, changed.messages())
 }
@@ -318,8 +319,12 @@ func TestExecute_appliesAfterConfirmation(t *testing.T) {
 	assert.Equal(t, []string{"Apply 1 change on 1 target; 1 more will be checked during apply? [y/N] "}, f.confirmed)
 	assert.Equal(t, []string{"FactsRequest", "Check", "Apply", "Bye"}, changed.messages())
 	assert.Equal(t, []string{"FactsRequest", "Check", "Bye"}, clean.messages())
-	assert.Contains(t, f.out.String(), "acidburn    ✓ file /etc/ssh/sshd_config.d/10-sensible.conf\n")
-	assert.Contains(t, f.out.String(), "acidburn    ✓ service docker\n")
+	assert.Contains(
+		t,
+		f.out.String(),
+		"> Applying changes on acidburn\n  ✓ file /etc/ssh/sshd_config.d/10-sensible.conf\n  ✓ service docker\n",
+	)
+	assert.NotContains(t, f.out.String(), "Applying changes on penderghast")
 }
 
 func TestExecute_declinedDoesNotApply(t *testing.T) {
@@ -351,8 +356,7 @@ func TestExecute_failureSkipsRestOfHost(t *testing.T) {
 	err := f.runner.Execute(t.Context(), []target{f.target("acidburn", changed)}, true, true)
 
 	require.ErrorIs(t, err, errFailed)
-	assert.Contains(t, f.out.String(), "acidburn    ✗ file /etc/ssh/sshd_config.d/10-sensible.conf: boom\n")
-	assert.Contains(t, f.out.String(), "acidburn    - 2 skipped\n")
+	assert.Contains(t, f.out.String(), "  ✗ file /etc/ssh/sshd_config.d/10-sensible.conf: boom\n  - 2 skipped\n")
 }
 
 func TestExecute_nothingToDo(t *testing.T) {
@@ -385,7 +389,7 @@ func TestExecute_compileErrorIsReportedForThatHost(t *testing.T) {
 	)
 
 	require.ErrorIs(t, err, errFailed)
-	assert.Contains(t, f.out.String(), "weird       ✗ unsupported OS family\n")
+	assert.Contains(t, f.out.String(), "> Resolving changes on weird\n  ✗ unsupported OS family\n")
 	assert.Equal(t, []string{"FactsRequest", "Bye"}, weird.messages())
 	assert.Contains(t, changed.messages(), "Apply")
 }
@@ -459,14 +463,14 @@ func TestExecute_dnsIsPlannedFromFactsAndAppliedAfterHosts(t *testing.T) {
 	assert.Contains(
 		t,
 		out,
-		"dns         ~ A acidburn.example.com  203.0.113.1 → 203.0.113.2\n            ✓ 1 unchanged\n",
+		"> Resolving DNS changes\n  ~ A acidburn.example.com  203.0.113.1 → 203.0.113.2\n  ✓ 1 unchanged\n",
 	)
 	assert.NotContains(t, out, "AAAA")
 	assert.Contains(t, out, "2 changes on 2 targets")
 	assert.Greater(
 		t,
-		strings.Index(out, "dns         ✓ A acidburn.example.com"),
-		strings.Index(out, "acidburn    ✓ service docker"),
+		strings.Index(out, "> Applying DNS changes\n  ✓ A acidburn.example.com\n"),
+		strings.Index(out, "✓ service docker"),
 	)
 	require.Len(t, client.modified, 1)
 	assert.Equal(t, "example.com", client.modified[0].domain)
@@ -504,4 +508,31 @@ func TestPaletteDiff(t *testing.T) {
 		palette(true).diff(text, "  "),
 	)
 	assert.Equal(t, indent(text, "  "), palette(false).diff(text, "  "))
+}
+
+func TestRendererGroupsConcurrentApplies(t *testing.T) {
+	var buf bytes.Buffer
+	r := newRenderer(&buf)
+	a := &hostRun{name: "acidburn"}
+	b := &hostRun{name: "smarts"}
+	c := &hostRun{name: "penderghast"}
+	changed := func(id string) host.Applied { return host.Applied{ID: id, Status: host.StatusChanged, Handler: true} }
+
+	r.applied(a, changed("file:/a1"))
+	r.applied(b, changed("file:/b1"))
+	r.applied(c, changed("file:/c1"))
+	r.applied(a, changed("file:/a2"))
+	r.applied(b, changed("file:/b2"))
+	r.applyDone(b)
+	r.applyDone(a)
+	r.applied(c, changed("file:/c2"))
+	r.applyDone(c)
+
+	assert.Equal(
+		t,
+		"> Applying changes on acidburn\n  ↻ file /a1\n  ↻ file /a2\n"+
+			"> Applying changes on smarts\n  ↻ file /b1\n  ↻ file /b2\n"+
+			"> Applying changes on penderghast\n  ↻ file /c1\n  ↻ file /c2\n",
+		buf.String(),
+	)
 }
