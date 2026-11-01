@@ -7,14 +7,13 @@ import (
 	"reflect"
 )
 
-// ProtocolVersion is bumped whenever Hello or Upgrade change shape. Every
-// other message may change freely, as agents are upgraded before they're
-// sent anything else.
-const ProtocolVersion = 1
+// ProtocolVersion is bumped whenever a message or resource changes, so a
+// controller can refuse an agent built from older code. Hello and Upgrade
+// must never change shape, so any controller can upgrade any agent.
+const ProtocolVersion = 2
 
 // Hello is the first message an agent sends, and the first after it re-execs
-// following an Upgrade. It must stay minimal so any controller can upgrade
-// any agent.
+// following an Upgrade.
 type Hello struct {
 	Proto int    `json:"proto"`
 	Hash  string `json:"hash"`

@@ -27,8 +27,11 @@ import (
 
 // fakeAgent speaks the agent side of the protocol.
 type fakeAgent struct {
-	hash  string
-	arch  string
+	hash string
+	arch string
+	// proto, if set, is reported in the first Hello; upgrades report the
+	// current version.
+	proto int
 	facts host.Facts
 	// status decides each resource's check result; nil means in sync.
 	status func(r host.Resource) host.Status
@@ -56,8 +59,11 @@ func (f *fakeAgent) serve(r io.ReadCloser, w io.WriteCloser) {
 	if f.arch == "" {
 		f.arch = "amd64"
 	}
+	if f.proto == 0 {
+		f.proto = host.ProtocolVersion
+	}
 	conn := host.NewConn(r, w)
-	if conn.Send(host.Hello{Proto: host.ProtocolVersion, Hash: f.hash, Arch: f.arch}) != nil {
+	if conn.Send(host.Hello{Proto: f.proto, Hash: f.hash, Arch: f.arch}) != nil {
 		return
 	}
 	var resources host.ResourceList
@@ -221,6 +227,20 @@ func TestConnect_upgradesStaleAgentForItsArch(t *testing.T) {
 	require.Len(t, fake.upgrades, 1)
 	assert.Equal(t, "agent for arm64", string(fake.upgrades[0]))
 	assert.Equal(t, []string{"Upgrade", "Bye"}, fake.messages())
+}
+
+func TestConnect_upgradeReplacesOldProtocol(t *testing.T) {
+	fake := &fakeAgent{hash: "stale", arch: "amd64", proto: host.ProtocolVersion - 1}
+	a, _, err := connect(t.Context(), pipeTransport{fake}, newFakeBuilds(t))
+	require.NoError(t, err)
+	a.bye()
+}
+
+func TestConnect_refusesCurrentBuildWithOldProtocol(t *testing.T) {
+	builds := newFakeBuilds(t)
+	fake := &fakeAgent{hash: builds["amd64"].Hash, arch: "amd64", proto: host.ProtocolVersion - 1}
+	_, _, err := connect(t.Context(), pipeTransport{fake}, builds)
+	assert.ErrorContains(t, err, "go generate")
 }
 
 func TestConnect_reportsFailedUpgrade(t *testing.T) {

@@ -493,15 +493,22 @@ func connect(ctx context.Context, t Transport, builds Builds) (*agent, bool, err
 		_ = a.close()
 		return nil, false, err
 	}
-	if b.Hash == hello.Hash {
-		return a, false, nil
+	upgraded := b.Hash != hello.Hash
+	if upgraded {
+		if hello, err = a.upgrade(b, pipe.EarlyExit); err != nil {
+			_ = a.close()
+			return nil, false, fmt.Errorf("upgrading agent: %w", err)
+		}
 	}
-
-	if err := a.upgrade(b, pipe.EarlyExit); err != nil {
+	if hello.Proto < host.ProtocolVersion {
 		_ = a.close()
-		return nil, false, fmt.Errorf("upgrading agent: %w", err)
+		return nil, false, fmt.Errorf(
+			"agent speaks protocol %d, but this controller needs %d (run go generate before building)",
+			hello.Proto,
+			host.ProtocolVersion,
+		)
 	}
-	return a, true, nil
+	return a, upgraded, nil
 }
 
 // agent is a connected agent that has said Hello.
@@ -529,18 +536,18 @@ func (a *agent) hello(earlyExit error) (host.Hello, error) {
 }
 
 // upgrade replaces the agent with the given build.
-func (a *agent) upgrade(b Build, earlyExit error) error {
+func (a *agent) upgrade(b Build, earlyExit error) (host.Hello, error) {
 	if err := a.conn.Send(host.Upgrade{Binary: b.Binary}); err != nil {
-		return err
+		return host.Hello{}, err
 	}
 	hello, err := a.hello(earlyExit)
 	if err != nil {
-		return err
+		return host.Hello{}, err
 	}
 	if hello.Hash != b.Hash {
-		return fmt.Errorf("agent still reports build %.12s after upgrade", hello.Hash)
+		return host.Hello{}, fmt.Errorf("agent still reports build %.12s after upgrade", hello.Hash)
 	}
-	return nil
+	return hello, nil
 }
 
 func goarch(machine string) (string, error) {
