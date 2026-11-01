@@ -26,11 +26,18 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 		return Config{}, fmt.Errorf("invalid OS family %q", osFamily)
 	}
 
-	entry := r.inventory.Hosts[name]
+	// Children of a host's roles come in without parameters.
+	roles := maps.Clone(r.inventory.Hosts[name].Roles)
+	for role := range r.inventory.Hosts[name].Roles {
+		for _, child := range r.roles[role] {
+			roles[child] = RoleParams{}
+		}
+	}
+
 	var merged ast.Node
 	set := map[string]setBy{}
-	for _, role := range slices.Sorted(maps.Keys(entry.Roles)) {
-		node, err := r.expandRole(name, role, osFamily, entry.Roles[role])
+	for _, role := range slices.Sorted(maps.Keys(roles)) {
+		node, err := r.expandRole(name, role, osFamily, roles[role])
 		if err != nil {
 			return Config{}, fmt.Errorf("%s: role %s: %w", name, role, err)
 		}
@@ -95,7 +102,9 @@ func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (ast.N
 	var layers []layer
 	var declared ast.Node
 	for i, file := range files {
-		node, err := r.readLayer(file, i > 0)
+		// The layout check has made sure role.yml exists unless the role is
+		// a parent that doesn't need one.
+		node, err := r.readLayer(file, true)
 		if err != nil {
 			return nil, err
 		}

@@ -160,6 +160,8 @@ type Repo struct {
 	identityCommand []string
 	dns             DNSCredentials
 	keys            *keyring
+	// roles maps every role, including child roles, to its children.
+	roles map[string][]string
 }
 
 // Open reads hosts.d and sensible.yml from dir and checks the directory's
@@ -380,7 +382,7 @@ func writeAtomic(path string, content []byte, perm os.FileMode) error {
 // checkLayout rejects role files that would never be read, and roles hosts
 // have that don't exist.
 func (r *Repo) checkLayout() error {
-	roles := map[string]bool{}
+	r.roles = map[string][]string{}
 	entries, err := readDir(r.path("roles"))
 	if err != nil {
 		return err
@@ -389,52 +391,69 @@ func (r *Repo) checkLayout() error {
 		if !e.IsDir() {
 			return fmt.Errorf("%s: unexpected file; expected a role directory", r.path("roles", e.Name()))
 		}
-		if err := r.checkRole(e.Name()); err != nil {
+		if err := r.checkRole(e.Name(), true); err != nil {
 			return err
 		}
-		roles[e.Name()] = true
 	}
 
 	for _, host := range slices.Sorted(maps.Keys(r.inventory.Hosts)) {
-		for _, role := range slices.Sorted(maps.Keys(r.inventory.Hosts[host].Roles)) {
-			if !roles[role] {
-				return fmt.Errorf(
-					"%s: %s has role %q, which isn't in %s",
-					r.sources[joinPath(host, "roles", role)].source,
-					host,
-					role,
-					r.path("roles"),
-				)
+		roles := r.inventory.Hosts[host].Roles
+		for _, role := range slices.Sorted(maps.Keys(roles)) {
+			source := r.sources[joinPath(host, "roles", role)].source
+			if _, ok := r.roles[role]; !ok {
+				return fmt.Errorf("%s: %s has role %q, which isn't in %s", source, host, role, r.path("roles"))
+			}
+			if parent, _, ok := strings.Cut(role, "/"); ok {
+				if _, ok := roles[parent]; ok {
+					return fmt.Errorf("%s: %s has role %q and its parent %q, which already includes it", source, host, role, parent)
+				}
 			}
 		}
 	}
 	return nil
 }
 
-func (r *Repo) checkRole(role string) error {
+// checkRole records the role and its child roles, which are its
+// subdirectories. Only top-level roles may have children.
+func (r *Repo) checkRole(role string, topLevel bool) error {
 	entries, err := readDir(r.path("roles", role))
 	if err != nil {
 		return err
 	}
-	hasBase := false
+	var children []string
+	hasBase, hasVariant := false, false
 	for _, e := range entries {
 		file := r.path("roles", role, e.Name())
-		if e.Name() == "role.yml" && !e.IsDir() {
+		if e.IsDir() {
+			if !topLevel {
+				return fmt.Errorf("%s: unexpected directory; roles nest one level deep", file)
+			}
+			child := role + "/" + e.Name()
+			if err := r.checkRole(child, false); err != nil {
+				return err
+			}
+			children = append(children, child)
+			continue
+		}
+		if e.Name() == "role.yml" {
 			hasBase = true
 			continue
 		}
 		middle, ok := strings.CutPrefix(e.Name(), "role.")
 		family, ok2 := strings.CutSuffix(middle, ".yml")
-		if !ok || !ok2 || e.IsDir() {
-			return fmt.Errorf("%s: unexpected file; expected role.yml or role.<os>.yml", file)
+		if !ok || !ok2 {
+			return fmt.Errorf("%s: unexpected file; expected role.yml, role.<os>.yml or a child role directory", file)
 		}
 		if !slices.Contains(host.OSFamilies, family) {
 			return fmt.Errorf("%s: unknown OS %q; expected one of %s", file, family, strings.Join(host.OSFamilies, ", "))
 		}
+		hasVariant = true
 	}
-	if !hasBase {
+	// A parent needs no settings of its own, but OS variants need a base.
+	if !hasBase && (hasVariant || len(children) == 0) {
 		return fmt.Errorf("%s: missing role.yml", r.path("roles", role))
 	}
+	r.roles[role] = children
 	return nil
 }
 

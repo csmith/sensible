@@ -128,6 +128,54 @@ tailscale:
 	assert.Equal(t, map[string]string{"ssh": "true"}, c.Tailscale.Settings)
 }
 
+func TestHostConfig_roleGroups(t *testing.T) {
+	r := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml": `
+alpha:
+  roles:
+    stacks: {users: [chris]}
+beta:
+  roles:
+    stacks/one:
+    bare:
+`,
+			"roles/stacks/role.yml":          "params:\n  users: []\ndocker:\n  users: !param users\n",
+			"roles/stacks/one/role.yml":      "packages:\n  install: [a]\n",
+			"roles/stacks/two/role.yml":      "packages:\n  install: [b]\n",
+			"roles/stacks/two/role.arch.yml": "aur:\n  packages: [c]\n",
+			"roles/bare/child/role.yml":      "vim:\n",
+		},
+	).open(t)
+
+	c, err := r.HostConfig("alpha", "arch")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"chris"}, c.Docker.Users)
+	assert.ElementsMatch(t, []string{"a", "b"}, c.Packages.Install)
+	assert.Equal(t, []string{"c"}, c.AUR.Packages)
+	assert.Nil(t, c.Vim)
+
+	c, err = r.HostConfig("beta", "arch")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a"}, c.Packages.Install)
+	assert.Nil(t, c.Docker)
+	assert.Nil(t, c.AUR)
+	assert.NotNil(t, c.Vim)
+}
+
+func TestHostConfig_parentParamsDontReachChildren(t *testing.T) {
+	_, err := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml":         "alpha:\n  roles:\n    stacks: {users: [chris]}\n",
+			"roles/stacks/one/role.yml": "params:\n  users: []\ndocker:\n  users: !param users\n",
+		},
+	).open(t).HostConfig("alpha", "debian")
+	require.ErrorContains(t, err, "role stacks:")
+	assert.ErrorContains(t, err, `unknown parameter "users"`)
+}
+
 func TestHostConfig_bareModuleIsOn(t *testing.T) {
 	c, err := newTestRepo(
 		t,
@@ -285,14 +333,56 @@ func TestOpen(t *testing.T) {
 		{"unknown inventory key", map[string]string{"hosts.d/hosts.yml": "a: {addr: x}\n"}, "addr"},
 		{"error names its file", map[string]string{"hosts.d/extra.yml": "alpha: {addr: x}\n"}, "hosts.d/extra.yml"},
 		{"not a mapping", map[string]string{"hosts.d/extra.yml": "- alpha\n"}, "hosts.d/extra.yml"},
-		{"invalid host key", map[string]string{"hosts.d/hosts.yml": "a: {host_keys: [ssh-ed25519 nope]}\n"}, "host key"},
+		{
+			"invalid host key",
+			map[string]string{"hosts.d/hosts.yml": "a: {host_keys: [ssh-ed25519 nope]}\n"},
+			"host key",
+		},
 		{"plain credential", map[string]string{"hosts.d/hosts.yml": "a: {ssh_key: hunter2}\n"}, "encrypt"},
-		{"role parameters not a mapping", map[string]string{"hosts.d/hosts.yml": "a: {roles: {base: [x]}}\n"}, "mapping"},
+		{
+			"role parameters not a mapping",
+			map[string]string{"hosts.d/hosts.yml": "a: {roles: {base: [x]}}\n"},
+			"mapping",
+		},
 		{"unknown role", map[string]string{"hosts.d/hosts.yml": "a: {roles: {base: }}\n"}, `role "base"`},
 		{"file in roles", map[string]string{"roles/base.yml": ""}, "base.yml"},
 		{"missing role.yml", map[string]string{"roles/base/role.arch.yml": ""}, "missing role.yml"},
-		{"unknown OS", map[string]string{"roles/base/role.yml": "", "roles/base/role.archlinux.yml": ""}, `"archlinux"`},
+		{
+			"unknown OS",
+			map[string]string{"roles/base/role.yml": "", "roles/base/role.archlinux.yml": ""},
+			`"archlinux"`,
+		},
 		{"unexpected role file", map[string]string{"roles/base/role.yml": "", "roles/base/notes.txt": ""}, "notes.txt"},
+		{
+			"child role missing role.yml",
+			map[string]string{"roles/base/child/role.arch.yml": ""},
+			"roles/base/child: missing role.yml",
+		},
+		{
+			"empty child role",
+			map[string]string{"roles/base/role.yml": "", "roles/base/child/.keep": ""},
+			"roles/base/child: missing role.yml",
+		},
+		{
+			"grandchild role",
+			map[string]string{"roles/base/child/role.yml": "", "roles/base/child/deeper/role.yml": ""},
+			"roles nest one level deep",
+		},
+		{
+			"parent OS variant without base",
+			map[string]string{"roles/base/role.arch.yml": "", "roles/base/child/role.yml": ""},
+			"roles/base: missing role.yml",
+		},
+		{
+			"unknown child role",
+			map[string]string{"hosts.d/hosts.yml": "a: {roles: {base/two: }}\n", "roles/base/one/role.yml": ""},
+			`role "base/two"`,
+		},
+		{
+			"role and its parent",
+			map[string]string{"hosts.d/hosts.yml": "a: {roles: {base: , base/one: }}\n", "roles/base/one/role.yml": ""},
+			`a has role "base/one" and its parent "base"`,
+		},
 		{"bad recipient", map[string]string{"sensible.yml": "secrets:\n  recipients: [nope]\n"}, "recipients"},
 		{"unknown settings key", map[string]string{"sensible.yml": "identity: op://x\n"}, "identity"},
 		{"plain DNS secret", map[string]string{"sensible.yml": "dns:\n  auth_key: hunter2\n"}, "encrypt"},
