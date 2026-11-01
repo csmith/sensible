@@ -666,6 +666,8 @@ func TestCommandIdentity(t *testing.T) {
 
 	_, err = commandIdentity("false")()
 	require.Error(t, err)
+	_, err = commandIdentity("sh", "-c", "echo 'account locked' >&2; exit 1")()
+	require.ErrorContains(t, err, "account locked")
 	_, err = commandIdentity("echo", "not an identity")()
 	assert.Error(t, err)
 }

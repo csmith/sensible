@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -169,11 +168,17 @@ func (r *Repo) CommandIdentity() IdentitySource {
 
 func commandIdentity(name string, args ...string) IdentitySource {
 	return func() (age.Identity, error) {
+		// The command gets no terminal, as the caller may be drawing on it.
+		// Anything it needs to ask must be asked some other way, such as a
+		// desktop prompt.
 		cmd := exec.CommandContext(context.Background(), name, args...)
-		cmd.Stdin = os.Stdin
-		cmd.Stderr = os.Stderr
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
 		out, err := cmd.Output()
 		if err != nil {
+			if msg := strings.TrimSpace(stderr.String()); msg != "" {
+				return nil, fmt.Errorf("running %s: %w: %s", name, err, msg)
+			}
 			return nil, fmt.Errorf("running %s: %w", name, err)
 		}
 		ids, err := age.ParseIdentities(bytes.NewReader(out))

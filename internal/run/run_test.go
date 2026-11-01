@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"filippo.io/age"
 	api "github.com/mydnshost/mydnshost-go-api"
@@ -609,4 +610,156 @@ func TestRendererGroupsConcurrentApplies(t *testing.T) {
 			"> Applying changes on penderghast\n  ↻ file /c1\n  ↻ file /c2\n",
 		buf.String(),
 	)
+}
+
+func TestRendererTasksWriteInOrderWithoutATerminal(t *testing.T) {
+	var buf bytes.Buffer
+	r := newRenderer(&buf)
+	a := r.beginSection("Resolving changes on acidburn")
+	b := r.beginSection("Resolving changes on smarts")
+	assert.Equal(t, "> Resolving changes on acidburn\n", buf.String())
+
+	r.finish(b, "  ✓ 2 unchanged")
+	assert.Equal(t, "> Resolving changes on acidburn\n", buf.String())
+
+	r.finish(a, "  ~ file /a")
+	assert.Equal(
+		t,
+		"> Resolving changes on acidburn\n  ~ file /a\n> Resolving changes on smarts\n  ✓ 2 unchanged\n",
+		buf.String(),
+	)
+}
+
+// screen applies the cursor movements a live renderer writes, giving the
+// lines left showing.
+func screen(t *testing.T, out string) []string {
+	t.Helper()
+	lines := [][]rune{nil}
+	row, col := 0, 0
+	for i := 0; i < len(out); {
+		if out[i] == '\x1b' {
+			end := strings.IndexAny(out[i:], "FJKmhl")
+			require.GreaterOrEqual(t, end, 0, "unterminated escape")
+			args, code := out[i+2:i+end], out[i+end]
+			i += end + 1
+			switch code {
+			case 'F':
+				var n int
+				_, err := fmt.Sscanf(args, "%d", &n)
+				require.NoError(t, err)
+				row, col = row-n, 0
+				require.GreaterOrEqual(t, row, 0)
+			case 'J':
+				lines = append(lines[:row], lines[row][:col])
+			case 'K':
+				lines[row] = lines[row][:col]
+			default:
+			}
+			continue
+		}
+		c, size := utf8.DecodeRuneInString(out[i:])
+		i += size
+		if c == '\n' {
+			row, col = row+1, 0
+			if row == len(lines) {
+				lines = append(lines, nil)
+			}
+			continue
+		}
+		if col < len(lines[row]) {
+			lines[row][col] = c
+		} else {
+			lines[row] = append(lines[row], c)
+		}
+		col++
+	}
+	text := make([]string, 0, len(lines))
+	for _, l := range lines[:len(lines)-1] {
+		text = append(text, string(l))
+	}
+	return text
+}
+
+func newLiveRenderer(buf *bytes.Buffer) *renderer {
+	r := newRenderer(buf)
+	r.live = true
+	// Tests draw by hand, so frames don't depend on timing.
+	r.ticking = true
+	return r
+}
+
+func TestRendererDrawsUnfinishedTasks(t *testing.T) {
+	var buf bytes.Buffer
+	r := newLiveRenderer(&buf)
+	r.section("Connecting to agents")
+	a := r.beginItem("acidburn")
+	b := r.beginItem("smarts")
+	assert.Equal(t, []string{"> Connecting to agents", "  ⠋ acidburn", "  ⠋ smarts"}, screen(t, buf.String()))
+
+	r.finish(b, "  ✓ smarts")
+	assert.Equal(t, []string{"> Connecting to agents", "  ⠋ acidburn", "    smarts"}, screen(t, buf.String()))
+
+	r.finish(a, "  ✗ acidburn: refused")
+	assert.Equal(
+		t,
+		[]string{"> Connecting to agents", "  ✗ acidburn: refused", "  ✓ smarts"},
+		screen(t, buf.String()),
+	)
+}
+
+func TestRendererWritesSectionsAboveUnfinishedTasks(t *testing.T) {
+	var buf bytes.Buffer
+	r := newLiveRenderer(&buf)
+	a := r.beginSection("Resolving changes on acidburn")
+	b := r.beginSection("Resolving changes on smarts")
+	assert.Equal(
+		t,
+		[]string{"⠋ Resolving changes on acidburn", "⠋ Resolving changes on smarts"},
+		screen(t, buf.String()),
+	)
+
+	r.finish(a, "  ~ file /a", "    - old")
+	r.line("interrupting")
+	assert.Equal(
+		t,
+		[]string{
+			"> Resolving changes on acidburn",
+			"  ~ file /a",
+			"    - old",
+			"interrupting",
+			"⠋ Resolving changes on smarts",
+		},
+		screen(t, buf.String()),
+	)
+
+	r.finish(b)
+	assert.Equal(t, "> Resolving changes on smarts", screen(t, buf.String())[4])
+}
+
+func TestTruncate(t *testing.T) {
+	assert.Equal(t, "abc", truncate("abc", 3))
+	assert.Equal(t, "ab\x1b[0m", truncate("abc", 2))
+	assert.Equal(t, "\x1b[32mab\x1b[0m", truncate("\x1b[32mabc\x1b[0m", 2))
+	assert.Equal(t, "⠋ a\x1b[0m", truncate("⠋ abc", 3))
+}
+
+type writeRecorder struct{ writes []string }
+
+func (w *writeRecorder) Write(p []byte) (int, error) {
+	w.writes = append(w.writes, string(p))
+	return len(p), nil
+}
+
+func TestRendererSendsEachUpdateInOneSynchronisedWrite(t *testing.T) {
+	w := &writeRecorder{}
+	r := newRenderer(w)
+	r.live, r.ticking = true, true
+	a := r.beginSection("Resolving changes on acidburn")
+	r.beginSection("Resolving changes on smarts")
+	w.writes = nil
+
+	r.finish(a, "  ~ file /a", "    - old", "    + new")
+	require.Len(t, w.writes, 1)
+	assert.True(t, strings.HasPrefix(w.writes[0], "\x1b[?2026h"))
+	assert.True(t, strings.HasSuffix(w.writes[0], "\x1b[?2026l"))
 }

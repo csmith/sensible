@@ -80,14 +80,14 @@ func openRepo(dir string, out io.Writer) (*config.Repo, error) {
 		dir,
 		func() (age.Identity, error) {
 			r := newRenderer(out)
-			// The heading goes first, as the identity command may prompt.
 			r.section("Resolving secrets")
+			t := r.beginItem("age identity")
 			id, err := repo.CommandIdentity()()
 			if err != nil {
-				r.item(r.p.fail("✗ age identity"))
+				r.finish(t, itemIndent+r.p.fail("✗ age identity"))
 				return nil, err
 			}
-			r.item(r.p.ok("✓") + " age identity")
+			r.finish(t, itemIndent+r.p.ok("✓")+" age identity")
 			return id, nil
 		},
 	)
@@ -249,16 +249,15 @@ func (r *Runner) Execute(ctx context.Context, targets []target, apply, yes bool)
 			}
 		}
 	}()
-	// Each section's heading is shown before waiting for what it reports.
 	out.agents(runs)
 
 	r.checkAll(runs)
 	out.plan(runs)
 	var dns dnsPlan
 	if slices.ContainsFunc(runs, func(h *hostRun) bool { return h.agent != nil && h.dnsName != "" }) {
-		out.section("Resolving DNS changes")
+		t := out.beginSection("Resolving DNS changes")
 		dns = r.planDNS(ctx, runs)
-		out.dns(dns)
+		out.finish(t, out.dnsLines(dns)...)
 	}
 
 	s := summarise(runs, dns.changes)

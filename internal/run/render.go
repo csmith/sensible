@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/term"
 
@@ -82,6 +83,20 @@ type renderer struct {
 	started  map[*hostRun]bool
 	position map[*hostRun]int
 	skipped  map[*hostRun]int
+
+	// live is set on a terminal, where unfinished tasks are drawn below
+	// everything else and redrawn as they change.
+	live    bool
+	tasks   []*task
+	drawn   int
+	frame   int
+	ticking bool
+	// pending is what's been written under the lock, sent in one write when
+	// it's released so the terminal never shows a partial update.
+	pending strings.Builder
+	// moved is set when the cursor has gone up over drawn tasks, which are
+	// then overwritten or cleared before the lock is released.
+	moved bool
 }
 
 type heldSection struct {
@@ -94,6 +109,7 @@ func newRenderer(w io.Writer) *renderer {
 	return &renderer{
 		w:        w,
 		p:        paletteFor(w),
+		live:     liveFor(w),
 		started:  map[*hostRun]bool{},
 		position: map[*hostRun]int{},
 		skipped:  map[*hostRun]int{},
@@ -116,46 +132,238 @@ func (r *renderer) item(text string) {
 }
 
 func (r *renderer) line(text string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.lock()
+	defer r.unlock()
 	r.writeLocked(text)
 }
 
-func (r *renderer) writeLocked(text string) {
-	_, _ = fmt.Fprintln(r.w, text)
+func (r *renderer) lock() {
+	r.mu.Lock()
 }
 
-// agents shows each host's connection in order, as it finishes.
-func (r *renderer) agents(runs []*hostRun) {
-	r.section("Connecting to agents")
-	for _, h := range runs {
-		<-h.done
-		switch {
-		case h.err != nil:
-			r.item(r.p.fail("✗ " + h.name + ": " + h.err.Error()))
-		case h.upgraded:
-			r.item(r.p.handler("↑") + " " + h.name + r.p.dim("  upgraded"))
-		default:
-			r.item(r.p.ok("✓") + " " + h.name)
-		}
+// unlock draws the unfinished tasks below whatever was written, then sends
+// it all at once. On a terminal it's wrapped in synchronised output mode,
+// which terminals without it ignore.
+func (r *renderer) unlock() {
+	defer r.mu.Unlock()
+	if r.live && (len(r.tasks) > 0 || r.moved) {
+		r.drawLocked()
+	}
+	if r.pending.Len() == 0 {
+		return
+	}
+	out := r.pending.String()
+	r.pending.Reset()
+	if r.live {
+		out = "\x1b[?2026h" + out + "\x1b[?2026l"
+	}
+	_, _ = io.WriteString(r.w, out)
+}
+
+func (r *renderer) writeLocked(text string) {
+	if !r.live {
+		r.pending.WriteString(text + "\n")
+		return
+	}
+	r.upLocked()
+	// Lines overwrite whatever was drawn there, clearing what's left of it.
+	r.pending.WriteString(text + "\x1b[K\n")
+}
+
+func (r *renderer) upLocked() {
+	if r.drawn > 0 {
+		fmt.Fprintf(&r.pending, "\x1b[%dF", r.drawn)
+		r.drawn = 0
+		r.moved = true
 	}
 }
 
-// plan shows each connected host's plan in order, as it finishes.
+func liveFor(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	return ok && !Debug && os.Getenv("TERM") != "dumb" && term.IsTerminal(int(f.Fd()))
+}
+
+// task is work whose outcome is written when it finishes, in the order tasks
+// began. On a terminal it's drawn with a spinner until then; elsewhere its
+// head is written as soon as the tasks before it have finished.
+type task struct {
+	label     func(frame string) string
+	head      []string
+	body      []string
+	done      bool
+	headShown bool
+}
+
+// beginSection starts a task that writes a whole section.
+func (r *renderer) beginSection(title string) *task {
+	return r.begin(
+		func(frame string) string { return r.p.paint("1;34", frame) + " " + r.p.bold(title) },
+		r.header(title),
+	)
+}
+
+// beginItem starts a task that writes a line under the current header.
+func (r *renderer) beginItem(text string) *task {
+	return r.begin(func(frame string) string { return itemIndent + frame + " " + text })
+}
+
+func (r *renderer) begin(label func(frame string) string, head ...string) *task {
+	r.lock()
+	defer r.unlock()
+	t := &task{label: label, head: head}
+	r.tasks = append(r.tasks, t)
+	r.flushLocked()
+	if r.live && !r.ticking {
+		r.ticking = true
+		go r.tick()
+	}
+	return t
+}
+
+// finish ends a task, with the lines that follow its head.
+func (r *renderer) finish(t *task, body ...string) {
+	r.lock()
+	defer r.unlock()
+	t.body, t.done = body, true
+	r.flushLocked()
+}
+
+func (r *renderer) flushLocked() {
+	for len(r.tasks) > 0 {
+		t := r.tasks[0]
+		if !t.headShown && (!r.live || t.done) {
+			t.headShown = true
+			for _, l := range t.head {
+				r.writeLocked(l)
+			}
+		}
+		if !t.done {
+			return
+		}
+		for _, l := range t.body {
+			r.writeLocked(l)
+		}
+		r.tasks = r.tasks[1:]
+	}
+}
+
+const spinnerFrames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+// drawLocked draws the unfinished tasks below everything written so far.
+// Finished tasks still waiting their turn lose their spinner.
+func (r *renderer) drawLocked() {
+	r.upLocked()
+	frames := []rune(spinnerFrames)
+	frame := string(frames[r.frame%len(frames)])
+	width := r.width()
+	for _, t := range r.tasks {
+		f := frame
+		if t.done {
+			f = " "
+		}
+		// Lines are cut short of the terminal's width, as a wrapped line
+		// would throw off the count moving up relies on.
+		r.pending.WriteString(truncate(t.label(f), width-1) + "\x1b[K\n")
+	}
+	// Clears anything left below from a longer list.
+	r.pending.WriteString("\x1b[J")
+	r.drawn = len(r.tasks)
+	r.moved = false
+}
+
+func (r *renderer) tick() {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for range ticker.C {
+		r.lock()
+		if len(r.tasks) == 0 {
+			r.ticking = false
+			r.unlock()
+			return
+		}
+		r.frame++
+		r.unlock()
+	}
+}
+
+func (r *renderer) width() int {
+	if f, ok := r.w.(*os.File); ok {
+		if w, _, err := term.GetSize(int(f.Fd())); err == nil && w > 0 {
+			return w
+		}
+	}
+	return 80
+}
+
+// truncate cuts s to width visible characters, skipping colour codes.
+func truncate(s string, width int) string {
+	var b strings.Builder
+	visible, inEscape := 0, false
+	for _, c := range s {
+		switch {
+		case inEscape:
+			inEscape = c != 'm'
+		case c == '\x1b':
+			inEscape = true
+		case visible == width:
+			return b.String() + "\x1b[0m"
+		default:
+			visible++
+		}
+		b.WriteRune(c)
+	}
+	return b.String()
+}
+
+// agents shows each host's connection as it finishes.
+func (r *renderer) agents(runs []*hostRun) {
+	r.section("Connecting to agents")
+	var wg sync.WaitGroup
+	for _, h := range runs {
+		t := r.beginItem(h.name)
+		wg.Go(
+			func() {
+				<-h.done
+				switch {
+				case h.err != nil:
+					r.finish(t, itemIndent+r.p.fail("✗ "+h.name+": "+h.err.Error()))
+				case h.upgraded:
+					r.finish(t, itemIndent+r.p.handler("↑")+" "+h.name+r.p.dim("  upgraded"))
+				default:
+					r.finish(t, itemIndent+r.p.ok("✓")+" "+h.name)
+				}
+			},
+		)
+	}
+	wg.Wait()
+}
+
+// plan shows each connected host's plan as it finishes.
 func (r *renderer) plan(runs []*hostRun) {
+	var wg sync.WaitGroup
 	for _, h := range runs {
 		if h.agent == nil {
 			continue
 		}
-		r.section("Resolving changes on " + h.name)
-		<-h.done
-		for _, l := range hostPlanLines(h, r.p) {
-			r.item(l)
-		}
+		t := r.beginSection("Resolving changes on " + h.name)
+		wg.Go(
+			func() {
+				<-h.done
+				r.finish(t, indentItems(hostPlanLines(h, r.p))...)
+			},
+		)
 	}
+	wg.Wait()
 }
 
-func (r *renderer) dns(dns dnsPlan) {
+func indentItems(lines []string) []string {
+	for i, l := range lines {
+		lines[i] = itemIndent + l
+	}
+	return lines
+}
+
+func (r *renderer) dnsLines(dns dnsPlan) []string {
 	lines := make([]string, 0, len(dns.changes)+len(dns.warnings)+len(dns.errs)+1)
 	for _, c := range dns.changes {
 		mark, rest, _ := strings.Cut(c.String(), " ")
@@ -178,9 +386,7 @@ func (r *renderer) dns(dns dnsPlan) {
 	if dns.unchanged > 0 {
 		lines = append(lines, r.p.dim(fmt.Sprintf("✓ %d unchanged", dns.unchanged)))
 	}
-	for _, l := range lines {
-		r.item(l)
-	}
+	return indentItems(lines)
 }
 
 func hostPlanLines(h *hostRun, p palette) []string {
@@ -219,8 +425,8 @@ func hostPlanLines(h *hostRun, p palette) []string {
 // applied shows one streamed result. Results for resources arrive in the
 // order they were checked, so their position tells which were deferred.
 func (r *renderer) applied(h *hostRun, a host.Applied) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.lock()
+	defer r.unlock()
 	deferred := false
 	if !a.Handler {
 		i := r.position[h]
@@ -251,8 +457,8 @@ func (r *renderer) applied(h *hostRun, a host.Applied) {
 }
 
 func (r *renderer) applyError(h *hostRun, err error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.lock()
+	defer r.unlock()
 	r.applyLineLocked(h, r.p.fail("✗ "+err.Error()))
 }
 
@@ -283,8 +489,8 @@ func (r *renderer) applyLineLocked(h *hostRun, text string) {
 
 // applyDone ends h's apply section, passing the floor on if h held it.
 func (r *renderer) applyDone(h *hostRun) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.lock()
+	defer r.unlock()
 	if n := r.skipped[h]; n > 0 {
 		r.applyLineLocked(h, r.p.dim(fmt.Sprintf("- %d skipped", n)))
 	}
