@@ -299,14 +299,19 @@ func stack(s config.Stack) []host.Resource {
 			parents = append([]string{p}, parents...)
 		}
 		for _, p := range parents {
-			rs = append(rs, host.Dir{Path: p, Owner: "root", Group: "docker", Mode: 0o750})
+			rel, _ := filepath.Rel(dir, p)
+			perms, ok := s.Dirs[rel]
+			if !ok {
+				perms = config.Perms{Owner: "root", Group: "docker", Mode: 0o750}
+			}
+			rs = append(rs, host.Dir{Path: p, Owner: perms.Owner, Group: perms.Group, Mode: perms.Mode})
 		}
 		file := host.File{
 			Path:    path,
 			Content: f.Content,
-			Owner:   "root",
-			Group:   "docker",
-			Mode:    0o640,
+			Owner:   f.Perms.Owner,
+			Group:   f.Perms.Group,
+			Mode:    f.Perms.Mode,
 			Secrets: f.Secrets,
 			Hidden:  f.Hidden,
 		}

@@ -29,7 +29,10 @@ params:
   command: [serve, --port, "80"]
   extra: ~
 compose:
-  files: [nginx.conf, conf, .env.age]
+  files:
+    - nginx.conf
+    - {path: conf, owner: "1000", mode: 0o644}
+    - .env.age
   volumes:
     data: {owner: 70, mode: 0700}
     uploads: {owner: alice, group: users, mode: 0o750}
@@ -63,14 +66,18 @@ compose:
 	c, err := tr.open(t).HostConfig("alpha", "debian")
 	require.NoError(t, err)
 	require.Len(t, c.Stacks, 2)
+	defaults := Perms{Owner: "root", Group: "docker", Mode: 0o640}
 	assert.Equal(t, "group-one", c.Stacks[0].Name)
 	assert.Equal(
 		t,
-		[]StackFile{{Path: "docker-compose.yml", Content: "services:\n  app:\n    image: app\n"}},
+		[]StackFile{{Path: "docker-compose.yml", Content: "services:\n  app:\n    image: app\n", Perms: defaults}},
 		c.Stacks[0].Files,
 	)
 
 	web := c.Stacks[1]
+	conf := Perms{Owner: "1000", Mode: 0o644}
+	confDir := Perms{Owner: "1000", Mode: 0o755}
+	assert.Equal(t, map[string]Perms{"conf": confDir, "conf/sub": confDir}, web.Dirs)
 	assert.Equal(t, "web", web.Name)
 	assert.Equal(t, "/srv/compose/web", web.Dir())
 	assert.Equal(
@@ -87,12 +94,13 @@ compose:
 			{
 				Path:    "docker-compose.yml",
 				Content: readTestdata(t, "stack.rendered.yml"),
+				Perms:   defaults,
 				Secrets: []string{"pa$$$$word"},
 			},
-			{Path: ".env", Content: "TOKEN=t$\n", Hidden: true},
-			{Path: "conf/.hidden", Content: "h\n"},
-			{Path: "conf/sub/site.conf", Content: "s\n"},
-			{Path: "nginx.conf", Content: "server {}\n"},
+			{Path: ".env", Content: "TOKEN=t$\n", Perms: defaults, Hidden: true},
+			{Path: "conf/.hidden", Content: "h\n", Perms: conf},
+			{Path: "conf/sub/site.conf", Content: "s\n", Perms: conf},
+			{Path: "nginx.conf", Content: "server {}\n", Perms: defaults},
 		},
 		web.Files,
 	)

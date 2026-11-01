@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,7 +41,10 @@ type Stack struct {
 	Name string
 	// Files are the stack's files, including docker-compose.yml, with
 	// secrets decrypted.
-	Files   []StackFile
+	Files []StackFile
+	// Dirs are the directories within listed directories, by path relative
+	// to the stack's directory. Other directories are root:docker 0750.
+	Dirs    map[string]Perms
 	Volumes map[string]Volume
 }
 
@@ -56,15 +60,14 @@ type StackFile struct {
 	// Path is relative to the stack's directory.
 	Path    string
 	Content string
+	Perms   Perms
 	// Secrets are decrypted values within Content.
 	Secrets []string
 	// Hidden is set when all of Content is secret.
 	Hidden bool
 }
 
-// Volume is a directory a stack's compose file refers to with !volume.
-// Sensible manages the directory itself but never its contents.
-type Volume struct {
+type Perms struct {
 	// Owner and Group are names or numeric IDs. An empty Group means the
 	// owner's primary group if Owner is a name, and is otherwise left alone.
 	Owner string      `yaml:"owner"`
@@ -72,12 +75,65 @@ type Volume struct {
 	Mode  fs.FileMode `yaml:"mode"`
 }
 
+// Volume is a directory a stack's compose file refers to with !volume.
+// Sensible manages the directory itself but never its contents.
+type Volume Perms
+
+// fileEntry is one of compose.files: a path, or a mapping that also sets
+// its files' ownership and mode.
+type fileEntry struct {
+	Path string `yaml:"path"`
+	Perms
+}
+
+func (e *fileEntry) UnmarshalYAML(ctx context.Context, node ast.Node) error {
+	if s, ok := node.(*ast.StringNode); ok {
+		*e = fileEntry{Path: s.Value}
+		return nil
+	}
+	var v struct {
+		Path  string `yaml:"path"`
+		Perms `yaml:",inline"`
+	}
+	if err := decode(ctx, node, &v); err != nil {
+		return err
+	}
+	if v.Path == "" {
+		return nodeError(node, "a file needs a path")
+	}
+	*e = fileEntry(v)
+	return nil
+}
+
+// filePerms fills in the defaults for a stack's files, root:docker 0640.
+func filePerms(p Perms) Perms {
+	if p.Owner == "" {
+		p.Owner = "root"
+		if p.Group == "" {
+			p.Group = "docker"
+		}
+	}
+	if p.Mode == 0 {
+		p.Mode = 0o640
+	}
+	return p
+}
+
+// dirPerms is p for a directory, searchable wherever it's readable.
+func dirPerms(p Perms) Perms {
+	p.Mode |= (p.Mode & 0o444) >> 2
+	return p
+}
+
 // stackDef is what a stack's role declares.
 type stackDef struct {
 	name string
 	// files are the paths of every file to copy, relative to the role's
 	// directory, excluding the compose file.
-	files   []string
+	files []string
+	// perms are each file's ownership and mode, by its path in files.
+	perms   map[string]Perms
+	dirs    map[string]Perms
 	volumes map[string]Volume
 }
 
@@ -86,7 +142,7 @@ type stackDef struct {
 type roleSettings struct {
 	Children []string `yaml:"children"`
 	Compose  *struct {
-		Files   []string          `yaml:"files"`
+		Files   []fileEntry       `yaml:"files"`
 		Volumes map[string]Volume `yaml:"volumes"`
 	} `yaml:"compose"`
 }
@@ -121,7 +177,7 @@ var projectName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 // role directory's entries its files cover.
 func (r *Repo) checkStack(role string, s roleSettings) (map[string]bool, error) {
 	roleFile := r.path("roles", role, "role.yml")
-	def := &stackDef{name: strings.ReplaceAll(role, "/", "-")}
+	def := &stackDef{name: strings.ReplaceAll(role, "/", "-"), perms: map[string]Perms{}, dirs: map[string]Perms{}}
 	if !projectName.MatchString(def.name) {
 		return nil, fmt.Errorf(
 			"%s: %q can't be a Docker Compose project name; use lower case letters, digits, \"-\" and \"_\"",
@@ -129,7 +185,7 @@ func (r *Repo) checkStack(role string, s roleSettings) (map[string]bool, error) 
 			def.name,
 		)
 	}
-	var files []string
+	var files []fileEntry
 	if s.Compose != nil {
 		def.volumes = s.Compose.Volumes
 		files = s.Compose.Files
@@ -143,16 +199,16 @@ func (r *Repo) checkStack(role string, s roleSettings) (map[string]bool, error) 
 	covered := map[string]bool{}
 	written := map[string]string{}
 	for _, entry := range files {
-		clean := filepath.Clean(entry)
-		if entry == "" || filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
-			return nil, fmt.Errorf("%s: compose.files: %q isn't a path inside the role", roleFile, entry)
+		clean := filepath.Clean(entry.Path)
+		if entry.Path == "" || filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+			return nil, fmt.Errorf("%s: compose.files: %q isn't a path inside the role", roleFile, entry.Path)
 		}
 		top, _, _ := strings.Cut(clean, "/")
 		if top == "role.yml" || top == host.ComposeFile || isVariantFile(top) {
-			return nil, fmt.Errorf("%s: compose.files: %q is read by sensible, so can't be copied", roleFile, entry)
+			return nil, fmt.Errorf("%s: compose.files: %q is read by sensible, so can't be copied", roleFile, entry.Path)
 		}
 		covered[top] = true
-		if err := def.addFiles(r.path("roles", role), clean, written); err != nil {
+		if err := def.addFiles(r.path("roles", role), clean, filePerms(entry.Perms), written); err != nil {
 			return nil, fmt.Errorf("%s: compose.files: %w", roleFile, err)
 		}
 	}
@@ -163,14 +219,17 @@ func (r *Repo) checkStack(role string, s roleSettings) (map[string]bool, error) 
 
 // addFiles adds every file at entry, a path in the role directory dir.
 // written maps where each file added so far is written to its path.
-func (d *stackDef) addFiles(dir, entry string, written map[string]string) error {
+func (d *stackDef) addFiles(dir, entry string, perms Perms, written map[string]string) error {
 	return filepath.WalkDir(
 		filepath.Join(dir, entry),
 		func(path string, e fs.DirEntry, err error) error {
-			if err != nil || e.IsDir() {
+			if err != nil {
 				return err
 			}
 			rel, _ := filepath.Rel(dir, path)
+			if e.IsDir() {
+				return setPerms(d.dirs, rel, dirPerms(perms))
+			}
 			prev, ok := written[stackPath(rel)]
 			switch {
 			case !ok:
@@ -179,9 +238,19 @@ func (d *stackDef) addFiles(dir, entry string, written map[string]string) error 
 			case prev != rel:
 				return fmt.Errorf("%s and %s would both be written as %s", prev, rel, stackPath(rel))
 			}
-			return nil
+			return setPerms(d.perms, rel, perms)
 		},
 	)
+}
+
+// setPerms records the perms for path, which mustn't conflict with any
+// already recorded for it by another entry.
+func setPerms(m map[string]Perms, path string, p Perms) error {
+	if prev, ok := m[path]; ok && prev != p {
+		return fmt.Errorf("%s is listed more than once, with different owners or modes", path)
+	}
+	m[path] = p
+	return nil
 }
 
 // stackPath is where a role's file is written in its stack, without any
@@ -207,7 +276,7 @@ func (r *Repo) checkStackNames() error {
 // decrypting .age files.
 func (r *Repo) renderStack(role string, params map[string]ast.Node) (Stack, error) {
 	def := r.stacks[role]
-	s := Stack{Name: def.name, Volumes: def.volumes}
+	s := Stack{Name: def.name, Dirs: def.dirs, Volumes: def.volumes}
 
 	composePath := filepath.Join("roles", role, host.ComposeFile)
 	compose, err := r.renderCompose(composePath, def, params)
@@ -222,7 +291,7 @@ func (r *Repo) renderStack(role string, params map[string]ast.Node) (Stack, erro
 		if err != nil {
 			return Stack{}, err
 		}
-		f := StackFile{Path: stackPath(rel), Content: string(b)}
+		f := StackFile{Path: stackPath(rel), Content: string(b), Perms: def.perms[rel]}
 		if f.Path != rel {
 			secret, err := parseArmored(string(b))
 			if err != nil {
@@ -263,7 +332,7 @@ func (r *Repo) renderCompose(file string, def *stackDef, params map[string]ast.N
 	if !strings.HasSuffix(content, "\n") {
 		content += "\n"
 	}
-	return StackFile{Path: host.ComposeFile, Content: content, Secrets: c.secrets}, nil
+	return StackFile{Path: host.ComposeFile, Content: content, Perms: filePerms(Perms{}), Secrets: c.secrets}, nil
 }
 
 type composeRenderer struct {

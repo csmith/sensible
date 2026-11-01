@@ -320,15 +320,17 @@ func TestResources_featuresTurnOff(t *testing.T) {
 
 func TestResources_stack(t *testing.T) {
 	h := testHost(archLinux)
+	perms := config.Perms{Owner: "root", Group: "docker", Mode: 0o640}
 	h.Config.Stacks = []config.Stack{
 		{
 			Name: "twowords-centralpark",
 			Files: []config.StackFile{
-				{Path: "docker-compose.yml", Content: "services: {}\n", Secrets: []string{"pw"}},
-				{Path: ".env", Content: "A=b\n", Hidden: true},
-				{Path: "conf/sub/site.conf", Content: "s\n"},
-				{Path: "conf/other.conf", Content: "o\n"},
+				{Path: "docker-compose.yml", Content: "services: {}\n", Perms: perms, Secrets: []string{"pw"}},
+				{Path: ".env", Content: "A=b\n", Perms: perms, Hidden: true},
+				{Path: "conf/sub/site.conf", Content: "s\n", Perms: config.Perms{Owner: "1000", Mode: 0o644}},
+				{Path: "conf/other.conf", Content: "o\n", Perms: perms},
 			},
+			Dirs: map[string]config.Perms{"conf/sub": {Owner: "1000", Mode: 0o755}},
 			Volumes: map[string]config.Volume{
 				"uploads":  {Owner: "33", Mode: 0o750},
 				"database": {Owner: "postgres", Group: "postgres", Mode: 0o700},
@@ -379,8 +381,8 @@ func TestResources_stack(t *testing.T) {
 			},
 			host.File{Path: dir + "/.env", Content: "A=b\n", Owner: "root", Group: "docker", Mode: 0o640, Hidden: true},
 			host.Dir{Path: dir + "/conf", Owner: "root", Group: "docker", Mode: 0o750},
-			host.Dir{Path: dir + "/conf/sub", Owner: "root", Group: "docker", Mode: 0o750},
-			host.File{Path: dir + "/conf/sub/site.conf", Content: "s\n", Owner: "root", Group: "docker", Mode: 0o640},
+			host.Dir{Path: dir + "/conf/sub", Owner: "1000", Mode: 0o755},
+			host.File{Path: dir + "/conf/sub/site.conf", Content: "s\n", Owner: "1000", Mode: 0o644},
 			host.File{Path: dir + "/conf/other.conf", Content: "o\n", Owner: "root", Group: "docker", Mode: 0o640},
 			host.OwnedDir{Path: dir, Recursive: true},
 			host.Dir{Path: "/srv/volumes/twowords-centralpark", Owner: "root", Group: "root", Mode: 0o755},

@@ -444,6 +444,20 @@ func TestOpen(t *testing.T) {
 			"would both be written as .env",
 		},
 		{
+			"stack file listed with different modes",
+			map[string]string{
+				"roles/web/docker-compose.yml": "",
+				"roles/web/role.yml":           "compose:\n  files: [conf, {path: conf/a, mode: 0o600}]\n",
+				"roles/web/conf/a":             "",
+			},
+			"conf/a is listed more than once",
+		},
+		{
+			"stack file without a path",
+			map[string]string{"roles/web/docker-compose.yml": "", "roles/web/role.yml": "compose:\n  files: [{mode: 0o600}]\n"},
+			"a file needs a path",
+		},
+		{
 			"invalid project name",
 			map[string]string{"roles/Web/docker-compose.yml": ""},
 			"can't be a Docker Compose project name",
