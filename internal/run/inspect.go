@@ -149,7 +149,7 @@ func orEmpty(v any) any {
 // is set, it prints an armored age file instead, and keeps piped input as it
 // is, as it's usually a whole file.
 func EncryptSecret(configDir string, raw bool, in io.Reader, out io.Writer) error {
-	repo, err := config.Open(configDir, nil)
+	repo, err := config.OpenSettings(configDir)
 	if err != nil {
 		return err
 	}

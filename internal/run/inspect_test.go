@@ -3,6 +3,7 @@ package run
 import (
 	"bytes"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -18,6 +19,17 @@ func TestShowConfig(t *testing.T) {
 	require.NoError(t, ShowConfig(t.Context(), dir, "acidburn", "debian", "", &out))
 
 	assert.Equal(t, "zsh:\n  plugins:\n  - git\nvim: {}\n", out.String())
+}
+
+func TestEncryptSecret_ignoresInvalidRoles(t *testing.T) {
+	_, dir, _ := testRepo(t)
+	writeFile(t, filepath.Join(dir, "roles", "web", "role.yml"), "compose:\n  files: [.env.age]\n")
+	writeFile(t, filepath.Join(dir, "roles", "web", "docker-compose.yml"), "")
+	var out bytes.Buffer
+
+	require.NoError(t, EncryptSecret(dir, true, strings.NewReader("A=b\n"), &out))
+
+	assert.Contains(t, out.String(), "BEGIN AGE ENCRYPTED FILE")
 }
 
 func TestSecretAt(t *testing.T) {

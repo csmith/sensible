@@ -182,8 +182,8 @@ type Repo struct {
 // Open reads hosts.d and sensible.yml from dir and checks the directory's
 // layout. A nil identity means CommandIdentity.
 func Open(dir string, identity IdentitySource) (*Repo, error) {
-	r := &Repo{dir: dir, keys: &keyring{}}
-	if err := r.readSettings(); err != nil {
+	r, err := OpenSettings(dir)
+	if err != nil {
 		return nil, err
 	}
 	if identity == nil {
@@ -195,6 +195,16 @@ func Open(dir string, identity IdentitySource) (*Repo, error) {
 		return nil, err
 	}
 	if err := r.checkLayout(); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// OpenSettings reads only the repo's sensible.yml, which is enough to
+// encrypt secrets, without checking the rest of the repo.
+func OpenSettings(dir string) (*Repo, error) {
+	r := &Repo{dir: dir, keys: &keyring{}}
+	if err := r.readSettings(); err != nil {
 		return nil, err
 	}
 	return r, nil
