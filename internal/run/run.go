@@ -96,11 +96,11 @@ func openRepo(dir string, out io.Writer) (*config.Repo, error) {
 func unknownHost(inv config.Inventory, name string) error {
 	for _, n := range slices.Sorted(maps.Keys(inv.Hosts)) {
 		if inv.Hosts[n].Address == name {
-			return fmt.Errorf("%s is the address of %s; use its name from hosts.yml", name, n)
+			return fmt.Errorf("%s is the address of %s; use its name from hosts.d", name, n)
 		}
 	}
 	return fmt.Errorf(
-		"unknown host %q; hosts.yml has %s",
+		"unknown host %q; hosts.d has %s",
 		name,
 		strings.Join(slices.Sorted(maps.Keys(inv.Hosts)), ", "),
 	)
@@ -158,19 +158,14 @@ func newTarget(repo *config.Repo, name, addr string, builds Builds) target {
 		addr = entry.Address
 	}
 	if addr == "" {
-		t.err = errors.New("no address in hosts.yml")
+		t.err = errors.New("no address")
 		return t
 	}
-	creds, err := repo.Credentials(name)
-	if err != nil {
-		t.err = err
-		return t
-	}
-	if creds == nil {
+	if entry.SSHKey.IsZero() {
 		t.err = fmt.Errorf("no credentials; run `sensible bootstrap %s`", name)
 		return t
 	}
-	signer, password, err := revealCredentials(creds)
+	signer, password, err := revealCredentials(entry)
 	if err != nil {
 		t.err = err
 		return t
@@ -187,7 +182,7 @@ func newTarget(repo *config.Repo, name, addr string, builds Builds) target {
 	return t
 }
 
-func revealCredentials(creds *config.Credentials) (ssh.Signer, string, error) {
+func revealCredentials(creds config.HostEntry) (ssh.Signer, string, error) {
 	key, err := creds.SSHKey.Reveal()
 	if err != nil {
 		return nil, "", fmt.Errorf("ssh_key: %w", err)

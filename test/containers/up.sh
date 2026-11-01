@@ -44,26 +44,26 @@ secrets:
     - cat
     - $work/age.key
 YAML
-cat > "$work/config/hosts.yml" <<YAML
-hosts:
-
-  deb1:
-    address: 127.0.0.1:2211
-    roles:
-      base:
-      vim:
-      sshd:
-      zsh:
-        prompt_colours:
-          chris: yellow
-
-  arch1:
-    address: 127.0.0.1:2212
-    roles:
-      base:
-      vim:
-      sshd:
-      zsh:
+mkdir -p "$work/config/hosts.d"
+cat > "$work/config/hosts.d/deb1.yml" <<YAML
+deb1:
+  address: 127.0.0.1:2211
+  roles:
+    base:
+    vim:
+    sshd:
+    zsh:
+      prompt_colours:
+        chris: yellow
+YAML
+cat > "$work/config/hosts.d/arch1.yml" <<YAML
+arch1:
+  address: 127.0.0.1:2212
+  roles:
+    base:
+    vim:
+    sshd:
+    zsh:
 YAML
 
 cat > "$work/env.sh" <<ENV

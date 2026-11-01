@@ -224,8 +224,7 @@ func TestRotate_setsPasswordAndKeyThroughExistingAgent(t *testing.T) {
 	repo, _, _ := testRepo(t)
 	f := newSSHFixture(t, "hunter2", serverKey)
 	require.NoError(t, repo.WriteCredentials("acidburn", f.keyPEM, "hunter2", time.Now()))
-	existing, err := repo.Credentials("acidburn")
-	require.NoError(t, err)
+	existing := repo.Inventory().Hosts["acidburn"]
 	creds, err := newCredentials("acidburn")
 	require.NoError(t, err)
 

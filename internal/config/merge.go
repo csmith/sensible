@@ -9,12 +9,21 @@ import (
 
 const replaceTag = "!replace"
 
-// merge layers upper over lower: maps deep-merge, sequences union keeping
-// first-seen order, and anything else (or anything tagged !replace) in upper
-// wins. Neither input is modified, and the result has no !replace tags.
+// merge layers upper over lower without modifying either, applying and
+// removing !replace tags.
 func merge(lower, upper ast.Node) ast.Node {
-	if tag, ok := upper.(*ast.TagNode); ok && tag.Start.Value == replaceTag {
-		return merge(nil, tag.Value)
+	return mergeNodes(lower, upper, true)
+}
+
+// mergeFragments merges like merge, but leaves !replace tags in place, so
+// host fragments keep them for their role parameters.
+func mergeFragments(lower, upper ast.Node) ast.Node {
+	return mergeNodes(lower, upper, false)
+}
+
+func mergeNodes(lower, upper ast.Node, replace bool) ast.Node {
+	if tag, ok := upper.(*ast.TagNode); ok && replace && tag.Start.Value == replaceTag {
+		return mergeNodes(nil, tag.Value, replace)
 	}
 	if upper == nil || upper.Type() == ast.NullType {
 		if lower == nil {
@@ -26,16 +35,16 @@ func merge(lower, upper ast.Node) ast.Node {
 	switch u := upper.(type) {
 	case *ast.MappingNode:
 		l, _ := lower.(*ast.MappingNode)
-		return mergeMapping(l, u)
+		return mergeMapping(l, u, replace)
 	case *ast.SequenceNode:
 		l, _ := lower.(*ast.SequenceNode)
-		return mergeSequence(l, u)
+		return mergeSequence(l, u, replace)
 	default:
 		return upper
 	}
 }
 
-func mergeMapping(lower, upper *ast.MappingNode) ast.Node {
+func mergeMapping(lower, upper *ast.MappingNode, replace bool) ast.Node {
 	result := ast.Mapping(upper.Start, upper.IsFlowStyle)
 	index := map[string]int{}
 	if lower != nil {
@@ -47,16 +56,16 @@ func mergeMapping(lower, upper *ast.MappingNode) ast.Node {
 	for _, v := range upper.Values {
 		key := keyString(v.Key)
 		if i, ok := index[key]; ok {
-			result.Values[i] = ast.MappingValue(v.Start, v.Key, merge(result.Values[i].Value, v.Value))
+			result.Values[i] = ast.MappingValue(v.Start, v.Key, mergeNodes(result.Values[i].Value, v.Value, replace))
 		} else {
 			index[key] = len(result.Values)
-			result.Values = append(result.Values, ast.MappingValue(v.Start, v.Key, merge(nil, v.Value)))
+			result.Values = append(result.Values, ast.MappingValue(v.Start, v.Key, mergeNodes(nil, v.Value, replace)))
 		}
 	}
 	return result
 }
 
-func mergeSequence(lower, upper *ast.SequenceNode) ast.Node {
+func mergeSequence(lower, upper *ast.SequenceNode, replace bool) ast.Node {
 	result := ast.Sequence(upper.Start, upper.IsFlowStyle)
 	seen := map[string]bool{}
 	add := func(n ast.Node) {
@@ -72,7 +81,7 @@ func mergeSequence(lower, upper *ast.SequenceNode) ast.Node {
 		}
 	}
 	for _, v := range upper.Values {
-		add(merge(nil, v))
+		add(mergeNodes(nil, v, replace))
 	}
 	return result
 }

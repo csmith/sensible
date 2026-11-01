@@ -106,12 +106,12 @@ func dialSSH(ctx context.Context, address string, cfg *ssh.ClientConfig) (*ssh.C
 	return ssh.NewClient(c, chans, reqs), nil
 }
 
-// checkHostKey accepts only the host's keys from hosts.yml, whatever
+// checkHostKey accepts only the host's host_keys, whatever
 // address was dialled.
 func checkHostKey(name string, known []config.HostKey) ssh.HostKeyCallback {
 	return func(_ string, _ net.Addr, key ssh.PublicKey) error {
 		if len(known) == 0 {
-			return fmt.Errorf("%s has no host_keys in hosts.yml", name)
+			return fmt.Errorf("%s has no host_keys", name)
 		}
 		for _, k := range known {
 			if bytes.Equal(k.Marshal(), key.Marshal()) {

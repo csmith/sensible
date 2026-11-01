@@ -7,6 +7,7 @@ import (
 	"maps"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/goccy/go-yaml/ast"
 
@@ -29,11 +30,11 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 	var merged ast.Node
 	set := map[string]setBy{}
 	for _, role := range slices.Sorted(maps.Keys(entry.Roles)) {
-		node, err := r.expandRole(role, osFamily, entry.Roles[role])
+		node, err := r.expandRole(name, role, osFamily, entry.Roles[role])
 		if err != nil {
 			return Config{}, fmt.Errorf("%s: role %s: %w", name, role, err)
 		}
-		if err := checkConflicts(role, node, "", set); err != nil {
+		if err := checkConflicts("role "+role, node, "", set); err != nil {
 			return Config{}, fmt.Errorf("%s: %w", name, err)
 		}
 		merged = merge(merged, node)
@@ -81,7 +82,7 @@ func (p RoleParams) String() string {
 	return p.node.String()
 }
 
-func (r *Repo) expandRole(role, osFamily string, params RoleParams) (ast.Node, error) {
+func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (ast.Node, error) {
 	files := []string{filepath.Join("roles", role, "role.yml")}
 	if osFamily != "" {
 		files = append(files, filepath.Join("roles", role, "role."+osFamily+".yml"))
@@ -114,9 +115,9 @@ func (r *Repo) expandRole(role, osFamily string, params RoleParams) (ast.Node, e
 		layers = append(layers, layer{file, body})
 	}
 
-	values, err := resolveParams(declared, params)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", r.path("hosts.yml"), err)
+	values, perr := resolveParams(declared, params)
+	if perr != nil {
+		return nil, fmt.Errorf("%s: %w", r.sources[joinPath(host, "roles", role, perr.key)].source, perr)
 	}
 
 	var merged ast.Node
@@ -156,7 +157,7 @@ func splitParams(node ast.Node) (*ast.MappingNode, ast.Node, error) {
 
 // resolveParams merges the host's parameters over the role's defaults. Lists
 // the host sets replace the default rather than adding to it.
-func resolveParams(declared ast.Node, params RoleParams) (map[string]ast.Node, error) {
+func resolveParams(declared ast.Node, params RoleParams) (map[string]ast.Node, *paramError) {
 	values := map[string]ast.Node{}
 	if m, ok := declared.(*ast.MappingNode); ok {
 		for _, v := range m.Values {
@@ -168,13 +169,20 @@ func resolveParams(declared ast.Node, params RoleParams) (map[string]ast.Node, e
 			key := keyString(v.Key)
 			def, ok := values[key]
 			if !ok {
-				return nil, nodeError(v.Key, fmt.Sprintf("unknown parameter %q", key))
+				return nil, &paramError{key, nodeError(v.Key, fmt.Sprintf("unknown parameter %q", key))}
 			}
 			values[key] = merge(withoutSetSequences(def, v.Value), v.Value)
 		}
 	}
 	return values, nil
 }
+
+type paramError struct {
+	key string
+	err error
+}
+
+func (e *paramError) Error() string { return e.err.Error() }
 
 // substitute replaces each !param with its value, dropping map keys and list
 // items whose value is null. It modifies node.
@@ -236,43 +244,42 @@ func isNull(node ast.Node) bool {
 }
 
 type setBy struct {
-	role  string
-	value string
+	source string
+	value  string
 }
 
-// checkConflicts rejects a role setting a value another role already set
-// differently, so the order roles are merged in never matters. Lists union,
-// so they never conflict.
-func checkConflicts(role string, node ast.Node, path string, set map[string]setBy) error {
+// checkConflicts rejects a source setting a value another source already set
+// differently, so the order sources are merged in never matters. Lists union
+// and nulls set nothing, so neither conflicts.
+func checkConflicts(source string, node ast.Node, path string, set map[string]setBy) error {
 	var value string
 	switch n := node.(type) {
-	case nil:
-		return nil
 	case *ast.MappingNode:
 		value = "\x00mapping"
 		for _, v := range n.Values {
-			if err := checkConflicts(role, v.Value, joinPath(path, keyString(v.Key)), set); err != nil {
+			if err := checkConflicts(source, v.Value, joinPath(path, keyString(v.Key)), set); err != nil {
 				return err
 			}
 		}
 	case *ast.SequenceNode:
 		value = "\x00sequence"
 	default:
-		if isNull(n) {
+		if isNull(node) {
+			// Still recorded, so the key can be traced to a source.
+			if _, ok := set[path]; !ok {
+				set[path] = setBy{source: source}
+			}
 			return nil
 		}
 		value = itemString(n)
 	}
-	if prev, ok := set[path]; ok && prev.value != value {
-		return errors.New("roles " + prev.role + " and " + role + " set " + path + " differently")
+	if prev, ok := set[path]; ok && prev.value != "" && prev.value != value {
+		return errors.New(prev.source + " and " + source + " set " + path + " differently")
 	}
-	set[path] = setBy{role, value}
+	set[path] = setBy{source, value}
 	return nil
 }
 
-func joinPath(path, key string) string {
-	if path == "" {
-		return key
-	}
-	return path + "." + key
+func joinPath(elem ...string) string {
+	return strings.Join(slices.DeleteFunc(elem, func(e string) bool { return e == "" }), ".")
 }

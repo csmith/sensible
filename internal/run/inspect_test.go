@@ -11,7 +11,7 @@ import (
 
 func TestShowConfig(t *testing.T) {
 	_, dir, _ := testRepo(t)
-	writeFile(t, filepath.Join(dir, "hosts.yml"), "hosts:\n  acidburn:\n    roles: {base: }\n")
+	writeFile(t, filepath.Join(dir, "hosts.d", "acidburn.roles.yml"), "acidburn:\n  roles: {base: }\n")
 	writeFile(t, filepath.Join(dir, "roles", "base", "role.yml"), "vim: {}\nzsh:\n  plugins: [git]\n")
 	var out bytes.Buffer
 

@@ -4,8 +4,10 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,8 +30,8 @@ func newTestRepo(t *testing.T, files map[string]string) *testRepo {
 	require.NoError(t, err)
 	tr := &testRepo{dir: t.TempDir(), identity: id}
 
-	if _, ok := files["hosts.yml"]; !ok {
-		files["hosts.yml"] = "hosts:\n  alpha:\n    address: alpha.example.com\n  beta: {}\n"
+	if _, ok := files["hosts.d/hosts.yml"]; !ok {
+		files["hosts.d/hosts.yml"] = "alpha:\n  address: alpha.example.com\nbeta: {}\n"
 	}
 	if _, ok := files["sensible.yml"]; !ok {
 		files["sensible.yml"] = "secrets:\n  recipients: [" + id.Recipient().String() + "]\n"
@@ -62,17 +64,16 @@ func TestHostConfig_mergesRoles(t *testing.T) {
 	r := newTestRepo(
 		t,
 		map[string]string{
-			"hosts.yml": `
-hosts:
-  alpha:
-    roles:
-      base:
-      zsh: {users: [chris], prompt_colours: {chris: green}}
-      tailscale: {relay_port: 40000}
-  beta:
-    roles:
-      zsh:
-      tailscale:
+			"hosts.d/hosts.yml": `
+alpha:
+  roles:
+    base:
+    zsh: {users: [chris], prompt_colours: {chris: green}}
+    tailscale: {relay_port: 40000}
+beta:
+  roles:
+    zsh:
+    tailscale:
 `,
 			"roles/base/role.yml": `
 packages:
@@ -131,7 +132,7 @@ func TestHostConfig_bareModuleIsOn(t *testing.T) {
 	c, err := newTestRepo(
 		t,
 		map[string]string{
-			"hosts.yml":             "hosts:\n  alpha:\n    roles:\n      base:\n      docker:\n",
+			"hosts.d/hosts.yml":     "alpha:\n  roles:\n    base:\n    docker:\n",
 			"roles/base/role.yml":   "users:\n  chris:\nvim:\ndocker:\n",
 			"roles/docker/role.yml": "docker:\n  users: [chris]\n",
 		},
@@ -153,7 +154,7 @@ func TestHostConfig_replaceTag(t *testing.T) {
 	c, err := newTestRepo(
 		t,
 		map[string]string{
-			"hosts.yml": "hosts:\n  alpha:\n    roles:\n      base: {colours: !replace {chris: green}}\n",
+			"hosts.d/hosts.yml": "alpha:\n  roles:\n    base: {colours: !replace {chris: green}}\n",
 			"roles/base/role.yml": `
 params:
   colours: {chris: white, root: red}
@@ -182,7 +183,7 @@ users: !replace
 func TestHostConfig_conflictingRoles(t *testing.T) {
 	files := func(second string) map[string]string {
 		return map[string]string{
-			"hosts.yml":          "hosts:\n  alpha:\n    roles: {one: , two: }\n",
+			"hosts.d/hosts.yml":  "alpha:\n  roles: {one: , two: }\n",
 			"roles/one/role.yml": "sshd:\n  settings: {MaxAuthTries: 4}\n  authorized_keys: {chris: [k1]}\n",
 			"roles/two/role.yml": second,
 		}
@@ -197,7 +198,7 @@ func TestHostConfig_conflictingRoles(t *testing.T) {
 	assert.Equal(t, []string{"k1", "k2"}, c.SSHD.AuthorizedKeys["chris"])
 
 	_, err = newTestRepo(t, files("sshd:\n  settings: {MaxAuthTries: 6}\n")).open(t).HostConfig("alpha", "debian")
-	assert.ErrorContains(t, err, "roles one and two set sshd.settings.MaxAuthTries differently")
+	assert.ErrorContains(t, err, "role one and role two set sshd.settings.MaxAuthTries differently")
 }
 
 func TestHostConfig_errors(t *testing.T) {
@@ -223,8 +224,8 @@ func TestHostConfig_errors(t *testing.T) {
 		},
 		{
 			name:  "unknown parameter",
-			files: map[string]string{"hosts.yml": "hosts:\n  alpha:\n    roles:\n      base: {colour: red}\n"},
-			want:  []string{"hosts.yml", "[4:14]", `unknown parameter "colour"`},
+			files: map[string]string{"hosts.d/hosts.yml": "alpha:\n  roles:\n    base: {colour: red}\n"},
+			want:  []string{"hosts.d/hosts.yml", "[3:12]", `unknown parameter "colour"`},
 		},
 		{
 			name:  "undeclared parameter",
@@ -251,8 +252,8 @@ func TestHostConfig_errors(t *testing.T) {
 		t.Run(
 			tt.name,
 			func(t *testing.T) {
-				if _, ok := tt.files["hosts.yml"]; !ok {
-					tt.files["hosts.yml"] = "hosts:\n  alpha:\n    roles: {base: }\n"
+				if _, ok := tt.files["hosts.d/hosts.yml"]; !ok {
+					tt.files["hosts.d/hosts.yml"] = "alpha:\n  roles: {base: }\n"
 				}
 				if _, ok := tt.files["roles/base/role.yml"]; !ok {
 					tt.files["roles/base/role.yml"] = ""
@@ -279,12 +280,15 @@ func TestOpen(t *testing.T) {
 		files map[string]string
 		want  string
 	}{
-		{"credentials for unknown host", map[string]string{"credentials/gamma.yml": ""}, "gamma"},
-		{"wrong extension", map[string]string{"credentials/alpha.yaml": ""}, "alpha.yaml"},
-		{"unknown inventory key", map[string]string{"hosts.yml": "hosts:\n  a: {addr: x}\n"}, "addr"},
-		{"invalid host key", map[string]string{"hosts.yml": "hosts:\n  a: {host_keys: [ssh-ed25519 nope]}\n"}, "host key"},
-		{"role parameters not a mapping", map[string]string{"hosts.yml": "hosts:\n  a: {roles: {base: [x]}}\n"}, "mapping"},
-		{"unknown role", map[string]string{"hosts.yml": "hosts:\n  a: {roles: {base: }}\n"}, `role "base"`},
+		{"wrong extension", map[string]string{"hosts.d/alpha.yaml": ""}, "alpha.yaml"},
+		{"directory in hosts.d", map[string]string{"hosts.d/old/alpha.yml": ""}, "old"},
+		{"unknown inventory key", map[string]string{"hosts.d/hosts.yml": "a: {addr: x}\n"}, "addr"},
+		{"error names its file", map[string]string{"hosts.d/extra.yml": "alpha: {addr: x}\n"}, "hosts.d/extra.yml"},
+		{"not a mapping", map[string]string{"hosts.d/extra.yml": "- alpha\n"}, "hosts.d/extra.yml"},
+		{"invalid host key", map[string]string{"hosts.d/hosts.yml": "a: {host_keys: [ssh-ed25519 nope]}\n"}, "host key"},
+		{"plain credential", map[string]string{"hosts.d/hosts.yml": "a: {ssh_key: hunter2}\n"}, "encrypt"},
+		{"role parameters not a mapping", map[string]string{"hosts.d/hosts.yml": "a: {roles: {base: [x]}}\n"}, "mapping"},
+		{"unknown role", map[string]string{"hosts.d/hosts.yml": "a: {roles: {base: }}\n"}, `role "base"`},
 		{"file in roles", map[string]string{"roles/base.yml": ""}, "base.yml"},
 		{"missing role.yml", map[string]string{"roles/base/role.arch.yml": ""}, "missing role.yml"},
 		{"unknown OS", map[string]string{"roles/base/role.yml": "", "roles/base/role.archlinux.yml": ""}, `"archlinux"`},
@@ -312,10 +316,12 @@ func TestOpen(t *testing.T) {
 				newTestRepo(
 					t,
 					map[string]string{
-						"roles/base/role.yml":        "",
-						"roles/base/role.arch.yml":   "",
-						"roles/base/.role.yml.swp":   "",
-						"credentials/.alpha.yml.swp": "",
+						"roles/base/role.yml":       "",
+						"roles/base/role.arch.yml":  "",
+						"roles/base/.role.yml.swp":  "",
+						"hosts.d/.alpha.yml.swp":    "",
+						"hosts.d/empty.yml":         "",
+						"hosts.d/alpha.address.yml": "alpha:\n  address: alpha.example.com\n",
 					},
 				).open(t).Inventory().Hosts["alpha"].Address,
 			)
@@ -323,7 +329,7 @@ func TestOpen(t *testing.T) {
 	)
 
 	t.Run(
-		"missing hosts.yml",
+		"missing hosts.d",
 		func(t *testing.T) {
 			_, err := Open(t.TempDir(), nil)
 			assert.Error(t, err)
@@ -331,96 +337,140 @@ func TestOpen(t *testing.T) {
 	)
 }
 
-func TestOpen_hostKeys(t *testing.T) {
-	key := testHostKey(t)
-	keys := newTestRepo(
+func TestOpen_mergesFragments(t *testing.T) {
+	k1, k2 := testHostKey(t), testHostKey(t)
+	inv := newTestRepo(
 		t,
-		map[string]string{"hosts.yml": "hosts:\n  alpha:\n    host_keys: [" + key.String() + " root@alpha]\n"},
-	).open(t).Inventory().Hosts["alpha"].HostKeys
-	require.Len(t, keys, 1)
-	assert.Equal(t, key.Marshal(), keys[0].Marshal())
+		map[string]string{
+			"hosts.d/hosts.yml":         "alpha:\n  address: a\n  host_keys: [" + k1.String() + "]\n  roles: {base: }\nbeta:\n",
+			"hosts.d/alpha.zsh.yml":     "alpha:\n  roles:\n    zsh: {colours: !replace {chris: green}}\n",
+			"hosts.d/alpha.state.yml":   "alpha:\n  host_keys: [" + k1.String() + ", " + k2.String() + "]\n",
+			"hosts.d/everything.yml":    "alpha:\n  address: a\ngamma:\n  address: g\n",
+			"roles/base/role.yml":       "",
+			"roles/zsh/role.yml":        "params:\n  colours: {}\nzsh:\n  prompt_colours: !param colours\n",
+			"roles/zsh/role.debian.yml": "",
+		},
+	).open(t).Inventory()
+
+	assert.ElementsMatch(t, []string{"alpha", "beta", "gamma"}, slices.Collect(maps.Keys(inv.Hosts)))
+	alpha := inv.Hosts["alpha"]
+	assert.Equal(t, "a", alpha.Address)
+	assert.ElementsMatch(t, []string{"base", "zsh"}, slices.Collect(maps.Keys(alpha.Roles)))
+	require.Len(t, alpha.HostKeys, 2)
+	assert.Equal(t, k1.Marshal(), alpha.HostKeys[0].Marshal())
+	assert.Equal(t, k2.Marshal(), alpha.HostKeys[1].Marshal())
+	assert.Equal(t, "g", inv.Hosts["gamma"].Address)
 }
 
-func TestAddHostKey(t *testing.T) {
-	tests := []struct {
-		name  string
-		hosts string
-		host  string
-		want  string
-	}{
-		{
-			name:  "block mapping keeps comments and layout",
-			hosts: "# Hosts\nhosts:\n  # first\n  alpha:\n      address: a # inline\n\n  # second\n  beta:\n      address: b\n",
-			host:  "alpha",
-			want: "# Hosts\nhosts:\n  # first\n  alpha:\n      address: a # inline\n      host_keys:\n        - KEY\n" +
-				"\n  # second\n  beta:\n      address: b\n",
-		},
-		{
-			name:  "block scalar value",
-			hosts: "hosts:\n  alpha:\n    address: |\n      a\n  beta:\n",
-			host:  "alpha",
-			want:  "hosts:\n  alpha:\n    address: |\n      a\n    host_keys:\n      - KEY\n  beta:\n",
-		},
-		{
-			name:  "roles block",
-			hosts: "hosts:\n  alpha:\n    address: a\n    roles:\n      base:\n      zsh: {users: [chris]}\n  beta:\n",
-			host:  "alpha",
-			want: "hosts:\n  alpha:\n    address: a\n    roles:\n      base:\n      zsh: {users: [chris]}\n" +
-				"    host_keys:\n      - KEY\n  beta:\n",
-		},
-		{
-			name:  "empty entry without trailing newline",
-			hosts: "hosts:\n  alpha:\n    address: a\n  beta:",
-			host:  "beta",
-			want:  "hosts:\n  alpha:\n    address: a\n  beta:\n    host_keys:\n      - KEY\n",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(
-			tt.name,
-			func(t *testing.T) {
-				key := testHostKey(t)
-				tr := newTestRepo(
-					t,
-					map[string]string{"hosts.yml": tt.hosts, "roles/base/role.yml": "", "roles/zsh/role.yml": ""},
-				)
-				r := tr.open(t)
-
-				require.NoError(t, r.AddHostKey(tt.host, key.PublicKey))
-
-				content, err := os.ReadFile(filepath.Join(tr.dir, "hosts.yml"))
-				require.NoError(t, err)
-				assert.Equal(t, strings.ReplaceAll(tt.want, "KEY", key.String()), string(content))
-				keys := tr.open(t).Inventory().Hosts[tt.host].HostKeys
-				require.Len(t, keys, 1)
-				assert.Equal(t, key.Marshal(), keys[0].Marshal())
-				assert.Equal(t, keys, r.Inventory().Hosts[tt.host].HostKeys)
-			},
-		)
-	}
+func TestOpen_conflictingFragments(t *testing.T) {
+	_, err := newTestRepo(
+		t,
+		map[string]string{"hosts.d/extra.yml": "alpha:\n  address: elsewhere\n"},
+	).tryOpen()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "hosts.d/extra.yml")
+	assert.Contains(t, err.Error(), "hosts.d/hosts.yml")
+	assert.Contains(t, err.Error(), "alpha.address")
 }
 
-func TestAddHostKey_unsupportedLayoutIsLeftAlone(t *testing.T) {
-	for _, hosts := range []string{
-		"hosts:\n  alpha: {address: a}\n",
-		"hosts:\n  alpha: ~\n",
-		"hosts:\n  alpha:\n    host_keys: []\n",
-	} {
-		t.Run(
-			hosts,
-			func(t *testing.T) {
-				key := testHostKey(t)
-				tr := newTestRepo(t, map[string]string{"hosts.yml": hosts})
+func TestHostConfig_paramErrorNamesFragment(t *testing.T) {
+	_, err := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml":   "alpha:\n  roles: {base: }\n",
+			"hosts.d/alpha.yml":   "alpha:\n  roles:\n    base: {colour: red}\n",
+			"roles/base/role.yml": "",
+		},
+	).open(t).HostConfig("alpha", "debian")
+	assert.ErrorContains(t, err, "hosts.d/alpha.yml: [3:12] unknown parameter")
+}
 
-				err := tr.open(t).AddHostKey("alpha", key.PublicKey)
+func TestCredentials(t *testing.T) {
+	tr := newTestRepo(t, map[string]string{})
+	r := tr.open(t)
+	assert.True(t, r.Inventory().Hosts["alpha"].SSHKey.IsZero())
 
-				require.ErrorContains(t, err, key.String())
-				content, err := os.ReadFile(filepath.Join(tr.dir, "hosts.yml"))
-				require.NoError(t, err)
-				assert.Equal(t, hosts, string(content))
-			},
-		)
+	rotated := time.Date(2026, 10, 31, 12, 30, 0, 0, time.UTC)
+	require.NoError(t, r.WriteCredentials("alpha", "old key", "old password", rotated.Add(-time.Hour)))
+	require.NoError(t, r.WriteCredentials("alpha", "-----BEGIN KEY-----\nabc\n", "p@ss: word", rotated))
+
+	path := filepath.Join(tr.dir, "hosts.d", "alpha.state.yml")
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	entries, err := os.ReadDir(filepath.Dir(path))
+	require.NoError(t, err)
+	assert.Len(t, entries, 2)
+
+	for _, r := range []*Repo{r, tr.open(t)} {
+		alpha := r.Inventory().Hosts["alpha"]
+		assert.Equal(t, "alpha.example.com", alpha.Address)
+		assert.True(t, rotated.Equal(alpha.Rotated))
+		key, err := alpha.SSHKey.Reveal()
+		require.NoError(t, err)
+		assert.Equal(t, "-----BEGIN KEY-----\nabc\n", key)
+		password, err := alpha.SudoPassword.Reveal()
+		require.NoError(t, err)
+		assert.Equal(t, "p@ss: word", password)
 	}
+
+	require.Error(t, r.WriteCredentials("gamma", "k", "p", rotated))
+}
+
+func TestStateFile_keepsWhatItDoesNotChange(t *testing.T) {
+	tr := newTestRepo(t, map[string]string{})
+	r := tr.open(t)
+	k1, k2 := testHostKey(t), testHostKey(t)
+	rotated := time.Date(2026, 10, 31, 12, 30, 0, 0, time.UTC)
+
+	require.NoError(t, r.AddHostKey("alpha", k1.PublicKey))
+	require.NoError(t, r.WriteCredentials("alpha", "key", "password", rotated))
+	require.NoError(t, r.AddHostKey("alpha", k2.PublicKey))
+
+	alpha := tr.open(t).Inventory().Hosts["alpha"]
+	require.Len(t, alpha.HostKeys, 2)
+	assert.Equal(t, k1.Marshal(), alpha.HostKeys[0].Marshal())
+	assert.Equal(t, k2.Marshal(), alpha.HostKeys[1].Marshal())
+	key, err := alpha.SSHKey.Reveal()
+	require.NoError(t, err)
+	assert.Equal(t, "key", key)
+	assert.Equal(t, alpha.HostKeys, r.Inventory().Hosts["alpha"].HostKeys)
+}
+
+func TestAddHostKey_addsToHandWrittenKeys(t *testing.T) {
+	k1, k2 := testHostKey(t), testHostKey(t)
+	tr := newTestRepo(t, map[string]string{"hosts.d/hosts.yml": "alpha:\n  host_keys: [" + k1.String() + "]\n"})
+
+	require.NoError(t, tr.open(t).AddHostKey("alpha", k2.PublicKey))
+
+	hostKeys := tr.open(t).Inventory().Hosts["alpha"].HostKeys
+	keys := make([]string, 0, len(hostKeys))
+	for _, k := range hostKeys {
+		keys = append(keys, k.String())
+	}
+	assert.ElementsMatch(t, []string{k1.String(), k2.String()}, keys)
+}
+
+func TestAddHostKey_unreadableStateFile(t *testing.T) {
+	key := testHostKey(t)
+	state := "alpha:\n  address: alpha.example.com\n"
+	tr := newTestRepo(t, map[string]string{"hosts.d/alpha.state.yml": state})
+
+	err := tr.open(t).AddHostKey("alpha", key.PublicKey)
+
+	require.ErrorContains(t, err, key.String())
+	content, err := os.ReadFile(filepath.Join(tr.dir, "hosts.d", "alpha.state.yml"))
+	require.NoError(t, err)
+	assert.Equal(t, state, string(content))
+}
+
+func TestWriteCredentials_refusedWhenSetElsewhere(t *testing.T) {
+	tr := newTestRepo(t, map[string]string{"hosts.d/hosts.yml": "alpha:\n  rotated: 2026-01-01T00:00:00Z\n"})
+
+	err := tr.open(t).WriteCredentials("alpha", "k", "p", time.Now())
+
+	require.ErrorContains(t, err, "hosts.d/hosts.yml")
+	assert.NoFileExists(t, filepath.Join(tr.dir, "hosts.d", "alpha.state.yml"))
 }
 
 func testHostKey(t *testing.T) HostKey {
@@ -504,52 +554,6 @@ func TestSecret_zeroReveal(t *testing.T) {
 func TestEncrypt_noRecipients(t *testing.T) {
 	_, err := newTestRepo(t, map[string]string{"sensible.yml": ""}).open(t).Encrypt("x")
 	assert.Error(t, err)
-}
-
-func TestCredentials(t *testing.T) {
-	tr := newTestRepo(t, map[string]string{})
-	r := tr.open(t)
-
-	creds, err := r.Credentials("alpha")
-	require.NoError(t, err)
-	assert.Nil(t, creds)
-
-	rotated := time.Date(2026, 10, 31, 12, 30, 0, 0, time.UTC)
-	require.NoError(t, r.WriteCredentials("alpha", "old key", "old password", rotated.Add(-time.Hour)))
-	require.NoError(t, r.WriteCredentials("alpha", "-----BEGIN KEY-----\nabc\n", "p@ss: word", rotated))
-
-	path := filepath.Join(tr.dir, "credentials", "alpha.yml")
-	info, err := os.Stat(path)
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
-	entries, err := os.ReadDir(filepath.Dir(path))
-	require.NoError(t, err)
-	assert.Len(t, entries, 1)
-	content, err := os.ReadFile(path)
-	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(string(content), "# Generated by `sensible bootstrap`"))
-
-	// The written file must also pass Open's layout checks.
-	r = tr.open(t)
-	creds, err = r.Credentials("alpha")
-	require.NoError(t, err)
-	require.NotNil(t, creds)
-	assert.True(t, rotated.Equal(creds.Rotated))
-	key, err := creds.SSHKey.Reveal()
-	require.NoError(t, err)
-	assert.Equal(t, "-----BEGIN KEY-----\nabc\n", key)
-	password, err := creds.SudoPassword.Reveal()
-	require.NoError(t, err)
-	assert.Equal(t, "p@ss: word", password)
-
-	require.Error(t, r.WriteCredentials("gamma", "k", "p", rotated))
-	_, err = r.Credentials("../hosts")
-	assert.Error(t, err)
-}
-
-func TestCredentials_plainValueRejected(t *testing.T) {
-	_, err := newTestRepo(t, map[string]string{"credentials/alpha.yml": "ssh_key: secret\n"}).open(t).Credentials("alpha")
-	assert.ErrorContains(t, err, "credentials/alpha.yml")
 }
 
 func TestCommandIdentity(t *testing.T) {

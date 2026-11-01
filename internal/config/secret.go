@@ -85,31 +85,42 @@ func nodeError(node ast.Node, msg string) error {
 // Encrypt encrypts plaintext to the inventory's recipients, returning the
 // YAML text for a !age scalar.
 func (r *Repo) Encrypt(plaintext string) (string, error) {
+	s, err := r.encryptSecret(plaintext)
+	if err != nil {
+		return "", err
+	}
+	return s.yaml(), nil
+}
+
+func (r *Repo) encryptSecret(plaintext string) (Secret, error) {
 	if len(r.recipients) == 0 {
-		return "", errors.New("no secrets.recipients in sensible.yml")
+		return Secret{}, errors.New("no secrets.recipients in sensible.yml")
 	}
 	var buf bytes.Buffer
 	a := armor.NewWriter(&buf)
 	w, err := age.Encrypt(a, r.recipients...)
 	if err != nil {
-		return "", err
+		return Secret{}, err
 	}
 	if _, err := io.WriteString(w, plaintext); err != nil {
-		return "", err
+		return Secret{}, err
 	}
 	if err := w.Close(); err != nil {
-		return "", err
+		return Secret{}, err
 	}
 	if err := a.Close(); err != nil {
-		return "", err
+		return Secret{}, err
 	}
+	return Secret{armored: buf.String(), keys: r.keys}, nil
+}
 
+func (s Secret) yaml() string {
 	var out strings.Builder
 	out.WriteString(ageTag + " |")
-	for line := range strings.Lines(buf.String()) {
+	for line := range strings.Lines(s.armored) {
 		out.WriteString("\n  " + strings.TrimRight(line, "\n"))
 	}
-	return out.String(), nil
+	return out.String()
 }
 
 // keyring fetches a Repo's identity once, when the first secret is revealed.

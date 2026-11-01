@@ -397,8 +397,7 @@ func testRepo(t *testing.T) (*config.Repo, string, config.IdentitySource) {
 	id, err := age.GenerateX25519Identity()
 	require.NoError(t, err)
 	dir := t.TempDir()
-	hostsYAML := "hosts:\n  acidburn:\n    address: 192.0.2.1\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "hosts.yml"), []byte(hostsYAML), 0o600))
+	writeFile(t, filepath.Join(dir, "hosts.d", "acidburn.yml"), "acidburn:\n  address: 192.0.2.1\n")
 	settingsYAML := "secrets:\n  recipients: [" + id.Recipient().String() + "]\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "sensible.yml"), []byte(settingsYAML), 0o600))
 	source := func() (age.Identity, error) { return id, nil }

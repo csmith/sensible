@@ -53,20 +53,17 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 	case isLocal(opts.Host):
 		return fmt.Errorf("%s is this machine, which is reached with sudo and needs no bootstrap", opts.Host)
 	case entry.Address == "":
-		return fmt.Errorf("%s has no address in hosts.yml", opts.Host)
+		return fmt.Errorf("%s has no address", opts.Host)
 	case opts.User != "" && opts.User != "root" && opts.User != "chris":
 		return fmt.Errorf("--user must be root or chris, not %q", opts.User)
 	case opts.User == "" && !opts.Rotate:
 		return errors.New("--user is required")
 	}
-	existing, err := repo.Credentials(opts.Host)
-	if err != nil {
-		return err
-	}
-	if existing != nil && !opts.Rotate {
+	bootstrapped := !entry.SSHKey.IsZero()
+	if bootstrapped && !opts.Rotate {
 		return fmt.Errorf("%s already has credentials; use --rotate to replace them", opts.Host)
 	}
-	if existing == nil && opts.User == "" {
+	if !bootstrapped && opts.User == "" {
 		return fmt.Errorf("%s has no credentials to rotate; use --user", opts.Host)
 	}
 
@@ -84,7 +81,7 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 		hostKeyFingerprint: opts.HostKey,
 	}
 	if opts.User == "" {
-		err = b.rotate(ctx, existing)
+		err = b.rotate(ctx, entry)
 	} else {
 		err = b.install(ctx, opts.User, sshAgent(ctx))
 	}
@@ -310,7 +307,7 @@ func runRemote(client *ssh.Client, command string, stdin io.Reader, forwardAgent
 }
 
 // rotate replaces the key and password through the host's existing agent.
-func (b *bootstrapper) rotate(ctx context.Context, existing *config.Credentials) error {
+func (b *bootstrapper) rotate(ctx context.Context, existing config.HostEntry) error {
 	signer, password, err := revealCredentials(existing)
 	if err != nil {
 		return err
