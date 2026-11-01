@@ -200,7 +200,11 @@ func revealCredentials(creds config.HostEntry) (ssh.Signer, string, error) {
 
 func isLocal(name string) bool {
 	hostname, err := os.Hostname()
-	return err == nil && hostname == name
+	if err != nil {
+		return false
+	}
+	short, _, _ := strings.Cut(hostname, ".")
+	return hostname == name || short == name
 }
 
 // Runner plans and applies a set of targets. Its fields are the parts that
