@@ -497,15 +497,16 @@ func (c *composeRenderer) value(node ast.Node) (any, error) {
 	}
 }
 
-// volume resolves a !volume tag: a volume name, or ../ and the name of the
-// parent role's volume, optionally followed by the rest of a mount.
-func (c *composeRenderer) volume(tag *ast.TagNode) (string, error) {
+// volumePath resolves a !volume tag written in the role: a volume name, or
+// ../ and the name of the parent role's volume, optionally followed by the
+// rest of a mount.
+func (r *Repo) volumePath(role string, tag *ast.TagNode) (string, error) {
 	v, ok := tag.Value.(*ast.StringNode)
 	if !ok {
 		return "", nodeError(tag, "!volume needs a volume name")
 	}
 	name, rest, mount := strings.Cut(v.Value, ":")
-	owner := c.def.role
+	owner := role
 	if parentName, ok := strings.CutPrefix(name, "../"); ok {
 		parent, _, isChild := strings.Cut(owner, "/")
 		if !isChild {
@@ -513,7 +514,7 @@ func (c *composeRenderer) volume(tag *ast.TagNode) (string, error) {
 		}
 		owner, name = parent, parentName
 	}
-	if _, ok := c.repo.volumes[owner][name]; !ok {
+	if _, ok := r.volumes[owner][name]; !ok {
 		return "", nodeError(tag, fmt.Sprintf("volume %q isn't in role %s's compose.volumes", name, owner))
 	}
 	path := filepath.Join(VolumesDir, stackName(owner), name)
@@ -526,7 +527,7 @@ func (c *composeRenderer) volume(tag *ast.TagNode) (string, error) {
 // scalar resolves an !age or !volume tag to the string that replaces it.
 func (c *composeRenderer) scalar(tag *ast.TagNode) (string, error) {
 	if tag.Start.Value == volumeTag {
-		return c.volume(tag)
+		return c.repo.volumePath(c.def.role, tag)
 	}
 
 	var s Secret

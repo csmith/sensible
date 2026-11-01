@@ -302,6 +302,9 @@ func (r *Repo) readHosts() error {
 		if node == nil {
 			continue
 		}
+		if tag := findTag(node, volumeTag); tag != nil {
+			return fmt.Errorf("%s: %w", r.path(file), nodeError(tag, "!volume only works in roles, which own volumes"))
+		}
 		if err := decode(r.keys.context(), node, &map[string]HostEntry{}); err != nil {
 			return fmt.Errorf("%s: %w", r.path(file), err)
 		}
@@ -574,6 +577,30 @@ func (r *Repo) readLayer(file string, optional bool) (ast.Node, error) {
 		return nil, err
 	}
 	return parseLayer(r.path(file), b)
+}
+
+func findTag(node ast.Node, tag string) ast.Node {
+	switch n := node.(type) {
+	case *ast.TagNode:
+		if n.Start.Value == tag {
+			return n
+		}
+		return findTag(n.Value, tag)
+	case *ast.MappingNode:
+		for _, mv := range n.Values {
+			if found := findTag(mv.Value, tag); found != nil {
+				return found
+			}
+		}
+	case *ast.SequenceNode:
+		for _, item := range n.Values {
+			if found := findTag(item, tag); found != nil {
+				return found
+			}
+		}
+	default:
+	}
+	return nil
 }
 
 func decode(ctx context.Context, node ast.Node, v any) error {

@@ -133,6 +133,14 @@ func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (ast.N
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", r.path(file), err)
 		}
+		// Before the host's parameters are merged in, so a !volume always
+		// resolves against the role that wrote it.
+		if err := r.resolveVolumes(role, body); err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", r.path(file), err)
+		}
+		if err := r.resolveVolumes(role, p); err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", r.path(file), err)
+		}
 		declared = merge(declared, p)
 		layers = append(layers, layer{file, body})
 	}
@@ -261,6 +269,41 @@ func substitute(node ast.Node, values map[string]ast.Node) (ast.Node, error) {
 		n.Values = kept
 	}
 	return node, nil
+}
+
+// resolveVolumes replaces each !volume in node with its path. It modifies
+// node, whose root mustn't be a !volume.
+func (r *Repo) resolveVolumes(role string, node ast.Node) error {
+	resolve := func(n ast.Node) (ast.Node, error) {
+		tag, ok := n.(*ast.TagNode)
+		if !ok || tag.Start.Value != volumeTag {
+			return n, r.resolveVolumes(role, n)
+		}
+		path, err := r.volumePath(role, tag)
+		if err != nil {
+			return nil, err
+		}
+		return flowNode(path)
+	}
+	var err error
+	switch n := node.(type) {
+	case *ast.TagNode:
+		n.Value, err = resolve(n.Value)
+	case *ast.MappingNode:
+		for _, mv := range n.Values {
+			if mv.Value, err = resolve(mv.Value); err != nil {
+				return err
+			}
+		}
+	case *ast.SequenceNode:
+		for i, item := range n.Values {
+			if n.Values[i], err = resolve(item); err != nil {
+				return err
+			}
+		}
+	default:
+	}
+	return err
 }
 
 func isTag(node ast.Node, tag string) bool {

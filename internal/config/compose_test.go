@@ -188,3 +188,62 @@ func readTestdata(t *testing.T, name string) string {
 	require.NoError(t, err)
 	return string(b)
 }
+
+func TestHostConfig_volumesInRoleFiles(t *testing.T) {
+	c, err := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml": "alpha:\n  roles: {group: , web: }\n",
+			"roles/group/role.yml": `
+children: [one]
+compose:
+  volumes: {blobs: }
+`,
+			"roles/group/one/role.yml": `
+compose:
+  volumes: {cache: }
+ntp:
+  servers: [!volume cache, !volume ../blobs:/b]
+`,
+			"roles/web/role.yml": `
+compose:
+  volumes: {data: }
+params:
+  first: !volume data
+ntp:
+  servers: [!param first]
+`,
+		},
+	).open(t).HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	assert.ElementsMatch(
+		t,
+		[]string{"/srv/volumes/group-one/cache", "/srv/volumes/group/blobs:/b", "/srv/volumes/web/data"},
+		c.NTP.Servers,
+	)
+}
+
+func TestOpen_volumeInHosts(t *testing.T) {
+	_, err := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml":  "alpha:\n  roles: {web: {first: !volume data}}\n",
+			"roles/web/role.yml": "compose:\n  volumes: {data: }\nparams:\n  first: ~\n",
+		},
+	).tryOpen()
+	require.ErrorContains(t, err, "!volume only works in roles")
+	assert.ErrorContains(t, err, "hosts.yml")
+}
+
+func TestHostConfig_undeclaredVolumeInRoleFile(t *testing.T) {
+	_, err := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml":       "alpha:\n  roles: {web: }\n",
+			"roles/web/role.yml":      "compose:\n  volumes: {data: }\n",
+			"roles/web/role.arch.yml": "ntp:\n  servers: [!volume db]\n",
+		},
+	).open(t).HostConfig("alpha", "arch")
+	require.ErrorContains(t, err, `volume "db" isn't in role web's compose.volumes`)
+	assert.ErrorContains(t, err, "role.arch.yml")
+}
