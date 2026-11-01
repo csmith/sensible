@@ -1,0 +1,16 @@
+params:
+  authorized_keys:
+    chris:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILIjMaD22DotPk2trvvETKFxrwRFtnS/89b92mtRdMeJ
+
+sshd:
+  settings:
+    PermitRootLogin: "no"
+    PasswordAuthentication: "no"
+    KbdInteractiveAuthentication: "no"
+    X11Forwarding: "no"
+    AuthorizedKeysFile: .ssh/authorized_keys
+    MaxAuthTries: 4
+    LogLevel: VERBOSE
+
+  authorized_keys: !param authorized_keys

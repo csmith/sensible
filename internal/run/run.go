@@ -53,12 +53,12 @@ func Run(ctx context.Context, opts Options) error {
 		Out:     out,
 		Confirm: confirmOnTerminal,
 		Builds:  builder,
-		Compile: func(t target, facts host.Facts) (host.ResourceList, config.DNSConfig, error) {
+		Compile: func(t target, facts host.Facts) (host.ResourceList, error) {
 			cfg, err := repo.HostConfig(t.name, facts.OSFamily)
 			if err != nil {
-				return nil, config.DNSConfig{}, err
+				return nil, err
 			}
-			resources, err := features.Resources(
+			return features.Resources(
 				features.Host{
 					Name:        t.name,
 					Local:       t.local,
@@ -67,9 +67,9 @@ func Run(ctx context.Context, opts Options) error {
 					SensibleKey: t.sensibleKey,
 				},
 			)
-			return resources, cfg.DNS, err
 		},
-		DNS: newDNSClient,
+		DNS:            newDNSClient,
+		DNSCredentials: repo.DNS(),
 	}
 	return r.Execute(ctx, targets, opts.Apply, opts.Yes)
 }
@@ -139,6 +139,7 @@ func selectHosts(inv config.Inventory, requested []string, addrs map[string]stri
 // reached at all, e.g. because it has no credentials.
 type target struct {
 	name        string
+	dnsName     string
 	local       bool
 	sensibleKey string
 	transport   Transport
@@ -146,13 +147,13 @@ type target struct {
 }
 
 func newTarget(repo *config.Repo, name, addr string, builds Builds) target {
-	t := target{name: name}
+	entry := repo.Inventory().Hosts[name]
+	t := target{name: name, dnsName: entry.DNSName}
 	if isLocal(name) {
 		t.local = true
 		t.transport = &Local{Builds: builds}
 		return t
 	}
-	entry := repo.Inventory().Hosts[name]
 	if addr == "" {
 		addr = entry.Address
 	}
@@ -210,11 +211,12 @@ func isLocal(name string) bool {
 // Runner plans and applies a set of targets. Its fields are the parts that
 // vary between real runs and tests.
 type Runner struct {
-	Out     io.Writer
-	Confirm func(prompt string) (bool, error)
-	Builds  Builds
-	Compile func(t target, facts host.Facts) (host.ResourceList, config.DNSConfig, error)
-	DNS     func(user, key string) dnsClient
+	Out            io.Writer
+	Confirm        func(prompt string) (bool, error)
+	Builds         Builds
+	Compile        func(t target, facts host.Facts) (host.ResourceList, error)
+	DNS            func(user, key string) dnsClient
+	DNSCredentials config.DNSCredentials
 }
 
 // hostRun is one target's progress through a run.
@@ -224,7 +226,6 @@ type hostRun struct {
 	upgraded  bool
 	facts     host.Facts
 	resources host.ResourceList
-	dns       config.DNSConfig
 	checked   []host.Checked
 	failed    bool
 }
@@ -324,7 +325,7 @@ func (r *Runner) checkAll(runs []*hostRun) {
 			continue
 		}
 		var err error
-		h.resources, h.dns, err = r.Compile(h.target, h.facts)
+		h.resources, err = r.Compile(h.target, h.facts)
 		if err != nil {
 			h.err = err
 			continue

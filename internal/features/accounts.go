@@ -3,7 +3,6 @@ package features
 import (
 	_ "embed"
 	"maps"
-	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -13,30 +12,9 @@ import (
 )
 
 func users(h Host) ([]host.Resource, error) {
-	var rs []host.Resource
+	rs := make([]host.Resource, 0, len(h.Config.Users))
 	for _, name := range slices.Sorted(maps.Keys(h.Config.Users)) {
-		c := h.Config.Users[name]
-		rs = append(rs, host.User{Name: name, Shell: c.Shell, Groups: c.Groups})
-
-		// Hosts without an SSH server get no authorized keys.
-		if !h.Config.SSHD.Enabled || len(c.SSHKeys) == 0 {
-			continue
-		}
-		account, ok := existingAccount(h, name)
-		if !ok {
-			continue
-		}
-		rs = append(
-			rs,
-			host.Dir{Path: account.Home + "/.ssh", Owner: name, Group: gid(account), Mode: 0o700},
-			host.File{
-				Path:    account.Home + "/.ssh/authorized_keys",
-				Content: managedLines(c.SSHKeys),
-				Owner:   name,
-				Group:   gid(account),
-				Mode:    0o600,
-			},
-		)
+		rs = append(rs, host.User{Name: name, Groups: h.Config.Users[name].Groups})
 	}
 	return rs, nil
 }
@@ -46,17 +24,12 @@ const ohMyZshVersion = "17a2b4c3a5855524ad4772a17ada0dc474e2fdf3"
 const ohMyZshPath = "/usr/share/oh-my-zsh"
 
 func zsh(h Host) ([]host.Resource, error) {
-	var names []string
-	for _, name := range slices.Sorted(maps.Keys(h.Config.Users)) {
-		if path.Base(h.Config.Users[name].Shell) == "zsh" {
-			names = append(names, name)
-		}
-	}
-	if len(names) == 0 {
+	c := h.Config.Zsh
+	if c == nil {
 		return nil, nil
 	}
 
-	plugins := h.Config.Zsh.Plugins
+	plugins := c.Plugins
 	if h.Facts.OSFamily == archLinux {
 		plugins = append(slices.Clone(plugins), "archlinux")
 	}
@@ -67,7 +40,10 @@ func zsh(h Host) ([]host.Resource, error) {
 		rs,
 		host.GitCheckout{Path: ohMyZshPath, Repo: "https://github.com/ohmyzsh/ohmyzsh.git", Commit: ohMyZshVersion},
 	)
-	for _, name := range names {
+	for _, name := range c.Users {
+		rs = append(rs, host.User{Name: name, Shell: "/usr/bin/zsh"})
+	}
+	for _, name := range c.Users {
 		account, ok := existingAccount(h, name)
 		if !ok {
 			continue
@@ -78,7 +54,7 @@ func zsh(h Host) ([]host.Resource, error) {
 			zshrc{
 				Theme:        "agnoster",
 				Plugins:      plugins,
-				PromptColour: h.Config.Zsh.PromptColours[name],
+				PromptColour: c.PromptColours[name],
 			},
 		)
 		if err != nil {
@@ -156,7 +132,7 @@ const sshdConfig = "/etc/ssh/sshd_config"
 
 func sshd(h Host) ([]host.Resource, error) {
 	c := h.Config.SSHD
-	if !c.Enabled {
+	if c == nil {
 		return nil, nil
 	}
 	pkg, svc := "openssh", sshdService(h)
@@ -208,5 +184,24 @@ func sshd(h Host) ([]host.Resource, error) {
 			},
 		)
 	}
-	return append(rs, host.Service{Name: svc, Enabled: true, Running: true}), nil
+	rs = append(rs, host.Service{Name: svc, Enabled: true, Running: true})
+
+	for _, name := range slices.Sorted(maps.Keys(c.AuthorizedKeys)) {
+		account, ok := existingAccount(h, name)
+		if !ok {
+			continue
+		}
+		rs = append(
+			rs,
+			host.Dir{Path: account.Home + "/.ssh", Owner: name, Group: gid(account), Mode: 0o700},
+			host.File{
+				Path:    account.Home + "/.ssh/authorized_keys",
+				Content: managedLines(c.AuthorizedKeys[name]),
+				Owner:   name,
+				Group:   gid(account),
+				Mode:    0o600,
+			},
+		)
+	}
+	return rs, nil
 }

@@ -1,3 +1,0 @@
-packages:
-  install: [zsh, kitty-terminfo]
-  remove: [vi, ex-vi-compat, autojump-rs]

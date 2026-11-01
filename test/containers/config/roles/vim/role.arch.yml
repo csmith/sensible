@@ -1,0 +1,4 @@
+packages:
+  remove:
+    - vi
+    - ex-vi-compat

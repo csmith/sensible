@@ -13,9 +13,12 @@ import (
 )
 
 const (
-	familyArch   = "archlinux"
+	familyArch   = "arch"
 	familyDebian = "debian"
 )
+
+// OSFamilies are the values Facts.OSFamily can take.
+var OSFamilies = []string{familyArch, familyDebian}
 
 func (r Package) Check(ctx context.Context, sys Sys) (Change, error) {
 	family, err := osFamily(ctx, sys)
@@ -439,7 +442,7 @@ func parseOSRelease(data string) (string, string, error) {
 	}
 	for _, id := range append([]string{fields["ID"]}, strings.Fields(fields["ID_LIKE"])...) {
 		switch id {
-		case "arch", familyArch:
+		case familyArch:
 			return familyArch, "", nil
 		case familyDebian:
 			return familyDebian, fields["VERSION_CODENAME"], nil

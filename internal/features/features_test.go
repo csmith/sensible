@@ -14,18 +14,26 @@ func testHost(osFamily string) Host {
 	return Host{
 		Name: "testhost",
 		Config: config.Config{
-			Packages: config.PackagesConfig{Install: []string{"htop"}, Remove: []string{"nano"}},
-			AUR:      config.AURConfig{Packages: []string{"widget-bin"}},
-			Users: map[string]config.UserConfig{
-				"alice": {Shell: "/usr/bin/zsh", SSHKeys: []string{"ssh-ed25519 AAAA alice"}},
-				"bob":   {Shell: "/bin/bash", SSHKeys: []string{"ssh-ed25519 AAAA bob"}},
+			Packages: &config.PackagesConfig{Install: []string{"htop"}, Remove: []string{"nano"}},
+			AUR:      &config.AURConfig{Packages: []string{"widget-bin"}},
+			Users:    map[string]config.UserConfig{"alice": {Groups: []string{"wheel"}}, "bob": {}},
+			Sudoers:  map[string][]string{"000-alice": {"alice ALL=(ALL:ALL) ALL"}},
+			PamRSSH:  &config.PamRSSHConfig{Keys: []string{"ssh-ed25519 AAAA sudo"}},
+			SSHD: &config.SSHDConfig{
+				Settings: map[string]string{"MaxAuthTries": "3"},
+				AuthorizedKeys: map[string][]string{
+					"alice": {"ssh-ed25519 AAAA alice"},
+					"bob":   {"ssh-ed25519 AAAA bob"},
+				},
 			},
-			Sudoers:   map[string][]string{"000-alice": {"alice ALL=(ALL:ALL) ALL"}},
-			PamRSSH:   config.PamRSSHConfig{Keys: []string{"ssh-ed25519 AAAA sudo"}},
-			SSHD:      config.SSHDConfig{Enabled: true, Settings: map[string]string{"MaxAuthTries": "3"}},
-			Tailscale: config.TailscaleConfig{Settings: map[string]string{"advertise-exit-node": "true"}},
-			Zsh:       config.ZshConfig{Plugins: []string{"git"}, PromptColours: map[string]string{"alice": "blue"}},
-			Docker:    config.DockerConfig{Enabled: true, Users: []string{"alice"}},
+			Tailscale: &config.TailscaleConfig{Settings: map[string]string{"advertise-exit-node": "true"}},
+			Zsh: &config.ZshConfig{
+				Users:         []string{"alice"},
+				Plugins:       []string{"git"},
+				PromptColours: map[string]string{"alice": "blue"},
+			},
+			Docker: &config.DockerConfig{Users: []string{"alice"}},
+			Vim:    &config.VimConfig{},
 		},
 		Facts: host.Facts{
 			OSFamily: osFamily,
@@ -71,13 +79,15 @@ func TestResources_order(t *testing.T) {
 				"aur:widget-bin",
 				"symlink:/usr/local/bin/vi",
 				"user:alice",
-				"file:/home/alice/.ssh/authorized_keys",
+				"package:zsh",
+				"user:alice",
 				"file:/home/alice/.zshrc",
 				"file:/etc/sudoers.d/000-alice",
 				"aur:pam_rssh",
 				"file:/etc/sudoers.keys",
 				"comment-out:/etc/pam.d/*:" + `^\s*session\s+.*pam_(motd|lastlog2?)\.so`,
 				"file:/etc/ssh/sshd_config.d/10-sensible.conf",
+				"file:/home/alice/.ssh/authorized_keys",
 				"user:" + SensibleUser,
 				"file:/etc/sudoers.d/" + SensibleUser,
 				"service:tailscaled",
@@ -184,8 +194,8 @@ func TestResources_featuresTurnOff(t *testing.T) {
 			absent: []string{"user:" + aurUser, "file:/etc/sudoers.d/" + aurUser, "file:/etc/sudoers.keys"},
 		},
 		{
-			name:    "sshd disabled",
-			modify:  func(h *Host) { h.Config.SSHD.Enabled = false },
+			name:    "no sshd",
+			modify:  func(h *Host) { h.Config.SSHD = nil },
 			absent:  []string{"file:/home/alice/.ssh/authorized_keys", "file:/etc/ssh/sshd_config.d/10-sensible.conf"},
 			present: []string{"user:alice", "file:/etc/ssh/sshd_config.d/05-sensible.conf"},
 		},
@@ -196,13 +206,13 @@ func TestResources_featuresTurnOff(t *testing.T) {
 			present: []string{"owned-dir:/etc/sudoers.d"},
 		},
 		{
-			name:   "docker disabled",
-			modify: func(h *Host) { h.Config.Docker.Enabled = false },
+			name:   "no docker",
+			modify: func(h *Host) { h.Config.Docker = nil },
 			absent: []string{"package:docker", "command:install and start docker"},
 		},
 		{
-			name:   "no tailscale settings",
-			modify: func(h *Host) { h.Config.Tailscale.Settings = nil },
+			name:   "no tailscale",
+			modify: func(h *Host) { h.Config.Tailscale = nil },
 			absent: []string{"package:tailscale", "tailscale-set"},
 		},
 		{
@@ -212,11 +222,19 @@ func TestResources_featuresTurnOff(t *testing.T) {
 			present: []string{"user:alice", "file:/home/bob/.ssh/authorized_keys"},
 		},
 		{
-			name: "no zsh users",
-			modify: func(h *Host) {
-				h.Config.Users = map[string]config.UserConfig{"bob": h.Config.Users["bob"]}
-			},
-			absent: []string{"git:" + ohMyZshPath},
+			name:   "no zsh",
+			modify: func(h *Host) { h.Config.Zsh = nil },
+			absent: []string{"git:" + ohMyZshPath, "package:zsh"},
+		},
+		{
+			name:   "no vim",
+			modify: func(h *Host) { h.Config.Vim = nil },
+			absent: []string{"package:vim", "symlink:/usr/local/bin/vi"},
+		},
+		{
+			name:   "no packages, AUR or pam_rssh",
+			modify: func(h *Host) { h.Config.Packages, h.Config.AUR, h.Config.PamRSSH = nil, nil, nil },
+			absent: []string{"package:htop", "package:nano", "user:" + aurUser},
 		},
 	}
 	for _, tt := range tests {
@@ -383,4 +401,22 @@ func TestAccessFiles(t *testing.T) {
 		assert.Equal(t, "root", f.Owner, f.Path)
 		assert.Empty(t, f.Notify, f.Path)
 	}
+}
+
+func TestResources_zshSetsShells(t *testing.T) {
+	h := testHost(debian)
+	h.Config.AUR = nil
+	h.Config.Zsh.Users = []string{"alice", "carol"}
+	rs, err := Resources(h)
+	require.NoError(t, err)
+
+	var shells []string
+	for _, r := range rs {
+		if u, ok := r.(host.User); ok && u.Shell == "/usr/bin/zsh" {
+			shells = append(shells, u.Name+" "+u.Shell)
+		}
+	}
+	assert.Equal(t, []string{"alice /usr/bin/zsh", "carol /usr/bin/zsh"}, shells)
+	_, ok := find[host.File](rs, "file:/home/carol/.zshrc")
+	assert.False(t, ok)
 }

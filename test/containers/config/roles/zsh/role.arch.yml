@@ -1,0 +1,7 @@
+packages:
+  remove:
+    - autojump-rs
+
+aur:
+  packages:
+    - autojump-rs-bin

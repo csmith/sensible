@@ -15,7 +15,8 @@ set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 work="$here/.work"
-mkdir -p "$work/config/os" "$work/config/hosts"
+rm -rf "$work/config"
+mkdir -p "$work/config"
 
 [[ -f "$work/rootkey" ]] || ssh-keygen -q -t ed25519 -N '' -C test-root -f "$work/rootkey"
 cp "$work/rootkey.pub" "$here/rootkey.pub"
@@ -35,18 +36,35 @@ start deb1 sensible-test-debian 2211
 start arch1 sensible-test-arch 2212
 
 cp -r "$here/config/." "$work/config/"
-cat > "$work/config/secrets.yml" <<YAML
-recipients: [$recipient]
-identity_command: [cat, "$work/age.key"]
+cat > "$work/config/sensible.yml" <<YAML
+secrets:
+  recipients:
+    - $recipient
+  identity_command:
+    - cat
+    - $work/age.key
 YAML
 cat > "$work/config/hosts.yml" <<YAML
 hosts:
+
   deb1:
     address: 127.0.0.1:2211
+    roles:
+      base:
+      vim:
+      sshd:
+      zsh:
+        prompt_colours:
+          chris: yellow
+
   arch1:
     address: 127.0.0.1:2212
+    roles:
+      base:
+      vim:
+      sshd:
+      zsh:
 YAML
-rm -rf "$work/config/credentials"
 
 cat > "$work/env.sh" <<ENV
 export SENSIBLE_CONFIG="$work/config"

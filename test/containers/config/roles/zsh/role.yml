@@ -1,0 +1,21 @@
+params:
+  users:
+    - chris
+    - root
+
+  plugins:
+    - git
+    - autojump
+    - docker
+    - docker-compose
+    - extract
+    - encode64
+
+  prompt_colours:
+    chris: white
+    root: red
+
+zsh:
+  users: !param users
+  plugins: !param plugins
+  prompt_colours: !param prompt_colours

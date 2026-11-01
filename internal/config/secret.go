@@ -86,7 +86,7 @@ func nodeError(node ast.Node, msg string) error {
 // YAML text for a !age scalar.
 func (r *Repo) Encrypt(plaintext string) (string, error) {
 	if len(r.recipients) == 0 {
-		return "", errors.New("no recipients in secrets.yml")
+		return "", errors.New("no secrets.recipients in sensible.yml")
 	}
 	var buf bytes.Buffer
 	a := armor.NewWriter(&buf)
@@ -145,12 +145,12 @@ func (k *keyring) identity() (age.Identity, error) {
 // calls it at most once, and only if a secret is revealed.
 type IdentitySource func() (age.Identity, error)
 
-// CommandIdentity runs secrets.yml's identity_command and parses its
+// CommandIdentity runs sensible.yml's secrets.identity_command and parses its
 // output as an age identity.
 func (r *Repo) CommandIdentity() IdentitySource {
 	if len(r.identityCommand) == 0 {
 		return func() (age.Identity, error) {
-			return nil, errors.New("no identity_command in secrets.yml")
+			return nil, errors.New("no secrets.identity_command in sensible.yml")
 		}
 	}
 	return commandIdentity(r.identityCommand[0], r.identityCommand[1:]...)
@@ -176,29 +176,33 @@ func commandIdentity(name string, args ...string) IdentitySource {
 	}
 }
 
-func (r *Repo) readSecrets() error {
-	type secretsFile struct {
-		// Recipients are age public keys; secrets are encrypted to all of them.
-		Recipients []string `yaml:"recipients"`
-		// IdentityCommand prints the age identity, e.g. [op, read, op://...].
-		IdentityCommand []string `yaml:"identity_command"`
+func (r *Repo) readSettings() error {
+	type settingsFile struct {
+		Secrets struct {
+			// Recipients are age public keys; secrets are encrypted to all of them.
+			Recipients []string `yaml:"recipients"`
+			// IdentityCommand prints the age identity, e.g. [op, read, op://...].
+			IdentityCommand []string `yaml:"identity_command"`
+		} `yaml:"secrets"`
+		DNS DNSCredentials `yaml:"dns"`
 	}
 
-	file := r.path("secrets.yml")
-	node, err := r.readLayer("secrets.yml", true)
+	file := r.path("sensible.yml")
+	node, err := r.readLayer("sensible.yml", true)
 	if err != nil || node == nil {
 		return err
 	}
-	var s secretsFile
-	if err := decode(context.Background(), node, &s); err != nil {
+	var s settingsFile
+	if err := decode(r.keys.context(), node, &s); err != nil {
 		return fmt.Errorf("%s: %w", file, err)
 	}
-	if len(s.Recipients) > 0 {
-		r.recipients, err = age.ParseRecipients(strings.NewReader(strings.Join(s.Recipients, "\n")))
+	if len(s.Secrets.Recipients) > 0 {
+		r.recipients, err = age.ParseRecipients(strings.NewReader(strings.Join(s.Secrets.Recipients, "\n")))
 		if err != nil {
-			return fmt.Errorf("%s: recipients: %w", file, err)
+			return fmt.Errorf("%s: secrets.recipients: %w", file, err)
 		}
 	}
-	r.identityCommand = s.IdentityCommand
+	r.identityCommand = s.Secrets.IdentityCommand
+	r.dns = s.DNS
 	return nil
 }

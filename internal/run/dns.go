@@ -28,31 +28,23 @@ type dnsPlan struct {
 	errs      []error
 }
 
-// planDNS works out the A and AAAA records for every host with a DNS
-// hostname whose facts came back. Addresses from facts are only used if
-// they're valid, as a compromised host could report anything.
+// planDNS works out the A and AAAA records for every host with a DNS name
+// whose facts came back. Addresses from facts are only used if they're
+// valid, as a compromised host could report anything.
 func (r *Runner) planDNS(ctx context.Context, runs []*hostRun) dnsPlan {
-	type account struct{ user, key string }
-	zones := map[account]*dnsZones{}
 	var p dnsPlan
+	var z *dnsZones
 	for _, h := range runs {
-		if h.agent == nil || h.dns.Hostname == "" {
+		if h.agent == nil || h.dnsName == "" {
 			continue
 		}
-		user, err := h.dns.AuthUser.Reveal()
-		if err != nil {
-			p.errs = append(p.errs, fmt.Errorf("%s: auth_user: %w", h.dns.Hostname, err))
-			continue
-		}
-		key, err := h.dns.AuthKey.Reveal()
-		if err != nil {
-			p.errs = append(p.errs, fmt.Errorf("%s: auth_key: %w", h.dns.Hostname, err))
-			continue
-		}
-		z := zones[account{user, key}]
 		if z == nil {
-			z = &dnsZones{client: r.DNS(user, key), records: map[string][]api.ExistingRecord{}}
-			zones[account{user, key}] = z
+			client, err := r.dnsClient()
+			if err != nil {
+				p.errs = append(p.errs, err)
+				return p
+			}
+			z = &dnsZones{client: client, records: map[string][]api.ExistingRecord{}}
 		}
 
 		for _, want := range []struct{ rtype, fact string }{
@@ -69,9 +61,9 @@ func (r *Runner) planDNS(ctx context.Context, runs []*hostRun) dnsPlan {
 				}
 				continue
 			}
-			change, err := z.plan(ctx, h.dns.Hostname, want.rtype, []string{addr})
+			change, err := z.plan(ctx, h.dnsName, want.rtype, []string{addr})
 			if err != nil {
-				p.errs = append(p.errs, fmt.Errorf("%s %s: %w", want.rtype, h.dns.Hostname, err))
+				p.errs = append(p.errs, fmt.Errorf("%s %s: %w", want.rtype, h.dnsName, err))
 				continue
 			}
 			if change != nil {
@@ -82,6 +74,18 @@ func (r *Runner) planDNS(ctx context.Context, runs []*hostRun) dnsPlan {
 		}
 	}
 	return p
+}
+
+func (r *Runner) dnsClient() (dnsClient, error) {
+	user, err := r.DNSCredentials.AuthUser.Reveal()
+	if err != nil {
+		return nil, fmt.Errorf("sensible.yml: dns.auth_user: %w", err)
+	}
+	key, err := r.DNSCredentials.AuthKey.Reveal()
+	if err != nil {
+		return nil, fmt.Errorf("sensible.yml: dns.auth_key: %w", err)
+	}
+	return r.DNS(user, key), nil
 }
 
 func dnsAddress(rtype, fact string) (string, bool) {

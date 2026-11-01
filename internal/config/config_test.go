@@ -31,8 +31,8 @@ func newTestRepo(t *testing.T, files map[string]string) *testRepo {
 	if _, ok := files["hosts.yml"]; !ok {
 		files["hosts.yml"] = "hosts:\n  alpha:\n    address: alpha.example.com\n  beta: {}\n"
 	}
-	if _, ok := files["secrets.yml"]; !ok {
-		files["secrets.yml"] = "recipients: [" + id.Recipient().String() + "]\n"
+	if _, ok := files["sensible.yml"]; !ok {
+		files["sensible.yml"] = "secrets:\n  recipients: [" + id.Recipient().String() + "]\n"
 	}
 	for name, content := range files {
 		p := filepath.Join(tr.dir, name)
@@ -58,123 +58,146 @@ func (tr *testRepo) source() (age.Identity, error) {
 	return tr.identity, nil
 }
 
-func TestHostConfig_mergesLayersInOrder(t *testing.T) {
+func TestHostConfig_mergesRoles(t *testing.T) {
 	r := newTestRepo(
 		t,
 		map[string]string{
-			"all.yml": `
+			"hosts.yml": `
+hosts:
+  alpha:
+    roles:
+      base:
+      zsh: {users: [chris], prompt_colours: {chris: green}}
+      tailscale: {relay_port: 40000}
+  beta:
+    roles:
+      zsh:
+      tailscale:
+`,
+			"roles/base/role.yml": `
 packages:
-  install: [zsh, vim]
+  install: [vim, kitty-terminfo]
 users:
-  chris:
-    shell: /usr/bin/zsh
-    groups: [wheel]
-zsh:
+  chris: {groups: [wheel]}
+`,
+			"roles/zsh/role.yml": `
+params:
+  users: [chris, root]
   prompt_colours: {chris: white, root: red}
+zsh:
+  users: !param users
+  prompt_colours: !param prompt_colours
+`,
+			"roles/zsh/role.arch.yml": `
+packages:
+  install: [vim]
+  remove: [autojump-rs]
+aur:
+  packages: [autojump-rs-bin]
+`,
+			"roles/zsh/role.debian.yml": "packages:\n  install: [autojump]\n",
+			"roles/tailscale/role.yml": `
+params:
+  relay_port: ~
 tailscale:
   settings:
     ssh: true
-    advertise-exit-node: true
-    operator: chris
-`,
-			"os/archlinux.yml": `
-packages:
-  install: [paru, zsh]
-  remove: [vi]
-`,
-			"hosts/alpha.yml": `
-packages:
-  install: [docker, vim]
-users:
-  chris: {groups: [docker]}
-  root: {shell: /bin/sh}
-zsh:
-  prompt_colours: {chris: green}
-tailscale:
-  settings:
-    advertise-exit-node: false
-    relay-server-port: 40000
-sshd:
-  enabled: false
+    relay-server-port: !param relay_port
 `,
 		},
 	).open(t)
 
-	c, err := r.HostConfig("alpha", "archlinux")
+	c, err := r.HostConfig("alpha", "arch")
 	require.NoError(t, err)
-
-	assert.Equal(t, []string{"zsh", "vim", "paru", "docker"}, c.Packages.Install)
-	assert.Equal(t, []string{"vi"}, c.Packages.Remove)
-	assert.Equal(
-		t,
-		map[string]UserConfig{
-			"chris": {Shell: "/usr/bin/zsh", Groups: []string{"wheel", "docker"}},
-			"root":  {Shell: "/bin/sh"},
-		},
-		c.Users,
-	)
+	assert.Equal(t, []string{"vim", "kitty-terminfo"}, c.Packages.Install)
+	assert.Equal(t, []string{"autojump-rs"}, c.Packages.Remove)
+	assert.Equal(t, []string{"autojump-rs-bin"}, c.AUR.Packages)
+	assert.Equal(t, map[string]UserConfig{"chris": {Groups: []string{"wheel"}}}, c.Users)
+	assert.Equal(t, []string{"chris"}, c.Zsh.Users)
 	assert.Equal(t, map[string]string{"chris": "green", "root": "red"}, c.Zsh.PromptColours)
-	assert.Equal(
-		t,
-		map[string]string{
-			"ssh":                 "true",
-			"advertise-exit-node": "false",
-			"operator":            "chris",
-			"relay-server-port":   "40000",
-		},
-		c.Tailscale.Settings,
-	)
-	assert.False(t, c.SSHD.Enabled)
-	assert.True(t, c.Docker.Enabled)
+	assert.Equal(t, map[string]string{"ssh": "true", "relay-server-port": "40000"}, c.Tailscale.Settings)
+	assert.Nil(t, c.SSHD)
+	assert.Nil(t, c.Docker)
 
 	c, err = r.HostConfig("beta", "debian")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"zsh", "vim"}, c.Packages.Install)
-	assert.Equal(t, map[string]string{"chris": "white", "root": "red"}, c.Zsh.PromptColours)
-	assert.True(t, c.SSHD.Enabled)
+	assert.Equal(t, []string{"autojump"}, c.Packages.Install)
+	assert.Nil(t, c.AUR)
+	assert.Equal(t, []string{"chris", "root"}, c.Zsh.Users)
+	assert.Equal(t, map[string]string{"ssh": "true"}, c.Tailscale.Settings)
+}
+
+func TestHostConfig_bareModuleIsOn(t *testing.T) {
+	c, err := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.yml":             "hosts:\n  alpha:\n    roles:\n      base:\n      docker:\n",
+			"roles/base/role.yml":   "users:\n  chris:\nvim:\ndocker:\n",
+			"roles/docker/role.yml": "docker:\n  users: [chris]\n",
+		},
+	).open(t).HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]UserConfig{"chris": {}}, c.Users)
+	assert.Equal(t, &VimConfig{}, c.Vim)
+	assert.Equal(t, []string{"chris"}, c.Docker.Users)
+	assert.Nil(t, c.SSHD)
+}
+
+func TestHostConfig_noRoles(t *testing.T) {
+	c, err := newTestRepo(t, map[string]string{}).open(t).HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	assert.Equal(t, Config{}, c)
 }
 
 func TestHostConfig_replaceTag(t *testing.T) {
 	c, err := newTestRepo(
 		t,
 		map[string]string{
-			"all.yml": `
+			"hosts.yml": "hosts:\n  alpha:\n    roles:\n      base: {colours: !replace {chris: green}}\n",
+			"roles/base/role.yml": `
+params:
+  colours: {chris: white, root: red}
 packages:
   install: [zsh, vim]
 users:
-  chris: {shell: /usr/bin/zsh, groups: [wheel]}
-  root: {shell: /usr/bin/zsh}
-sshd:
-  settings:
-    PermitRootLogin: "no"
-    MaxAuthTries: 4
+  chris: {groups: [wheel]}
+  root: {}
+zsh:
+  prompt_colours: !param colours
 `,
-			"hosts/alpha.yml": `
+			"roles/base/role.debian.yml": `
 packages:
   install: !replace [nano]
 users: !replace
   chris: {groups: [docker]}
-sshd:
-  settings: !replace {}
 `,
 		},
-	).open(t).HostConfig("alpha", "")
+	).open(t).HostConfig("alpha", "debian")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"nano"}, c.Packages.Install)
 	assert.Equal(t, map[string]UserConfig{"chris": {Groups: []string{"docker"}}}, c.Users)
-	assert.Empty(t, c.SSHD.Settings)
+	assert.Equal(t, map[string]string{"chris": "green"}, c.Zsh.PromptColours)
 }
 
-func TestHostConfig_nullDoesNotOverride(t *testing.T) {
+func TestHostConfig_conflictingRoles(t *testing.T) {
+	files := func(second string) map[string]string {
+		return map[string]string{
+			"hosts.yml":          "hosts:\n  alpha:\n    roles: {one: , two: }\n",
+			"roles/one/role.yml": "sshd:\n  settings: {MaxAuthTries: 4}\n  authorized_keys: {chris: [k1]}\n",
+			"roles/two/role.yml": second,
+		}
+	}
+
 	c, err := newTestRepo(
 		t,
-		map[string]string{
-			"all.yml":         "pam_rssh:\n  keys: [k1]\n",
-			"hosts/alpha.yml": "pam_rssh:\n",
-		},
-	).open(t).HostConfig("alpha", "")
+		files("sshd:\n  settings: {MaxAuthTries: \"4\", LogLevel: VERBOSE}\n  authorized_keys: {chris: [k2]}\n"),
+	).open(t).HostConfig("alpha", "debian")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"k1"}, c.PamRSSH.Keys)
+	assert.Equal(t, map[string]string{"MaxAuthTries": "4", "LogLevel": "VERBOSE"}, c.SSHD.Settings)
+	assert.Equal(t, []string{"k1", "k2"}, c.SSHD.AuthorizedKeys["chris"])
+
+	_, err = newTestRepo(t, files("sshd:\n  settings: {MaxAuthTries: 6}\n")).open(t).HostConfig("alpha", "debian")
+	assert.ErrorContains(t, err, "roles one and two set sshd.settings.MaxAuthTries differently")
 }
 
 func TestHostConfig_errors(t *testing.T) {
@@ -185,54 +208,61 @@ func TestHostConfig_errors(t *testing.T) {
 	}{
 		{
 			name:  "unknown key",
-			files: map[string]string{"os/debian.yml": "packages:\n  install: [a]\n  instal: [b]\n"},
-			want:  []string{"os/debian.yml", "[3:3]", "instal"},
+			files: map[string]string{"roles/base/role.debian.yml": "packages:\n  install: [a]\n  instal: [b]\n"},
+			want:  []string{"roles/base/role.debian.yml", "[3:3]", "instal"},
 		},
 		{
-			name:  "unknown top-level key under replace",
-			files: map[string]string{"hosts/alpha.yml": "sshd: !replace\n  enable: true\n"},
-			want:  []string{"hosts/alpha.yml", "enable"},
+			name:  "unknown key under replace",
+			files: map[string]string{"roles/base/role.debian.yml": "sshd: !replace\n  setting: {}\n"},
+			want:  []string{"roles/base/role.debian.yml", "setting"},
 		},
 		{
-			name:  "plain secret",
-			files: map[string]string{"all.yml": "dns:\n  auth_key: hunter2\n"},
-			want:  []string{"all.yml", "[2:13]", "encrypt"},
+			name:  "unknown module",
+			files: map[string]string{"roles/base/role.yml": "sshd:\n  settings: {}\nfoo: bar\n"},
+			want:  []string{"roles/base/role.yml", "foo"},
 		},
 		{
-			name:  "malformed secret",
-			files: map[string]string{"all.yml": "dns:\n  auth_key: !age not armored\n"},
-			want:  []string{"all.yml", "armored"},
+			name:  "unknown parameter",
+			files: map[string]string{"hosts.yml": "hosts:\n  alpha:\n    roles:\n      base: {colour: red}\n"},
+			want:  []string{"hosts.yml", "[4:14]", `unknown parameter "colour"`},
 		},
 		{
-			name:  "prompt colour under users",
-			files: map[string]string{"hosts/alpha.yml": "users:\n  chris: {prompt_colour: green}\n"},
-			want:  []string{"hosts/alpha.yml", "prompt_colour"},
+			name:  "undeclared parameter",
+			files: map[string]string{"roles/base/role.yml": "zsh:\n  plugins: !param plugins\n"},
+			want:  []string{"roles/base/role.yml", "[2:12]", `unknown parameter "plugins"`},
 		},
 		{
-			name:  "wrong type",
-			files: map[string]string{"all.yml": "sshd:\n  enabled: [yes]\n"},
-			want:  []string{"all.yml"},
+			name:  "params not a mapping",
+			files: map[string]string{"roles/base/role.yml": "params: [a]\n"},
+			want:  []string{"roles/base/role.yml", "params must be a mapping"},
 		},
 		{
 			name:  "syntax error",
-			files: map[string]string{"hosts/alpha.yml": "users: [\n"},
-			want:  []string{"hosts/alpha.yml"},
+			files: map[string]string{"roles/base/role.yml": "users: [\n"},
+			want:  []string{"roles/base/role.yml"},
 		},
 		{
 			name:  "not a mapping",
-			files: map[string]string{"all.yml": "- a\n- b\n"},
-			want:  []string{"all.yml", "mapping"},
+			files: map[string]string{"roles/base/role.yml": "- a\n- b\n"},
+			want:  []string{"roles/base/role.yml", "mapping"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(
 			tt.name,
 			func(t *testing.T) {
+				if _, ok := tt.files["hosts.yml"]; !ok {
+					tt.files["hosts.yml"] = "hosts:\n  alpha:\n    roles: {base: }\n"
+				}
+				if _, ok := tt.files["roles/base/role.yml"]; !ok {
+					tt.files["roles/base/role.yml"] = ""
+				}
 				_, err := newTestRepo(t, tt.files).open(t).HostConfig("alpha", "debian")
 				require.Error(t, err)
 				for _, w := range tt.want {
 					assert.Contains(t, err.Error(), w)
 				}
+				assert.Contains(t, err.Error(), "role base")
 			},
 		)
 	}
@@ -249,13 +279,19 @@ func TestOpen(t *testing.T) {
 		files map[string]string
 		want  string
 	}{
-		{"host file for unknown host", map[string]string{"hosts/gamma.yml": ""}, "gamma"},
 		{"credentials for unknown host", map[string]string{"credentials/gamma.yml": ""}, "gamma"},
-		{"wrong extension", map[string]string{"hosts/alpha.yaml": ""}, "alpha.yaml"},
+		{"wrong extension", map[string]string{"credentials/alpha.yaml": ""}, "alpha.yaml"},
 		{"unknown inventory key", map[string]string{"hosts.yml": "hosts:\n  a: {addr: x}\n"}, "addr"},
 		{"invalid host key", map[string]string{"hosts.yml": "hosts:\n  a: {host_keys: [ssh-ed25519 nope]}\n"}, "host key"},
-		{"bad recipient", map[string]string{"secrets.yml": "recipients: [nope]\n"}, "recipients"},
-		{"unknown secrets key", map[string]string{"secrets.yml": "identity: op://x\n"}, "identity"},
+		{"role parameters not a mapping", map[string]string{"hosts.yml": "hosts:\n  a: {roles: {base: [x]}}\n"}, "mapping"},
+		{"unknown role", map[string]string{"hosts.yml": "hosts:\n  a: {roles: {base: }}\n"}, `role "base"`},
+		{"file in roles", map[string]string{"roles/base.yml": ""}, "base.yml"},
+		{"missing role.yml", map[string]string{"roles/base/role.arch.yml": ""}, "missing role.yml"},
+		{"unknown OS", map[string]string{"roles/base/role.yml": "", "roles/base/role.archlinux.yml": ""}, `"archlinux"`},
+		{"unexpected role file", map[string]string{"roles/base/role.yml": "", "roles/base/notes.txt": ""}, "notes.txt"},
+		{"bad recipient", map[string]string{"sensible.yml": "secrets:\n  recipients: [nope]\n"}, "recipients"},
+		{"unknown settings key", map[string]string{"sensible.yml": "identity: op://x\n"}, "identity"},
+		{"plain DNS secret", map[string]string{"sensible.yml": "dns:\n  auth_key: hunter2\n"}, "encrypt"},
 	}
 	for _, tt := range tests {
 		t.Run(
@@ -275,7 +311,12 @@ func TestOpen(t *testing.T) {
 				"alpha.example.com",
 				newTestRepo(
 					t,
-					map[string]string{"hosts/alpha.yml": "", "os/arch.yml": "", "hosts/.alpha.yml.swp": ""},
+					map[string]string{
+						"roles/base/role.yml":        "",
+						"roles/base/role.arch.yml":   "",
+						"roles/base/.role.yml.swp":   "",
+						"credentials/.alpha.yml.swp": "",
+					},
 				).open(t).Inventory().Hosts["alpha"].Address,
 			)
 		},
@@ -321,6 +362,13 @@ func TestAddHostKey(t *testing.T) {
 			want:  "hosts:\n  alpha:\n    address: |\n      a\n    host_keys:\n      - KEY\n  beta:\n",
 		},
 		{
+			name:  "roles block",
+			hosts: "hosts:\n  alpha:\n    address: a\n    roles:\n      base:\n      zsh: {users: [chris]}\n  beta:\n",
+			host:  "alpha",
+			want: "hosts:\n  alpha:\n    address: a\n    roles:\n      base:\n      zsh: {users: [chris]}\n" +
+				"    host_keys:\n      - KEY\n  beta:\n",
+		},
+		{
 			name:  "empty entry without trailing newline",
 			hosts: "hosts:\n  alpha:\n    address: a\n  beta:",
 			host:  "beta",
@@ -332,7 +380,10 @@ func TestAddHostKey(t *testing.T) {
 			tt.name,
 			func(t *testing.T) {
 				key := testHostKey(t)
-				tr := newTestRepo(t, map[string]string{"hosts.yml": tt.hosts})
+				tr := newTestRepo(
+					t,
+					map[string]string{"hosts.yml": tt.hosts, "roles/base/role.yml": "", "roles/zsh/role.yml": ""},
+				)
 				r := tr.open(t)
 
 				require.NoError(t, r.AddHostKey(tt.host, key.PublicKey))
@@ -396,31 +447,27 @@ func TestSecrets_encryptAndReveal(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(user, "!age |\n  -----BEGIN AGE ENCRYPTED FILE-----\n"))
 
-	writeFile(t, tr.dir, "all.yml", "dns:\n  auth_user: "+nest(user)+"\n")
-	writeFile(t, tr.dir, "hosts/alpha.yml", "dns:\n  hostname: alpha.example.com\n  auth_key: "+nest(key)+"\n")
-
-	c, err := r.HostConfig("alpha", "")
+	settings, err := os.ReadFile(filepath.Join(tr.dir, "sensible.yml"))
 	require.NoError(t, err)
+	writeFile(t, tr.dir, "sensible.yml", string(settings)+"dns:\n  auth_user: "+nest(user)+"\n  auth_key: "+nest(key)+"\n")
+	r = tr.open(t)
 	assert.Equal(t, 0, tr.fetches)
 
-	got, err := c.DNS.AuthUser.Reveal()
+	got, err := r.DNS().AuthUser.Reveal()
 	require.NoError(t, err)
 	assert.Equal(t, "alice", got)
-	got, err = c.DNS.AuthKey.Reveal()
+	got, err = r.DNS().AuthKey.Reveal()
 	require.NoError(t, err)
 	assert.Equal(t, "hunter2\nwith newline\n", got)
-
-	c, err = r.HostConfig("beta", "")
-	require.NoError(t, err)
-	assert.True(t, c.DNS.AuthKey.IsZero())
-	_, err = c.DNS.AuthUser.Reveal()
-	require.NoError(t, err)
-
 	assert.Equal(t, 1, tr.fetches)
 }
 
 func TestSecrets_identityErrorIsCached(t *testing.T) {
 	tr := newTestRepo(t, map[string]string{})
+	enc, err := tr.open(t).Encrypt("x")
+	require.NoError(t, err)
+	writeFile(t, tr.dir, "sensible.yml", "dns:\n  auth_key: "+nest(enc)+"\n  auth_user: "+nest(enc)+"\n")
+
 	calls := 0
 	r, err := Open(
 		tr.dir,
@@ -430,15 +477,9 @@ func TestSecrets_identityErrorIsCached(t *testing.T) {
 		},
 	)
 	require.NoError(t, err)
-	enc, err := r.Encrypt("x")
-	require.NoError(t, err)
-	writeFile(t, tr.dir, "all.yml", "dns:\n  auth_key: "+nest(enc)+"\n  auth_user: "+nest(enc)+"\n")
-
-	c, err := r.HostConfig("alpha", "")
-	require.NoError(t, err)
-	_, err = c.DNS.AuthKey.Reveal()
+	_, err = r.DNS().AuthKey.Reveal()
 	require.ErrorContains(t, err, "locked")
-	_, err = c.DNS.AuthUser.Reveal()
+	_, err = r.DNS().AuthUser.Reveal()
 	require.ErrorContains(t, err, "locked")
 	assert.Equal(t, 1, calls)
 }
@@ -447,13 +488,11 @@ func TestSecrets_wrongIdentity(t *testing.T) {
 	tr := newTestRepo(t, map[string]string{})
 	enc, err := tr.open(t).Encrypt("x")
 	require.NoError(t, err)
-	writeFile(t, tr.dir, "all.yml", "dns:\n  auth_key: "+nest(enc)+"\n")
+	writeFile(t, tr.dir, "sensible.yml", "dns:\n  auth_key: "+nest(enc)+"\n")
 
 	tr.identity, err = age.GenerateX25519Identity()
 	require.NoError(t, err)
-	c, err := tr.open(t).HostConfig("alpha", "")
-	require.NoError(t, err)
-	_, err = c.DNS.AuthKey.Reveal()
+	_, err = tr.open(t).DNS().AuthKey.Reveal()
 	assert.Error(t, err)
 }
 
@@ -463,7 +502,7 @@ func TestSecret_zeroReveal(t *testing.T) {
 }
 
 func TestEncrypt_noRecipients(t *testing.T) {
-	_, err := newTestRepo(t, map[string]string{"secrets.yml": ""}).open(t).Encrypt("x")
+	_, err := newTestRepo(t, map[string]string{"sensible.yml": ""}).open(t).Encrypt("x")
 	assert.Error(t, err)
 }
 
@@ -519,12 +558,12 @@ func TestCommandIdentity(t *testing.T) {
 
 	got, err := newTestRepo(
 		t,
-		map[string]string{"secrets.yml": "identity_command: [echo, \"" + id.String() + "\"]\n"},
+		map[string]string{"sensible.yml": "secrets:\n  identity_command: [echo, \"" + id.String() + "\"]\n"},
 	).open(t).CommandIdentity()()
 	require.NoError(t, err)
 	assert.Equal(t, id.String(), got.(*age.X25519Identity).String())
 
-	_, err = newTestRepo(t, map[string]string{"secrets.yml": ""}).open(t).CommandIdentity()()
+	_, err = newTestRepo(t, map[string]string{"sensible.yml": ""}).open(t).CommandIdentity()()
 	require.ErrorContains(t, err, "identity_command")
 
 	got, err = commandIdentity("echo", "# comment\n"+id.String())()
@@ -546,24 +585,4 @@ func writeFile(t *testing.T, dir, name, content string) {
 
 func nest(yaml string) string {
 	return strings.ReplaceAll(yaml, "\n", "\n  ")
-}
-
-func TestHostConfig_listsReplaceBuiltInDefaults(t *testing.T) {
-	c, err := newTestRepo(
-		t,
-		map[string]string{
-			"all.yml":         "zsh:\n  plugins: [git, autojump]\nsshd:\n  settings:\n    MaxAuthTries: 6\n",
-			"hosts/alpha.yml": "zsh:\n  plugins: [docker]\n",
-		},
-	).open(t).HostConfig("alpha", "")
-	require.NoError(t, err)
-	assert.Equal(t, []string{"git", "autojump", "docker"}, c.Zsh.Plugins)
-	assert.Equal(t, "6", c.SSHD.Settings["MaxAuthTries"])
-	assert.Equal(t, "no", c.SSHD.Settings["PermitRootLogin"])
-}
-
-func TestHostConfig_unsetListsKeepBuiltInDefaults(t *testing.T) {
-	c, err := newTestRepo(t, map[string]string{"all.yml": "docker:\n  users: [chris]\n"}).open(t).HostConfig("alpha", "")
-	require.NoError(t, err)
-	assert.Contains(t, c.Zsh.Plugins, "git")
 }

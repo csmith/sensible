@@ -241,8 +241,8 @@ func newRunnerFixture(t *testing.T, resources host.ResourceList) *runnerFixture 
 			return f.answer, nil
 		},
 		Builds: newFakeBuilds(t),
-		Compile: func(target, host.Facts) (host.ResourceList, config.DNSConfig, error) {
-			return resources, config.DNSConfig{}, nil
+		Compile: func(target, host.Facts) (host.ResourceList, error) {
+			return resources, nil
 		},
 	}
 	return f
@@ -368,11 +368,11 @@ func TestExecute_nothingToDo(t *testing.T) {
 
 func TestExecute_compileErrorIsReportedForThatHost(t *testing.T) {
 	f := newRunnerFixture(t, testResources)
-	f.runner.Compile = func(t target, _ host.Facts) (host.ResourceList, config.DNSConfig, error) {
+	f.runner.Compile = func(t target, _ host.Facts) (host.ResourceList, error) {
 		if t.name == "weird" {
-			return nil, config.DNSConfig{}, errors.New("unsupported OS family")
+			return nil, errors.New("unsupported OS family")
 		}
-		return testResources, config.DNSConfig{}, nil
+		return testResources, nil
 	}
 	weird := &fakeAgent{}
 	changed := &fakeAgent{status: deferDocker}
@@ -392,18 +392,19 @@ func TestExecute_compileErrorIsReportedForThatHost(t *testing.T) {
 
 // testRepo opens a config directory whose secrets are encrypted to a fresh
 // identity. Other files can be written to it afterwards.
-func testRepo(t *testing.T) (*config.Repo, string) {
+func testRepo(t *testing.T) (*config.Repo, string, config.IdentitySource) {
 	t.Helper()
 	id, err := age.GenerateX25519Identity()
 	require.NoError(t, err)
 	dir := t.TempDir()
 	hostsYAML := "hosts:\n  acidburn:\n    address: 192.0.2.1\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "hosts.yml"), []byte(hostsYAML), 0o600))
-	secretsYAML := "recipients: [" + id.Recipient().String() + "]\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "secrets.yml"), []byte(secretsYAML), 0o600))
-	repo, err := config.Open(dir, func() (age.Identity, error) { return id, nil })
+	settingsYAML := "secrets:\n  recipients: [" + id.Recipient().String() + "]\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sensible.yml"), []byte(settingsYAML), 0o600))
+	source := func() (age.Identity, error) { return id, nil }
+	repo, err := config.Open(dir, source)
 	require.NoError(t, err)
-	return repo, dir
+	return repo, dir, source
 }
 
 func writeFile(t *testing.T, path, content string) {
@@ -413,22 +414,23 @@ func writeFile(t *testing.T, path, content string) {
 }
 
 func TestExecute_dnsIsPlannedFromFactsAndAppliedAfterHosts(t *testing.T) {
-	repo, dir := testRepo(t)
+	repo, dir, source := testRepo(t)
 	user, err := repo.Encrypt("me@example.com")
 	require.NoError(t, err)
 	key, err := repo.Encrypt("key")
 	require.NoError(t, err)
+	settings, err := os.ReadFile(filepath.Join(dir, "sensible.yml"))
+	require.NoError(t, err)
 	writeFile(
 		t,
-		filepath.Join(dir, "hosts", "acidburn.yml"),
-		"dns:\n  hostname: acidburn.example.com\n  auth_user: "+indentYAML(user)+"\n  auth_key: "+indentYAML(key)+"\n",
+		filepath.Join(dir, "sensible.yml"),
+		string(settings)+"dns:\n  auth_user: "+indentYAML(user)+"\n  auth_key: "+indentYAML(key)+"\n",
 	)
+	repo, err = config.Open(dir, source)
+	require.NoError(t, err)
 
 	f := newRunnerFixture(t, testResources)
-	f.runner.Compile = func(t target, facts host.Facts) (host.ResourceList, config.DNSConfig, error) {
-		cfg, err := repo.HostConfig(t.name, facts.OSFamily)
-		return testResources, cfg.DNS, err
-	}
+	f.runner.DNSCredentials = repo.DNS()
 	client := &fakeDNS{
 		domains: []string{"example.com"},
 		records: []api.ExistingRecord{
@@ -441,12 +443,16 @@ func TestExecute_dnsIsPlannedFromFactsAndAppliedAfterHosts(t *testing.T) {
 		account = []string{user, key}
 		return client
 	}
-	agent := &fakeAgent{
-		status: deferDocker,
-		facts:  host.Facts{DefaultIPv4: "203.0.113.2", DefaultIPv6: "2001:0db8:0::1"},
-	}
+	acidburn := f.target(
+		"acidburn",
+		&fakeAgent{
+			status: deferDocker,
+			facts:  host.Facts{DefaultIPv4: "203.0.113.2", DefaultIPv6: "2001:0db8:0::1"},
+		},
+	)
+	acidburn.dnsName = "acidburn.example.com"
 
-	err = f.runner.Execute(t.Context(), []target{f.target("acidburn", agent)}, true, true)
+	err = f.runner.Execute(t.Context(), []target{acidburn, f.target("smarts", &fakeAgent{})}, true, true)
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"me@example.com", "key"}, account)

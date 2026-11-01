@@ -42,7 +42,7 @@ type Change struct {
 
 // Facts describe a host, as gathered by its agent.
 type Facts struct {
-	// OSFamily is "archlinux" or "debian".
+	// OSFamily is "arch" or "debian".
 	OSFamily string `json:"os_family"`
 	// Release is the distribution's codename, e.g. "bookworm". Empty on Arch.
 	Release string `json:"release"`

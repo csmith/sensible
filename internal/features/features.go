@@ -24,7 +24,7 @@ type Host struct {
 }
 
 const (
-	archLinux = "archlinux"
+	archLinux = "arch"
 	debian    = "debian"
 )
 
@@ -41,7 +41,6 @@ func Resources(h Host) (host.ResourceList, error) {
 	}
 
 	features := []func(Host) ([]host.Resource, error){
-		// Before users, which sets zsh as their shell.
 		packages,
 		aur,
 		vim,

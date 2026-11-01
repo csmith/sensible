@@ -9,31 +9,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestShowConfig_masksSecrets(t *testing.T) {
-	repo, dir := testRepo(t)
-	key, err := repo.Encrypt("very secret")
-	require.NoError(t, err)
-	writeFile(
-		t,
-		filepath.Join(dir, "hosts", "acidburn.yml"),
-		"dns:\n  hostname: acidburn.example.com\n  auth_key: "+indentYAML(key)+"\nzsh:\n  plugins: [git]\n",
-	)
+func TestShowConfig(t *testing.T) {
+	_, dir, _ := testRepo(t)
+	writeFile(t, filepath.Join(dir, "hosts.yml"), "hosts:\n  acidburn:\n    roles: {base: }\n")
+	writeFile(t, filepath.Join(dir, "roles", "base", "role.yml"), "vim: {}\nzsh:\n  plugins: [git]\n")
 	var out bytes.Buffer
 
 	require.NoError(t, ShowConfig(t.Context(), dir, "acidburn", "debian", "", &out))
 
-	assert.Contains(t, out.String(), "hostname: acidburn.example.com")
-	assert.Contains(t, out.String(), "auth_key: <secret>")
-	assert.NotContains(t, out.String(), "auth_user")
-	assert.NotContains(t, out.String(), "AGE ENCRYPTED")
-	assert.Contains(t, out.String(), "- git")
+	assert.Equal(t, "zsh:\n  plugins:\n  - git\nvim: {}\n", out.String())
 }
 
 func TestSecretAt(t *testing.T) {
-	repo, dir := testRepo(t)
+	repo, dir, _ := testRepo(t)
 	key, err := repo.Encrypt("very secret")
 	require.NoError(t, err)
-	file := filepath.Join(dir, "hosts", "acidburn.yml")
+	file := filepath.Join(dir, "sensible.yml")
 	writeFile(t, file, "dns:\n  hostname: acidburn.example.com\n  auth_key: "+indentYAML(key)+"\n")
 
 	armored, err := secretAt(file, "dns.auth_key")

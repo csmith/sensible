@@ -114,24 +114,27 @@ func parseLayer(name string, src []byte) (ast.Node, error) {
 	return f.Docs[0].Body, nil
 }
 
-// withoutSetSequences returns defaults without the sequences that config
-// sets, so a list in the config replaces the built-in default rather than
-// adding to it, as the default is only a fallback.
-func withoutSetSequences(defaults, config ast.Node) ast.Node {
-	d, ok := defaults.(*ast.MappingNode)
-	if !ok {
-		return defaults
+// withoutSetSequences returns lower without the sequences that upper sets,
+// so merging upper over the result replaces those lists rather than adding to
+// them.
+func withoutSetSequences(lower, upper ast.Node) ast.Node {
+	if upper != nil && upper.Type() == ast.SequenceType {
+		return nil
 	}
-	c, ok := config.(*ast.MappingNode)
+	l, ok := lower.(*ast.MappingNode)
 	if !ok {
-		return defaults
+		return lower
+	}
+	u, ok := upper.(*ast.MappingNode)
+	if !ok {
+		return lower
 	}
 	set := map[string]ast.Node{}
-	for _, v := range c.Values {
+	for _, v := range u.Values {
 		set[keyString(v.Key)] = v.Value
 	}
-	result := ast.Mapping(d.Start, d.IsFlowStyle)
-	for _, v := range d.Values {
+	result := ast.Mapping(l.Start, l.IsFlowStyle)
+	for _, v := range l.Values {
 		value, isSet := set[keyString(v.Key)]
 		switch {
 		case !isSet:

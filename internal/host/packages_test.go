@@ -294,10 +294,10 @@ func TestParseOSRelease(t *testing.T) {
 		data, family, release string
 		wantErr               bool
 	}{
-		{data: "ID=arch\n", family: "archlinux"},
+		{data: "ID=arch\n", family: "arch"},
 		{data: "ID=debian\nVERSION_CODENAME=bookworm\n", family: "debian", release: "bookworm"},
 		{data: "ID=ubuntu\nID_LIKE=debian\nVERSION_CODENAME=\"noble\"\n", family: "debian", release: "noble"},
-		{data: "ID=endeavouros\nID_LIKE=\"arch\"\n", family: "archlinux"},
+		{data: "ID=endeavouros\nID_LIKE=\"arch\"\n", family: "arch"},
 		{data: "ID=fedora\n", wantErr: true},
 	}
 	for _, tt := range tests {

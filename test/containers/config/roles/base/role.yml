@@ -1,0 +1,11 @@
+users:
+  chris:
+  root:
+
+sudoers:
+  000-chris:
+    - chris ALL=(ALL:ALL) ALL
+
+packages:
+  install:
+    - kitty-terminfo

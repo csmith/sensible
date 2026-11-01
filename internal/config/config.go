@@ -2,9 +2,9 @@ package config
 
 import (
 	"context"
-	_ "embed"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -18,6 +18,8 @@ import (
 	"github.com/goccy/go-yaml/parser"
 	"github.com/goccy/go-yaml/token"
 	"golang.org/x/crypto/ssh"
+
+	"chameth.com/sensible/internal/host"
 )
 
 // Inventory is the parsed hosts.yml.
@@ -28,8 +30,13 @@ type Inventory struct {
 type HostEntry struct {
 	// Address is the host's public or LAN address. Empty for the local host.
 	Address string `yaml:"address"`
+	// DNSName gets A and AAAA records for the host's default addresses.
+	// Empty disables DNS management for the host.
+	DNSName string `yaml:"dns_name"`
 	// HostKeys are the host's SSH public keys, which connections must match.
 	HostKeys []HostKey `yaml:"host_keys"`
+	// Roles are the host's roles, each with the parameters the host sets.
+	Roles map[string]RoleParams `yaml:"roles"`
 }
 
 // HostKey is an SSH public key written as in authorized_keys.
@@ -61,19 +68,19 @@ type Credentials struct {
 	Rotated      time.Time `yaml:"rotated"`
 }
 
-// Config is one host's merged configuration: built-in defaults, all.yml,
-// os/<family>.yml, then hosts/<name>.yml.
+// Config is one host's configuration, merged from its roles. A nil module
+// is one no role mentions, which doesn't run.
 type Config struct {
-	Packages  PackagesConfig        `yaml:"packages"`
-	AUR       AURConfig             `yaml:"aur"`
+	Packages  *PackagesConfig       `yaml:"packages"`
+	AUR       *AURConfig            `yaml:"aur"`
 	Users     map[string]UserConfig `yaml:"users"`
 	Sudoers   map[string][]string   `yaml:"sudoers"`
-	PamRSSH   PamRSSHConfig         `yaml:"pam_rssh"`
-	SSHD      SSHDConfig            `yaml:"sshd"`
-	Tailscale TailscaleConfig       `yaml:"tailscale"`
-	Zsh       ZshConfig             `yaml:"zsh"`
-	Docker    DockerConfig          `yaml:"docker"`
-	DNS       DNSConfig             `yaml:"dns"`
+	PamRSSH   *PamRSSHConfig        `yaml:"pam_rssh"`
+	SSHD      *SSHDConfig           `yaml:"sshd"`
+	Tailscale *TailscaleConfig      `yaml:"tailscale"`
+	Zsh       *ZshConfig            `yaml:"zsh"`
+	Docker    *DockerConfig         `yaml:"docker"`
+	Vim       *VimConfig            `yaml:"vim"`
 }
 
 type PackagesConfig struct {
@@ -87,9 +94,7 @@ type AURConfig struct {
 }
 
 type UserConfig struct {
-	Shell   string   `yaml:"shell"`
-	Groups  []string `yaml:"groups"`
-	SSHKeys []string `yaml:"ssh_keys"`
+	Groups []string `yaml:"groups"`
 }
 
 type PamRSSHConfig struct {
@@ -97,8 +102,9 @@ type PamRSSHConfig struct {
 }
 
 type SSHDConfig struct {
-	Enabled  bool              `yaml:"enabled"`
 	Settings map[string]string `yaml:"settings"`
+	// AuthorizedKeys are each user's login keys.
+	AuthorizedKeys map[string][]string `yaml:"authorized_keys"`
 }
 
 type TailscaleConfig struct {
@@ -106,20 +112,21 @@ type TailscaleConfig struct {
 }
 
 type ZshConfig struct {
+	// Users get zsh as their shell.
+	Users   []string `yaml:"users"`
 	Plugins []string `yaml:"plugins"`
 	// PromptColours colours the host segment of each user's prompt.
 	PromptColours map[string]string `yaml:"prompt_colours"`
 }
 
 type DockerConfig struct {
-	Enabled bool     `yaml:"enabled"`
-	Users   []string `yaml:"users"`
+	Users []string `yaml:"users"`
 }
 
-type DNSConfig struct {
-	// Hostname gets A and AAAA records for the host's default addresses.
-	// Empty disables DNS management for the host.
-	Hostname string `yaml:"hostname"`
+type VimConfig struct{}
+
+// DNSCredentials are the DNS provider's API credentials.
+type DNSCredentials struct {
 	AuthUser Secret `yaml:"auth_user"`
 	AuthKey  Secret `yaml:"auth_key"`
 }
@@ -130,13 +137,14 @@ type Repo struct {
 	inventory       Inventory
 	recipients      []age.Recipient
 	identityCommand []string
+	dns             DNSCredentials
 	keys            *keyring
 }
 
-// Open reads hosts.yml and secrets.yml from dir and checks the directory's
+// Open reads hosts.yml and sensible.yml from dir and checks the directory's
 // layout. A nil identity means CommandIdentity.
 func Open(dir string, identity IdentitySource) (*Repo, error) {
-	r := &Repo{dir: dir}
+	r := &Repo{dir: dir, keys: &keyring{}}
 
 	root, err := r.readLayer("hosts.yml", false)
 	if err != nil {
@@ -149,14 +157,14 @@ func Open(dir string, identity IdentitySource) (*Repo, error) {
 		return nil, fmt.Errorf("%s: %w", r.path("hosts.yml"), err)
 	}
 
-	if err := r.readSecrets(); err != nil {
+	if err := r.readSettings(); err != nil {
 		return nil, err
 	}
 
 	if identity == nil {
 		identity = r.CommandIdentity()
 	}
-	r.keys = &keyring{source: identity}
+	r.keys.source = identity
 
 	if err := r.checkLayout(); err != nil {
 		return nil, err
@@ -168,70 +176,10 @@ func (r *Repo) Inventory() Inventory {
 	return r.inventory
 }
 
-// HostConfig merges the layers for the named host. osFamily is the host's
-// Facts.OSFamily, used to choose os/<family>.yml.
-func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
-	if err := r.checkHost(name); err != nil {
-		return Config{}, err
-	}
-	if strings.ContainsAny(osFamily, `/\`) || strings.HasPrefix(osFamily, ".") {
-		return Config{}, fmt.Errorf("invalid OS family %q", osFamily)
-	}
-
-	layers := []struct {
-		file   string
-		source func() (ast.Node, error)
-	}{
-		{r.path("all.yml"), func() (ast.Node, error) { return r.readLayer("all.yml", true) }},
-		{r.path("os", osFamily+".yml"), func() (ast.Node, error) {
-			if osFamily == "" {
-				return nil, nil
-			}
-			return r.readLayer(filepath.Join("os", osFamily+".yml"), true)
-		}},
-		{r.path("hosts", name+".yml"), func() (ast.Node, error) {
-			return r.readLayer(filepath.Join("hosts", name+".yml"), true)
-		}},
-	}
-
-	var configured ast.Node
-	var nodes []ast.Node
-	for _, l := range layers {
-		node, err := l.source()
-		if err != nil {
-			return Config{}, err
-		}
-		if node == nil {
-			continue
-		}
-		// Each layer is checked alone first, so errors name the file at fault.
-		if err := decode(r.keys.context(), merge(nil, node), &Config{}); err != nil {
-			return Config{}, fmt.Errorf("%s: %w", l.file, err)
-		}
-		configured = merge(configured, node)
-		nodes = append(nodes, node)
-	}
-
-	merged, err := parseLayer("built-in defaults", defaults)
-	if err != nil {
-		return Config{}, err
-	}
-	if configured != nil {
-		merged = withoutSetSequences(merged, configured)
-	}
-	for _, node := range nodes {
-		merged = merge(merged, node)
-	}
-
-	var c Config
-	if err := decode(r.keys.context(), merged, &c); err != nil {
-		return Config{}, fmt.Errorf("merging configuration for %s: %w", name, err)
-	}
-	return c, nil
+// DNS is the DNS provider credentials from sensible.yml.
+func (r *Repo) DNS() DNSCredentials {
+	return r.dns
 }
-
-//go:embed defaults.yml
-var defaults []byte
 
 // Credentials reads credentials/<host>.yml, returning nil if it doesn't
 // exist.
@@ -315,7 +263,7 @@ func (r *Repo) AddHostKey(name string, key ssh.PublicKey) error {
 	if err == nil {
 		err = decode(context.Background(), root, &got)
 	}
-	if err != nil || !reflect.DeepEqual(got, want) {
+	if err != nil || !reflect.DeepEqual(comparableInventory(got), comparableInventory(want)) {
 		return fmt.Errorf("couldn't update the layout of %s; %w", file, manual)
 	}
 
@@ -324,6 +272,21 @@ func (r *Repo) AddHostKey(name string, key ssh.PublicKey) error {
 	}
 	r.inventory = got
 	return nil
+}
+
+// comparableInventory replaces role parameters with their text, as their
+// nodes record where they are in the file.
+func comparableInventory(inv Inventory) map[string]any {
+	out := map[string]any{}
+	for name, e := range inv.Hosts {
+		roles := map[string]string{}
+		for role, p := range e.Roles {
+			roles[role] = p.String()
+		}
+		e.Roles = nil
+		out[name] = []any{e, roles}
+	}
+	return out
 }
 
 // insertHostKey adds a host_keys list to the end of the host's entry.
@@ -430,31 +393,84 @@ func writeAtomic(path string, content []byte, perm os.FileMode) error {
 	return os.Rename(f.Name(), path)
 }
 
-// checkLayout rejects files in hosts/ and credentials/ that don't belong to an
-// inventory host, and files in os/ that would never be read.
+// checkLayout rejects credentials that don't belong to an inventory host,
+// role files that would never be read, and roles hosts.yml names that don't
+// exist.
 func (r *Repo) checkLayout() error {
-	for _, dir := range []string{"hosts", "credentials", "os"} {
-		entries, err := os.ReadDir(r.path(dir))
-		if errors.Is(err, os.ErrNotExist) {
-			continue
+	entries, err := readDir(r.path("credentials"))
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		name, ok := strings.CutSuffix(e.Name(), ".yml")
+		if !ok || e.IsDir() {
+			return fmt.Errorf("%s: unexpected file; expected <host>.yml", r.path("credentials", e.Name()))
 		}
-		if err != nil {
+		if _, known := r.inventory.Hosts[name]; !known {
+			return fmt.Errorf("%s: host %q isn't in hosts.yml", r.path("credentials", e.Name()), name)
+		}
+	}
+
+	roles := map[string]bool{}
+	entries, err = readDir(r.path("roles"))
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			return fmt.Errorf("%s: unexpected file; expected a role directory", r.path("roles", e.Name()))
+		}
+		if err := r.checkRole(e.Name()); err != nil {
 			return err
 		}
-		for _, e := range entries {
-			if strings.HasPrefix(e.Name(), ".") {
-				continue
-			}
-			name, ok := strings.CutSuffix(e.Name(), ".yml")
-			if !ok || e.IsDir() {
-				return fmt.Errorf("%s: unexpected file; expected <name>.yml", r.path(dir, e.Name()))
-			}
-			if _, known := r.inventory.Hosts[name]; dir != "os" && !known {
-				return fmt.Errorf("%s: host %q isn't in hosts.yml", r.path(dir, e.Name()), name)
+		roles[e.Name()] = true
+	}
+
+	for _, host := range slices.Sorted(maps.Keys(r.inventory.Hosts)) {
+		for _, role := range slices.Sorted(maps.Keys(r.inventory.Hosts[host].Roles)) {
+			if !roles[role] {
+				return fmt.Errorf("%s: %s has role %q, which isn't in %s", r.path("hosts.yml"), host, role, r.path("roles"))
 			}
 		}
 	}
 	return nil
+}
+
+func (r *Repo) checkRole(role string) error {
+	entries, err := readDir(r.path("roles", role))
+	if err != nil {
+		return err
+	}
+	hasBase := false
+	for _, e := range entries {
+		file := r.path("roles", role, e.Name())
+		if e.Name() == "role.yml" && !e.IsDir() {
+			hasBase = true
+			continue
+		}
+		middle, ok := strings.CutPrefix(e.Name(), "role.")
+		family, ok2 := strings.CutSuffix(middle, ".yml")
+		if !ok || !ok2 || e.IsDir() {
+			return fmt.Errorf("%s: unexpected file; expected role.yml or role.<os>.yml", file)
+		}
+		if !slices.Contains(host.OSFamilies, family) {
+			return fmt.Errorf("%s: unknown OS %q; expected one of %s", file, family, strings.Join(host.OSFamilies, ", "))
+		}
+	}
+	if !hasBase {
+		return fmt.Errorf("%s: missing role.yml", r.path("roles", role))
+	}
+	return nil
+}
+
+// readDir lists a directory without hidden files, returning nothing if it
+// doesn't exist.
+func readDir(dir string) ([]os.DirEntry, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return slices.DeleteFunc(entries, func(e os.DirEntry) bool { return strings.HasPrefix(e.Name(), ".") }), err
 }
 
 func (r *Repo) checkHost(name string) error {

@@ -8,6 +8,9 @@ import (
 
 func packages(h Host) ([]host.Resource, error) {
 	c := h.Config.Packages
+	if c == nil {
+		return nil, nil
+	}
 	// Removed before anything is installed, so they can be replaced by
 	// packages that conflict with them.
 	rs := make([]host.Resource, 0, len(c.Remove)+len(c.Install))
@@ -18,6 +21,9 @@ func packages(h Host) ([]host.Resource, error) {
 }
 
 func aur(h Host) ([]host.Resource, error) {
+	if h.Config.AUR == nil {
+		return nil, nil
+	}
 	return aurPackages(h, h.Config.AUR.Packages...)
 }
 
@@ -67,6 +73,9 @@ func aurPackages(h Host, names ...string) ([]host.Resource, error) {
 }
 
 func vim(h Host) ([]host.Resource, error) {
+	if h.Config.Vim == nil {
+		return nil, nil
+	}
 	rs := installPackages("vim")
 	// Debian's vim package already links these to it.
 	if h.Facts.OSFamily != archLinux {
@@ -93,8 +102,7 @@ var pamRSSHDebChecksums = map[string]string{
 }
 
 func pamRSSH(h Host) ([]host.Resource, error) {
-	keys := h.Config.PamRSSH.Keys
-	if len(keys) == 0 {
+	if h.Config.PamRSSH == nil || len(h.Config.PamRSSH.Keys) == 0 {
 		return nil, nil
 	}
 
@@ -105,7 +113,13 @@ func pamRSSH(h Host) ([]host.Resource, error) {
 	return append(
 		rs,
 		// The keys that may authenticate sudo.
-		host.File{Path: "/etc/sudoers.keys", Content: managedLines(keys), Owner: "root", Group: "root", Mode: 0o644},
+		host.File{
+			Path:    "/etc/sudoers.keys",
+			Content: managedLines(h.Config.PamRSSH.Keys),
+			Owner:   "root",
+			Group:   "root",
+			Mode:    0o644,
+		},
 		// Let sudo pass the agent through to pam_rssh.
 		sudoersFile("pam_rssh", []string{`Defaults env_keep += "SSH_AUTH_SOCK"`}),
 		host.LineInFile{
@@ -145,10 +159,10 @@ func installPAMRSSH(h Host) ([]host.Resource, string, error) {
 }
 
 func tailscale(h Host) ([]host.Resource, error) {
-	settings := h.Config.Tailscale.Settings
-	if len(settings) == 0 {
+	if h.Config.Tailscale == nil {
 		return nil, nil
 	}
+	settings := h.Config.Tailscale.Settings
 
 	var rs []host.Resource
 	if h.Facts.OSFamily == debian {
@@ -184,7 +198,7 @@ func tailscale(h Host) ([]host.Resource, error) {
 
 func docker(h Host) ([]host.Resource, error) {
 	c := h.Config.Docker
-	if !c.Enabled {
+	if c == nil {
 		return nil, nil
 	}
 

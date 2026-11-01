@@ -54,8 +54,8 @@ func fetchFacts(ctx context.Context, repo *config.Repo, name, addr string) (host
 	return a.facts()
 }
 
-// ShowConfig prints a host's merged configuration with secrets masked. The
-// OS family picks the os/ layer; if it's empty, it's read from the host.
+// ShowConfig prints a host's merged configuration. The OS family picks each
+// role's OS variant; if it's empty, it's read from the host.
 func ShowConfig(ctx context.Context, configDir, name, osFamily, addr string, out io.Writer) error {
 	repo, err := openRepo(configDir, os.Stderr)
 	if err != nil {
@@ -72,7 +72,7 @@ func ShowConfig(ctx context.Context, configDir, name, osFamily, addr string, out
 	if err != nil {
 		return err
 	}
-	text, err := yaml.Marshal(masked(reflect.ValueOf(cfg)))
+	text, err := yaml.Marshal(orEmpty(plain(reflect.ValueOf(cfg))))
 	if err != nil {
 		return err
 	}
@@ -80,18 +80,15 @@ func ShowConfig(ctx context.Context, configDir, name, osFamily, addr string, out
 	return err
 }
 
-var secretType = reflect.TypeFor[config.Secret]()
-
-// masked converts a config value to plain YAML-ready data, in field order,
-// leaving out empty values and replacing secrets with a placeholder.
-func masked(v reflect.Value) any {
-	if v.Type() == secretType {
-		if v.Interface().(config.Secret).IsZero() {
+// plain converts a config value to YAML-ready data, in field order, leaving
+// out empty values. Modules that are on but have nothing set show as {}.
+func plain(v reflect.Value) any {
+	switch v.Kind() {
+	case reflect.Pointer:
+		if v.IsNil() {
 			return nil
 		}
-		return "<secret>"
-	}
-	switch v.Kind() {
+		return orEmpty(plain(v.Elem()))
 	case reflect.Struct:
 		var m yaml.MapSlice
 		for i := range v.NumField() {
@@ -103,7 +100,7 @@ func masked(v reflect.Value) any {
 			if name == "" {
 				name = field.Name
 			}
-			if value := masked(v.Field(i)); value != nil {
+			if value := plain(v.Field(i)); value != nil {
 				m = append(m, yaml.MapItem{Key: name, Value: value})
 			}
 		}
@@ -119,7 +116,7 @@ func masked(v reflect.Value) any {
 		sort.Slice(keys, func(i, j int) bool { return fmt.Sprint(keys[i]) < fmt.Sprint(keys[j]) })
 		var m yaml.MapSlice
 		for _, k := range keys {
-			m = append(m, yaml.MapItem{Key: k.Interface(), Value: orEmpty(masked(v.MapIndex(k)))})
+			m = append(m, yaml.MapItem{Key: k.Interface(), Value: orEmpty(plain(v.MapIndex(k)))})
 		}
 		return m
 	case reflect.Slice:
@@ -128,7 +125,7 @@ func masked(v reflect.Value) any {
 		}
 		items := make([]any, v.Len())
 		for i := range items {
-			items[i] = masked(v.Index(i))
+			items[i] = plain(v.Index(i))
 		}
 		return items
 	default:
@@ -147,7 +144,7 @@ func orEmpty(v any) any {
 	return v
 }
 
-// EncryptSecret encrypts in to secrets.yml's recipients and prints it as
+// EncryptSecret encrypts in to sensible.yml's recipients and prints it as
 // a !age scalar. One trailing newline is dropped, as `<<<` adds one.
 func EncryptSecret(configDir string, in io.Reader, out io.Writer) error {
 	repo, err := config.Open(configDir, nil)
@@ -177,7 +174,7 @@ func readSecret(in io.Reader) (string, error) {
 }
 
 // ShowSecret decrypts the !age value at a dotted path in a config file,
-// e.g. "dns.auth_key" in "hosts/acidburn.yml". Relative files are in the
+// e.g. "dns.auth_key" in "sensible.yml". Relative files are in the
 // config directory.
 func ShowSecret(configDir, file, path string, out io.Writer) error {
 	repo, err := config.Open(configDir, nil)
