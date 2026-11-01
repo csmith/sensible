@@ -110,11 +110,11 @@ tailscale:
 
 	c, err := r.HostConfig("alpha", "arch")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"vim", "kitty-terminfo"}, c.Packages.Install)
-	assert.Equal(t, []string{"autojump-rs"}, c.Packages.Remove)
-	assert.Equal(t, []string{"autojump-rs-bin"}, c.AUR.Packages)
+	assert.Equal(t, Set{"vim", "kitty-terminfo"}, c.Packages.Install)
+	assert.Equal(t, Set{"autojump-rs"}, c.Packages.Remove)
+	assert.Equal(t, Set{"autojump-rs-bin"}, c.AUR.Packages)
 	assert.Equal(t, map[string]UserConfig{"chris": {Groups: []string{"wheel"}}}, c.Users)
-	assert.Equal(t, []string{"chris"}, c.Zsh.Users)
+	assert.Equal(t, Set{"chris"}, c.Zsh.Users)
 	assert.Equal(t, map[string]string{"chris": "green", "root": "red"}, c.Zsh.PromptColours)
 	assert.Equal(t, map[string]string{"ssh": "true", "relay-server-port": "40000"}, c.Tailscale.Settings)
 	assert.Nil(t, c.SSHD)
@@ -122,9 +122,9 @@ tailscale:
 
 	c, err = r.HostConfig("beta", "debian")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"autojump"}, c.Packages.Install)
+	assert.Equal(t, Set{"autojump"}, c.Packages.Install)
 	assert.Nil(t, c.AUR)
-	assert.Equal(t, []string{"chris", "root"}, c.Zsh.Users)
+	assert.Equal(t, Set{"chris", "root"}, c.Zsh.Users)
 	assert.Equal(t, map[string]string{"ssh": "true"}, c.Tailscale.Settings)
 }
 
@@ -152,14 +152,14 @@ beta:
 
 	c, err := r.HostConfig("alpha", "arch")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"chris"}, c.Docker.Users)
+	assert.Equal(t, Set{"chris"}, c.Docker.Users)
 	assert.ElementsMatch(t, []string{"a", "b"}, c.Packages.Install)
-	assert.Equal(t, []string{"c"}, c.AUR.Packages)
+	assert.Equal(t, Set{"c"}, c.AUR.Packages)
 	assert.Nil(t, c.Vim)
 
 	c, err = r.HostConfig("beta", "arch")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"a"}, c.Packages.Install)
+	assert.Equal(t, Set{"a"}, c.Packages.Install)
 	assert.Nil(t, c.Docker)
 	assert.Nil(t, c.AUR)
 	assert.NotNil(t, c.Vim)
@@ -190,7 +190,7 @@ func TestHostConfig_bareModuleIsOn(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, map[string]UserConfig{"chris": {}}, c.Users)
 	assert.Equal(t, &VimConfig{}, c.Vim)
-	assert.Equal(t, []string{"chris"}, c.Docker.Users)
+	assert.Equal(t, Set{"chris"}, c.Docker.Users)
 	assert.Nil(t, c.SSHD)
 }
 
@@ -225,7 +225,7 @@ users: !replace
 		},
 	).open(t).HostConfig("alpha", "debian")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"nano"}, c.Packages.Install)
+	assert.Equal(t, Set{"nano"}, c.Packages.Install)
 	assert.Equal(t, map[string]UserConfig{"chris": {Groups: []string{"docker"}}}, c.Users)
 	assert.Equal(t, map[string]string{"chris": "green"}, c.Zsh.PromptColours)
 }
@@ -245,7 +245,7 @@ func TestHostConfig_conflictingRoles(t *testing.T) {
 	).open(t).HostConfig("alpha", "debian")
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{"MaxAuthTries": "4", "LogLevel": "VERBOSE"}, c.SSHD.Settings)
-	assert.Equal(t, []string{"k1", "k2"}, c.SSHD.AuthorizedKeys["chris"])
+	assert.Equal(t, Set{"k1", "k2"}, c.SSHD.AuthorizedKeys["chris"])
 
 	_, err = newTestRepo(t, files("sshd:\n  settings: {MaxAuthTries: 6}\n")).open(t).HostConfig("alpha", "debian")
 	assert.ErrorContains(t, err, "role one and role two set sshd.settings.MaxAuthTries differently")
@@ -800,4 +800,45 @@ func TestHostConfig_dockerNetworks(t *testing.T) {
 		map[string]DockerNetworkConfig{"web": {}, "six": {IPv6: true, Subnets: []string{"fd00:dead:beef::/48"}}},
 		c.Docker.Networks,
 	)
+}
+
+func TestHostConfig_commands(t *testing.T) {
+	c, err := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml": "alpha:\n  roles: {a: , b: }\n",
+			"roles/a/role.yml": `
+params:
+  copy: [cp, x, x]
+jobs:
+  copy: {command: !param copy, schedule: daily}
+  sync: {command: [rsync, -a, src, dst], schedule: daily}
+packages:
+  install: [git, vim, git]
+`,
+			"roles/a/role.arch.yml": "jobs:\n  sync:\n    command: [rsync, -a, src, other]\n",
+			"roles/b/role.yml": `
+jobs:
+  copy: {command: [cp, x, x]}
+packages:
+  install: [vim, curl]
+`,
+		},
+	).open(t).HostConfig("alpha", "arch")
+	require.NoError(t, err)
+	assert.Equal(t, Command{"cp", "x", "x"}, c.Jobs["copy"].Command)
+	assert.Equal(t, Command{"rsync", "-a", "src", "other"}, c.Jobs["sync"].Command)
+	assert.Equal(t, Set{"git", "vim", "curl"}, c.Packages.Install)
+}
+
+func TestHostConfig_conflictingCommands(t *testing.T) {
+	_, err := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml": "alpha:\n  roles: {a: , b: }\n",
+			"roles/a/role.yml":  "jobs:\n  copy: {command: [cp, x, y], schedule: daily}\n",
+			"roles/b/role.yml":  "jobs:\n  copy: {command: [cp, x]}\n",
+		},
+	).open(t).HostConfig("alpha", "debian")
+	assert.ErrorContains(t, err, "role a and role b set jobs.copy.command differently")
 }

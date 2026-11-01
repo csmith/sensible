@@ -49,7 +49,7 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 			}
 			stacks = append(stacks, s)
 		}
-		if err := checkConflicts("role "+role, node, "", set); err != nil {
+		if err := checkConflicts("role "+role, node, set); err != nil {
 			return Config{}, fmt.Errorf("%s: %w", name, err)
 		}
 		merged = merge(merged, node)
@@ -320,35 +320,45 @@ type setBy struct {
 	value  string
 }
 
-// checkConflicts rejects a source setting a value another source already set
-// differently, so the order sources are merged in never matters. Lists union
-// and nulls set nothing, so neither conflicts.
-func checkConflicts(source string, node ast.Node, path string, set map[string]setBy) error {
+// checkConflicts rejects sources setting a value differently, so merge order
+// never matters. Nulls and non-atomic lists never conflict.
+func checkConflicts(source string, node ast.Node, set map[string]setBy) error {
+	return conflicts(source, node, nil, set)
+}
+
+func conflicts(source string, node ast.Node, path []string, set map[string]setBy) error {
+	key := strings.Join(path, ".")
 	var value string
 	switch n := node.(type) {
 	case *ast.MappingNode:
 		value = "\x00mapping"
 		for _, v := range n.Values {
-			if err := checkConflicts(source, v.Value, joinPath(path, keyString(v.Key)), set); err != nil {
+			if err := conflicts(source, v.Value, append(slices.Clip(path), keyString(v.Key)), set); err != nil {
 				return err
 			}
 		}
 	case *ast.SequenceNode:
-		value = "\x00sequence"
+		items := []string{"\x00sequence"}
+		if isAtomic(path) {
+			for _, item := range n.Values {
+				items = append(items, itemString(item))
+			}
+		}
+		value = strings.Join(items, "\x00")
 	default:
 		if isNull(node) {
 			// Still recorded, so the key can be traced to a source.
-			if _, ok := set[path]; !ok {
-				set[path] = setBy{source: source}
+			if _, ok := set[key]; !ok {
+				set[key] = setBy{source: source}
 			}
 			return nil
 		}
 		value = itemString(n)
 	}
-	if prev, ok := set[path]; ok && prev.value != "" && prev.value != value {
-		return errors.New(prev.source + " and " + source + " set " + path + " differently")
+	if prev, ok := set[key]; ok && prev.value != "" && prev.value != value {
+		return errors.New(prev.source + " and " + source + " set " + key + " differently")
 	}
-	set[path] = setBy{source, value}
+	set[key] = setBy{source, value}
 	return nil
 }
 

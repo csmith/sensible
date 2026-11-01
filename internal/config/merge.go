@@ -2,6 +2,9 @@ package config
 
 import (
 	"fmt"
+	"reflect"
+	"slices"
+	"strings"
 
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/parser"
@@ -12,18 +15,18 @@ const replaceTag = "!replace"
 // merge layers upper over lower without modifying either, applying and
 // removing !replace tags.
 func merge(lower, upper ast.Node) ast.Node {
-	return mergeNodes(lower, upper, true)
+	return mergeNodes(lower, upper, nil, true)
 }
 
 // mergeFragments merges like merge, but leaves !replace tags in place, so
 // host fragments keep them for their role parameters.
 func mergeFragments(lower, upper ast.Node) ast.Node {
-	return mergeNodes(lower, upper, false)
+	return mergeNodes(lower, upper, nil, false)
 }
 
-func mergeNodes(lower, upper ast.Node, replace bool) ast.Node {
+func mergeNodes(lower, upper ast.Node, path []string, replace bool) ast.Node {
 	if tag, ok := upper.(*ast.TagNode); ok && replace && tag.Start.Value == replaceTag {
-		return mergeNodes(nil, tag.Value, replace)
+		return mergeNodes(nil, tag.Value, path, replace)
 	}
 	if upper == nil || upper.Type() == ast.NullType {
 		if lower == nil {
@@ -35,16 +38,20 @@ func mergeNodes(lower, upper ast.Node, replace bool) ast.Node {
 	switch u := upper.(type) {
 	case *ast.MappingNode:
 		l, _ := lower.(*ast.MappingNode)
-		return mergeMapping(l, u, replace)
+		return mergeMapping(l, u, path, replace)
 	case *ast.SequenceNode:
 		l, _ := lower.(*ast.SequenceNode)
+		// Lists concatenate, but upper replaces an atomic list like a scalar.
+		if isAtomic(path) {
+			l = nil
+		}
 		return mergeSequence(l, u, replace)
 	default:
 		return upper
 	}
 }
 
-func mergeMapping(lower, upper *ast.MappingNode, replace bool) ast.Node {
+func mergeMapping(lower, upper *ast.MappingNode, path []string, replace bool) ast.Node {
 	result := ast.Mapping(upper.Start, upper.IsFlowStyle)
 	index := map[string]int{}
 	if lower != nil {
@@ -55,35 +62,66 @@ func mergeMapping(lower, upper *ast.MappingNode, replace bool) ast.Node {
 	}
 	for _, v := range upper.Values {
 		key := keyString(v.Key)
+		inner := append(slices.Clip(path), key)
 		if i, ok := index[key]; ok {
-			result.Values[i] = ast.MappingValue(v.Start, v.Key, mergeNodes(result.Values[i].Value, v.Value, replace))
+			result.Values[i] = ast.MappingValue(v.Start, v.Key, mergeNodes(result.Values[i].Value, v.Value, inner, replace))
 		} else {
 			index[key] = len(result.Values)
-			result.Values = append(result.Values, ast.MappingValue(v.Start, v.Key, mergeNodes(nil, v.Value, replace)))
+			result.Values = append(result.Values, ast.MappingValue(v.Start, v.Key, mergeNodes(nil, v.Value, inner, replace)))
 		}
 	}
 	return result
 }
 
+// mergeSequence keeps duplicates, as only the field a list decodes into
+// knows whether they matter. See Set.
 func mergeSequence(lower, upper *ast.SequenceNode, replace bool) ast.Node {
 	result := ast.Sequence(upper.Start, upper.IsFlowStyle)
-	seen := map[string]bool{}
-	add := func(n ast.Node) {
-		key := itemString(n)
-		if !seen[key] {
-			seen[key] = true
-			result.Values = append(result.Values, n)
-		}
-	}
 	if lower != nil {
-		for _, v := range lower.Values {
-			add(v)
-		}
+		result.Values = append(result.Values, lower.Values...)
 	}
 	for _, v := range upper.Values {
-		add(mergeNodes(nil, v, replace))
+		// Lists in lists have no path of their own.
+		result.Values = append(result.Values, mergeNodes(nil, v, nil, replace))
 	}
 	return result
+}
+
+// atomicLists are the paths in Config of the lists that are single values,
+// with "*" for any map key.
+var atomicLists = commandPaths(reflect.TypeFor[Config](), nil)
+
+func commandPaths(t reflect.Type, path []string) [][]string {
+	if t == reflect.TypeFor[Command]() {
+		return [][]string{path}
+	}
+	switch t.Kind() {
+	case reflect.Pointer:
+		return commandPaths(t.Elem(), path)
+	case reflect.Map:
+		return commandPaths(t.Elem(), append(slices.Clip(path), "*"))
+	case reflect.Struct:
+		var paths [][]string
+		for f := range t.Fields() {
+			name, _, _ := strings.Cut(f.Tag.Get("yaml"), ",")
+			if name == "" || name == "-" {
+				continue
+			}
+			paths = append(paths, commandPaths(f.Type, append(slices.Clip(path), name))...)
+		}
+		return paths
+	default:
+		return nil
+	}
+}
+
+func isAtomic(path []string) bool {
+	return slices.ContainsFunc(
+		atomicLists,
+		func(pattern []string) bool {
+			return slices.EqualFunc(pattern, path, func(p, k string) bool { return p == "*" || p == k })
+		},
+	)
 }
 
 func keyString(n ast.MapKeyNode) string {

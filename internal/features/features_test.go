@@ -18,11 +18,11 @@ func testHost(osFamily string) Host {
 			Packages: &config.PackagesConfig{Install: []string{"htop"}, Remove: []string{"nano"}},
 			AUR:      &config.AURConfig{Packages: []string{"widget-bin"}},
 			Users:    map[string]config.UserConfig{"alice": {Groups: []string{"wheel"}}, "bob": {}},
-			Sudoers:  map[string][]string{"000-alice": {"alice ALL=(ALL:ALL) ALL"}},
+			Sudoers:  map[string]config.Set{"000-alice": {"alice ALL=(ALL:ALL) ALL"}},
 			PamRSSH:  &config.PamRSSHConfig{Keys: []string{"ssh-ed25519 AAAA sudo"}},
 			SSHD: &config.SSHDConfig{
 				Settings: map[string]string{"MaxAuthTries": "3"},
-				AuthorizedKeys: map[string][]string{
+				AuthorizedKeys: map[string]config.Set{
 					"alice": {"ssh-ed25519 AAAA alice"},
 					"bob":   {"ssh-ed25519 AAAA bob"},
 				},

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -31,7 +32,7 @@ type HostEntry struct {
 	// Empty disables DNS management for the host.
 	DNSName string `yaml:"dns_name"`
 	// HostKeys are the host's SSH public keys, which connections must match.
-	HostKeys []HostKey `yaml:"host_keys"`
+	HostKeys HostKeys `yaml:"host_keys"`
 	// Roles are the host's roles, each with the parameters the host sets.
 	Roles map[string]RoleParams `yaml:"roles"`
 	// SSHKey is an OpenSSH-format private key for the sensible account. A
@@ -39,6 +40,24 @@ type HostEntry struct {
 	SSHKey       Secret    `yaml:"ssh_key"`
 	SudoPassword Secret    `yaml:"sudo_password"`
 	Rotated      time.Time `yaml:"rotated"`
+}
+
+// HostKeys drops duplicate keys, as a key is often in both a hand-written
+// file and the state file.
+type HostKeys []HostKey
+
+func (k *HostKeys) UnmarshalYAML(ctx context.Context, node ast.Node) error {
+	var keys []HostKey
+	if err := decode(ctx, node, &keys); err != nil {
+		return err
+	}
+	*k = nil
+	for _, key := range keys {
+		if !slices.ContainsFunc(*k, func(o HostKey) bool { return bytes.Equal(o.Marshal(), key.Marshal()) }) {
+			*k = append(*k, key)
+		}
+	}
+	return nil
 }
 
 // HostKey is an SSH public key written as in authorized_keys.
@@ -62,13 +81,36 @@ func (k HostKey) String() string {
 	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(k.PublicKey)))
 }
 
+// Set is a list whose duplicates are dropped, keeping the first of each.
+// Lists merged from several roles concatenate, so a plain []string keeps
+// every role's copy of an item.
+type Set []string
+
+func (s *Set) UnmarshalYAML(ctx context.Context, node ast.Node) error {
+	var items []string
+	if err := decode(ctx, node, &items); err != nil {
+		return err
+	}
+	*s = nil
+	for _, item := range items {
+		if !slices.Contains(*s, item) {
+			*s = append(*s, item)
+		}
+	}
+	return nil
+}
+
+// Command is a program and its arguments. Unlike other lists, roles setting
+// it differently conflict, and an OS variant replaces it.
+type Command []string
+
 // Config is one host's configuration, merged from its roles. A nil module
 // is one no role mentions, which doesn't run.
 type Config struct {
 	Packages  *PackagesConfig       `yaml:"packages"`
 	AUR       *AURConfig            `yaml:"aur"`
 	Users     map[string]UserConfig `yaml:"users"`
-	Sudoers   map[string][]string   `yaml:"sudoers"`
+	Sudoers   map[string]Set        `yaml:"sudoers"`
 	PamRSSH   *PamRSSHConfig        `yaml:"pam_rssh"`
 	SSHD      *SSHDConfig           `yaml:"sshd"`
 	Tailscale *TailscaleConfig      `yaml:"tailscale"`
@@ -89,27 +131,27 @@ type Config struct {
 }
 
 type PackagesConfig struct {
-	Install []string `yaml:"install"`
+	Install Set `yaml:"install"`
 	// Remove is applied before Install, so replacements can be installed.
-	Remove []string `yaml:"remove"`
+	Remove Set `yaml:"remove"`
 }
 
 type AURConfig struct {
-	Packages []string `yaml:"packages"`
+	Packages Set `yaml:"packages"`
 }
 
 type UserConfig struct {
-	Groups []string `yaml:"groups"`
+	Groups Set `yaml:"groups"`
 }
 
 type PamRSSHConfig struct {
-	Keys []string `yaml:"keys"`
+	Keys Set `yaml:"keys"`
 }
 
 type SSHDConfig struct {
 	Settings map[string]string `yaml:"settings"`
 	// AuthorizedKeys are each user's login keys.
-	AuthorizedKeys map[string][]string `yaml:"authorized_keys"`
+	AuthorizedKeys map[string]Set `yaml:"authorized_keys"`
 }
 
 type TailscaleConfig struct {
@@ -118,14 +160,14 @@ type TailscaleConfig struct {
 
 type ZshConfig struct {
 	// Users get zsh as their shell.
-	Users   []string `yaml:"users"`
-	Plugins []string `yaml:"plugins"`
+	Users   Set `yaml:"users"`
+	Plugins Set `yaml:"plugins"`
 	// PromptColours colours the host segment of each user's prompt.
 	PromptColours map[string]string `yaml:"prompt_colours"`
 }
 
 type DockerConfig struct {
-	Users []string `yaml:"users"`
+	Users Set `yaml:"users"`
 	// Networks are created before any stack, so stacks can share them as
 	// external networks.
 	Networks map[string]DockerNetworkConfig `yaml:"networks"`
@@ -134,8 +176,8 @@ type DockerConfig struct {
 type DockerNetworkConfig struct {
 	// Subnets are in CIDR form. Docker picks one for each address family
 	// without one.
-	Subnets []string `yaml:"subnets"`
-	IPv6    bool     `yaml:"ipv6"`
+	Subnets Set  `yaml:"subnets"`
+	IPv6    bool `yaml:"ipv6"`
 }
 
 type VimConfig struct{}
@@ -154,17 +196,17 @@ type LocaleConfig struct {
 	// Lang is the system's LANG, e.g. "en_GB.UTF-8". It's always generated.
 	Lang string `yaml:"lang"`
 	// Generate are further locales to generate.
-	Generate []string `yaml:"generate"`
+	Generate Set `yaml:"generate"`
 }
 
 type NTPConfig struct {
 	// Servers replace the distribution's default servers. Empty keeps them.
-	Servers []string `yaml:"servers"`
+	Servers Set `yaml:"servers"`
 }
 
 // JobConfig is a command run on a schedule by a systemd timer.
 type JobConfig struct {
-	Command []string `yaml:"command"`
+	Command Command `yaml:"command"`
 	// Schedule is a systemd calendar expression, as for OnCalendar.
 	Schedule string `yaml:"schedule"`
 	// User runs the command. Empty means root.
@@ -318,7 +360,7 @@ func (r *Repo) readHosts() error {
 		if err := decode(r.keys.context(), node, &map[string]HostEntry{}); err != nil {
 			return fmt.Errorf("%s: %w", r.path(file), err)
 		}
-		if err := checkConflicts(r.path(file), node, "", sources); err != nil {
+		if err := checkConflicts(r.path(file), node, sources); err != nil {
 			return err
 		}
 		merged = mergeFragments(merged, node)
