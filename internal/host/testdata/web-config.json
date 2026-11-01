@@ -1,7 +1,8 @@
 {
   "name": "web",
   "services": {
-    "app": {},
+    "app": {"depends_on": {"migrate": {"condition": "service_completed_successfully"}}},
+    "migrate": {},
     "worker": {"deploy": {"replicas": 2}},
     "off": {"scale": 0},
     "manual": {"scale": 1}

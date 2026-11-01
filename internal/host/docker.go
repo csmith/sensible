@@ -57,6 +57,9 @@ func (r ComposeStack) containerDiff(ctx context.Context, sys Sys) (string, error
 			Deploy *struct {
 				Replicas *int `json:"replicas"`
 			} `json:"deploy"`
+			DependsOn map[string]struct {
+				Condition string `json:"condition"`
+			} `json:"depends_on"`
 		} `json:"services"`
 	}
 	if err := json.Unmarshal([]byte(res.Stdout), &project); err != nil {
@@ -67,13 +70,22 @@ func (r ComposeStack) containerDiff(ctx context.Context, sys Sys) (string, error
 		return "", err
 	}
 
+	// Services others wait on to complete are satisfied by a clean exit.
+	completes := map[string]bool{}
+	for _, s := range project.Services {
+		for dep, d := range s.DependsOn {
+			if d.Condition == "service_completed_successfully" {
+				completes[dep] = true
+			}
+		}
+	}
 	running, existing := map[string]int{}, map[string]int{}
 	for _, c := range containers {
 		if c.project != project.Name || c.oneOff {
 			continue
 		}
 		existing[c.service]++
-		if c.up() {
+		if c.up() || completes[c.service] && c.succeeded() {
 			running[c.service]++
 		}
 	}
@@ -110,7 +122,7 @@ func (r ComposeStack) compose(args ...string) Cmd {
 type composeContainer struct {
 	project, service string
 	oneOff           bool
-	state            string
+	state, status    string
 }
 
 // up counts restarting and paused containers too, as `up` wouldn't change
@@ -119,11 +131,18 @@ func (c composeContainer) up() bool {
 	return c.state == "running" || c.state == "restarting" || c.state == "paused"
 }
 
+// succeeded reports whether the container exited with 0. docker ps only
+// shows the exit code in its status, e.g. "Exited (0) 5 minutes ago".
+func (c composeContainer) succeeded() bool {
+	return c.state == "exited" && strings.HasPrefix(c.status, "Exited (0)")
+}
+
 // containerFormat prints the fields of composeContainer, tab-separated.
 const containerFormat = `{{.Label "com.docker.compose.project"}}` +
 	"\t" + `{{.Label "com.docker.compose.service"}}` +
 	"\t" + `{{.Label "com.docker.compose.oneoff"}}` +
-	"\t" + `{{.State}}`
+	"\t" + `{{.State}}` +
+	"\t" + `{{.Status}}`
 
 // listContainers lists the host's containers once per run, until something
 // changes.
@@ -139,12 +158,18 @@ func listContainers(ctx context.Context, sys Sys) ([]composeContainer, error) {
 	containers := []composeContainer{}
 	for line := range strings.Lines(res.Stdout) {
 		fields := strings.Split(strings.TrimRight(line, "\n"), "\t")
-		if len(fields) != 4 || fields[0] == "" {
+		if len(fields) != 5 || fields[0] == "" {
 			continue
 		}
 		containers = append(
 			containers,
-			composeContainer{project: fields[0], service: fields[1], oneOff: fields[2] == "True", state: fields[3]},
+			composeContainer{
+				project: fields[0],
+				service: fields[1],
+				oneOff:  fields[2] == "True",
+				state:   fields[3],
+				status:  fields[4],
+			},
 		)
 	}
 	st.containers = containers

@@ -22,13 +22,14 @@ func TestComposeStack_InSyncWhenEveryServiceRuns(t *testing.T) {
 	sys.on(composeArgs+"config --format json", webConfig(t), 0)
 	sys.on(
 		"docker ps *",
-		"web\tapp\tFalse\trunning\n"+
-			"web\tworker\tFalse\trunning\n"+
-			"web\tworker\tFalse\trestarting\n"+
-			"web\tmanual\tFalse\tpaused\n"+
-			"web\tapp\tTrue\texited\n"+
-			"other\tgone\tFalse\texited\n"+
-			"\t\t\trunning\n",
+		"web\tapp\tFalse\trunning\tUp 2 hours\n"+
+			"web\tworker\tFalse\trunning\tUp 2 hours\n"+
+			"web\tworker\tFalse\trestarting\tRestarting (1) 2 seconds ago\n"+
+			"web\tmanual\tFalse\tpaused\tUp 2 hours (Paused)\n"+
+			"web\tmigrate\tFalse\texited\tExited (0) 2 hours ago\n"+
+			"web\tapp\tTrue\texited\tExited (1) 2 hours ago\n"+
+			"other\tgone\tFalse\texited\tExited (0) 2 hours ago\n"+
+			"\t\t\trunning\tUp 2 hours\n",
 		0,
 	)
 
@@ -43,10 +44,11 @@ func TestComposeStack_StartsWhatIsDown(t *testing.T) {
 	sys.on(composeArgs+"config --format json", webConfig(t), 0)
 	sys.on(
 		"docker ps *",
-		"web\tapp\tFalse\texited\n"+
-			"web\tworker\tFalse\trunning\n"+
-			"web\toff\tFalse\texited\n"+
-			"web\tremoved\tFalse\trunning\n",
+		"web\tapp\tFalse\texited\tExited (0) 2 hours ago\n"+
+			"web\tworker\tFalse\trunning\tUp 2 hours\n"+
+			"web\toff\tFalse\texited\tExited (0) 2 hours ago\n"+
+			"web\tmigrate\tFalse\texited\tExited (1) 2 hours ago\n"+
+			"web\tremoved\tFalse\trunning\tUp 2 hours\n",
 		0,
 	)
 	sys.on(composeArgs+"up --detach --no-recreate --remove-orphans", "", 0)
@@ -58,6 +60,7 @@ func TestComposeStack_StartsWhatIsDown(t *testing.T) {
 		t,
 		"start app (0 of 1 running)\n"+
 			"start manual (0 of 1 running)\n"+
+			"start migrate (0 of 1 running)\n"+
 			"remove off, which has no replicas\n"+
 			"start worker (1 of 2 running)\n"+
 			"remove removed, which is no longer in the stack\n",
