@@ -77,6 +77,8 @@ var resourceTypes = registry(
 	Download{},
 	Command{},
 	OwnedDir{},
+	ComposeStack{},
+	ComposeProjects{},
 	TailscaleSet{},
 )
 
@@ -96,6 +98,12 @@ type File struct {
 	// "%s" replaced by the temporary path, e.g. ["visudo", "-cf", "%s"].
 	Validate []string     `json:"validate,omitempty"`
 	Notify   ResourceList `json:"notify,omitempty"`
+	// Secrets are replaced with a placeholder wherever they appear in diffs.
+	// Old values that are no longer in Content can't be, so they still show
+	// in a diff that changes them.
+	Secrets []string `json:"secrets,omitempty"`
+	// Hidden leaves the content out of diffs entirely.
+	Hidden bool `json:"hidden,omitempty"`
 }
 
 // Dir manages a directory. Missing parents are created too.
@@ -242,11 +250,29 @@ type Command struct {
 	Env map[string]string `json:"env,omitempty"`
 }
 
-// OwnedDir removes every entry in Path that no File earlier in the same run
-// declared. It's skipped if anything on the host failed.
+// OwnedDir removes every entry in Path that no File or Dir earlier in the
+// same run declared. It's skipped if anything on the host failed.
 type OwnedDir struct {
-	Path   string       `json:"path"`
-	Notify ResourceList `json:"notify,omitempty"`
+	Path string `json:"path"`
+	// Recursive also cleans the declared directories inside Path.
+	Recursive bool         `json:"recursive,omitempty"`
+	Notify    ResourceList `json:"notify,omitempty"`
+}
+
+// ComposeStack keeps a Docker Compose project's containers up. Dir holds its
+// docker-compose.yml, and its name is the project's name.
+type ComposeStack struct {
+	Dir string `json:"dir"`
+	// Watch are the IDs of the resources that manage the stack's files. If
+	// any of them changed earlier in the run, the whole stack is recreated.
+	Watch []string `json:"watch"`
+}
+
+// ComposeProjects takes down and removes each project directory in Path
+// that no ComposeStack earlier in the same run declared. Volumes are kept.
+// It's skipped if anything on the host failed.
+type ComposeProjects struct {
+	Path string `json:"path"`
 }
 
 // TailscaleSet applies settings with `tailscale set`. It fails if Tailscale
@@ -291,5 +317,9 @@ func (r Command) ID() string { return "command:" + r.Name }
 
 func (r OwnedDir) ID() string             { return "owned-dir:" + r.Path }
 func (r OwnedDir) Notifies() ResourceList { return r.Notify }
+
+func (r ComposeStack) ID() string { return "compose:" + r.Dir }
+
+func (r ComposeProjects) ID() string { return "compose-projects:" + r.Path }
 
 func (r TailscaleSet) ID() string { return "tailscale-set" }

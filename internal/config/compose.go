@@ -1,0 +1,497 @@
+package config
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"maps"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
+
+	"filippo.io/age/armor"
+	"github.com/goccy/go-yaml"
+	"github.com/goccy/go-yaml/ast"
+	"github.com/goccy/go-yaml/parser"
+
+	"chameth.com/sensible/internal/host"
+)
+
+const (
+	// StacksDir holds each stack's files, in a directory named after it.
+	StacksDir = "/srv/compose"
+	// VolumesDir holds each stack's volumes, in a directory named after it.
+	VolumesDir = "/srv/volumes"
+)
+
+const (
+	volumeTag = "!volume"
+	ageSuffix = ".age"
+)
+
+// Stack is a Docker Compose project, from a role with a docker-compose.yml.
+type Stack struct {
+	// Name is the role's name with "/" replaced by "-". It's also the
+	// project's name.
+	Name string
+	// Files are the stack's files, including docker-compose.yml, with
+	// secrets decrypted.
+	Files   []StackFile
+	Volumes map[string]Volume
+}
+
+func (s Stack) Dir() string {
+	return filepath.Join(StacksDir, s.Name)
+}
+
+func (s Stack) VolumeDir(name string) string {
+	return filepath.Join(VolumesDir, s.Name, name)
+}
+
+type StackFile struct {
+	// Path is relative to the stack's directory.
+	Path    string
+	Content string
+	// Secrets are decrypted values within Content.
+	Secrets []string
+	// Hidden is set when all of Content is secret.
+	Hidden bool
+}
+
+// Volume is a directory a stack's compose file refers to with !volume.
+// Sensible manages the directory itself but never its contents.
+type Volume struct {
+	// Owner and Group are names or numeric IDs. An empty Group means the
+	// owner's primary group if Owner is a name, and is otherwise left alone.
+	Owner string      `yaml:"owner"`
+	Group string      `yaml:"group"`
+	Mode  fs.FileMode `yaml:"mode"`
+}
+
+// stackDef is what a stack's role declares.
+type stackDef struct {
+	name string
+	// files are the paths of every file to copy, relative to the role's
+	// directory, excluding the compose file.
+	files   []string
+	volumes map[string]Volume
+}
+
+// roleSettings are the keys in a role's role.yml that apply to the role
+// alone, rather than being merged into its hosts' config.
+type roleSettings struct {
+	Children []string `yaml:"children"`
+	Compose  *struct {
+		Files   []string          `yaml:"files"`
+		Volumes map[string]Volume `yaml:"volumes"`
+	} `yaml:"compose"`
+}
+
+var roleSettingKeys = []string{"children", "compose"}
+
+func (r *Repo) readRoleSettings(role string) (roleSettings, error) {
+	file := filepath.Join("roles", role, "role.yml")
+	node, err := r.readLayer(file, true)
+	if err != nil || node == nil {
+		return roleSettings{}, err
+	}
+	if tag, ok := node.(*ast.TagNode); ok {
+		node = tag.Value
+	}
+	only := ast.Mapping(node.GetToken(), false)
+	for _, v := range node.(*ast.MappingNode).Values {
+		if slices.Contains(roleSettingKeys, keyString(v.Key)) {
+			only.Values = append(only.Values, v)
+		}
+	}
+	var s roleSettings
+	if err := decode(r.keys.context(), only, &s); err != nil {
+		return roleSettings{}, fmt.Errorf("%s: %w", r.path(file), err)
+	}
+	return s, nil
+}
+
+var projectName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+
+// checkStack records the stack a role declares, returning the names of the
+// role directory's entries its files cover.
+func (r *Repo) checkStack(role string, s roleSettings) (map[string]bool, error) {
+	roleFile := r.path("roles", role, "role.yml")
+	def := &stackDef{name: strings.ReplaceAll(role, "/", "-")}
+	if !projectName.MatchString(def.name) {
+		return nil, fmt.Errorf(
+			"%s: %q can't be a Docker Compose project name; use lower case letters, digits, \"-\" and \"_\"",
+			r.path("roles", role),
+			def.name,
+		)
+	}
+	var files []string
+	if s.Compose != nil {
+		def.volumes = s.Compose.Volumes
+		files = s.Compose.Files
+	}
+	for name := range def.volumes {
+		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/:") {
+			return nil, fmt.Errorf("%s: invalid volume name %q", roleFile, name)
+		}
+	}
+
+	covered := map[string]bool{}
+	written := map[string]string{}
+	for _, entry := range files {
+		clean := filepath.Clean(entry)
+		if entry == "" || filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+			return nil, fmt.Errorf("%s: compose.files: %q isn't a path inside the role", roleFile, entry)
+		}
+		top, _, _ := strings.Cut(clean, "/")
+		if top == "role.yml" || top == host.ComposeFile || isVariantFile(top) {
+			return nil, fmt.Errorf("%s: compose.files: %q is read by sensible, so can't be copied", roleFile, entry)
+		}
+		covered[top] = true
+		if err := def.addFiles(r.path("roles", role), clean, written); err != nil {
+			return nil, fmt.Errorf("%s: compose.files: %w", roleFile, err)
+		}
+	}
+	slices.Sort(def.files)
+	r.stacks[role] = def
+	return covered, nil
+}
+
+// addFiles adds every file at entry, a path in the role directory dir.
+// written maps where each file added so far is written to its path.
+func (d *stackDef) addFiles(dir, entry string, written map[string]string) error {
+	return filepath.WalkDir(
+		filepath.Join(dir, entry),
+		func(path string, e fs.DirEntry, err error) error {
+			if err != nil || e.IsDir() {
+				return err
+			}
+			rel, _ := filepath.Rel(dir, path)
+			prev, ok := written[stackPath(rel)]
+			switch {
+			case !ok:
+				written[stackPath(rel)] = rel
+				d.files = append(d.files, rel)
+			case prev != rel:
+				return fmt.Errorf("%s and %s would both be written as %s", prev, rel, stackPath(rel))
+			}
+			return nil
+		},
+	)
+}
+
+// stackPath is where a role's file is written in its stack, without any
+// .age suffix.
+func stackPath(rel string) string {
+	return strings.TrimSuffix(rel, ageSuffix)
+}
+
+// checkStackNames rejects stacks whose roles' names map to the same project.
+func (r *Repo) checkStackNames() error {
+	seen := map[string]string{}
+	for _, role := range slices.Sorted(maps.Keys(r.stacks)) {
+		name := r.stacks[role].name
+		if other, ok := seen[name]; ok {
+			return fmt.Errorf("roles %q and %q would both be the stack %q", other, role, name)
+		}
+		seen[name] = role
+	}
+	return nil
+}
+
+// renderStack reads a stack's files, replacing the compose file's tags and
+// decrypting .age files.
+func (r *Repo) renderStack(role string, params map[string]ast.Node) (Stack, error) {
+	def := r.stacks[role]
+	s := Stack{Name: def.name, Volumes: def.volumes}
+
+	composePath := filepath.Join("roles", role, host.ComposeFile)
+	compose, err := r.renderCompose(composePath, def, params)
+	if err != nil {
+		return Stack{}, fmt.Errorf("%s: %w", r.path(composePath), err)
+	}
+	s.Files = append(s.Files, compose)
+
+	for _, rel := range def.files {
+		path := r.path("roles", role, rel)
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return Stack{}, err
+		}
+		f := StackFile{Path: stackPath(rel), Content: string(b)}
+		if f.Path != rel {
+			secret, err := parseArmored(string(b))
+			if err != nil {
+				return Stack{}, fmt.Errorf("%s: %w", path, err)
+			}
+			secret.keys = r.keys
+			if f.Content, err = secret.Reveal(); err != nil {
+				return Stack{}, fmt.Errorf("%s: %w", path, err)
+			}
+			f.Hidden = true
+		}
+		s.Files = append(s.Files, f)
+	}
+	return s, nil
+}
+
+// renderCompose replaces the tags in a compose file, leaving the rest of it,
+// including comments, as written.
+func (r *Repo) renderCompose(file string, def *stackDef, params map[string]ast.Node) (StackFile, error) {
+	src, err := os.ReadFile(r.path(file))
+	if err != nil {
+		return StackFile{}, err
+	}
+	f, err := parser.ParseBytes(src, parser.ParseComments)
+	if err != nil {
+		return StackFile{}, err
+	}
+	if len(f.Docs) != 1 {
+		return StackFile{}, fmt.Errorf("expected a single YAML document, found %d", len(f.Docs))
+	}
+	c := &composeRenderer{repo: r, def: def, params: params}
+	body, _, err := c.replace(f.Docs[0].Body)
+	if err != nil {
+		return StackFile{}, err
+	}
+	f.Docs[0].Body = body
+	content := f.String()
+	if !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	return StackFile{Path: host.ComposeFile, Content: content, Secrets: c.secrets}, nil
+}
+
+type composeRenderer struct {
+	repo    *Repo
+	def     *stackDef
+	params  map[string]ast.Node
+	secrets []string
+}
+
+// replace returns node with its tags replaced, and whether it was a !param
+// whose value is null, which drops it from its mapping or list.
+func (c *composeRenderer) replace(node ast.Node) (ast.Node, bool, error) {
+	switch n := node.(type) {
+	case *ast.TagNode:
+		switch n.Start.Value {
+		case paramTag:
+			return c.param(n)
+		case ageTag, volumeTag:
+			s, err := c.scalar(n)
+			if err != nil {
+				return nil, false, err
+			}
+			v, err := flowNode(s)
+			return v, false, err
+		default:
+			v, _, err := c.replace(n.Value)
+			n.Value = v
+			return n, false, err
+		}
+	case *ast.AnchorNode:
+		v, _, err := c.replace(n.Value)
+		n.Value = v
+		return n, false, err
+	case *ast.MappingNode:
+		kept := n.Values[:0]
+		for _, mv := range n.Values {
+			v, drop, err := c.replace(mv.Value)
+			if err != nil {
+				return nil, false, err
+			}
+			if !drop {
+				mv.Value = v
+				kept = append(kept, mv)
+			}
+		}
+		n.Values = kept
+	case *ast.MappingValueNode:
+		v, _, err := c.replace(n.Value)
+		n.Value = v
+		return n, false, err
+	case *ast.SequenceNode:
+		kept := n.Values[:0]
+		for _, item := range n.Values {
+			v, drop, err := c.replace(item)
+			if err != nil {
+				return nil, false, err
+			}
+			if !drop {
+				kept = append(kept, v)
+			}
+		}
+		n.Values = kept
+	default:
+	}
+	return node, false, nil
+}
+
+// param writes a parameter's value in flow style, as goccy-yaml can't
+// print a block node moved into a different place.
+func (c *composeRenderer) param(tag *ast.TagNode) (ast.Node, bool, error) {
+	name, ok := tag.Value.(*ast.StringNode)
+	if !ok {
+		return nil, false, nodeError(tag, "!param needs a parameter name")
+	}
+	v, ok := c.params[name.Value]
+	if !ok {
+		return nil, false, nodeError(tag, fmt.Sprintf("unknown parameter %q", name.Value))
+	}
+	if isNull(v) {
+		return v, true, nil
+	}
+	value, err := c.value(v)
+	if err != nil {
+		return nil, false, err
+	}
+	n, err := flowNode(value)
+	return n, false, err
+}
+
+func (c *composeRenderer) value(node ast.Node) (any, error) {
+	switch n := node.(type) {
+	case *ast.TagNode:
+		if n.Start.Value == ageTag || n.Start.Value == volumeTag {
+			return c.scalar(n)
+		}
+		return c.value(n.Value)
+	case *ast.MappingNode:
+		m := yaml.MapSlice{}
+		for _, mv := range n.Values {
+			v, err := c.value(mv.Value)
+			if err != nil {
+				return nil, err
+			}
+			m = append(m, yaml.MapItem{Key: keyString(mv.Key), Value: v})
+		}
+		return m, nil
+	case *ast.SequenceNode:
+		var s []any
+		for _, item := range n.Values {
+			v, err := c.value(item)
+			if err != nil {
+				return nil, err
+			}
+			s = append(s, v)
+		}
+		return s, nil
+	default:
+		var v any
+		if err := yaml.NodeToValue(node, &v); err != nil {
+			return nil, err
+		}
+		return v, nil
+	}
+}
+
+// scalar resolves an !age or !volume tag to the string that replaces it.
+func (c *composeRenderer) scalar(tag *ast.TagNode) (string, error) {
+	if tag.Start.Value == volumeTag {
+		v, ok := tag.Value.(*ast.StringNode)
+		if !ok {
+			return "", nodeError(tag, "!volume needs a volume name")
+		}
+		name, rest, mount := strings.Cut(v.Value, ":")
+		if _, ok := c.def.volumes[name]; !ok {
+			return "", nodeError(tag, fmt.Sprintf("volume %q isn't in the role's compose.volumes", name))
+		}
+		path := filepath.Join(VolumesDir, c.def.name, name)
+		if mount {
+			path += ":" + rest
+		}
+		return path, nil
+	}
+
+	var s Secret
+	if err := s.UnmarshalYAML(c.repo.keys.context(), tag); err != nil {
+		return "", err
+	}
+	plain, err := s.Reveal()
+	if err != nil {
+		return "", nodeError(tag, err.Error())
+	}
+	// Compose would otherwise read "$" as the start of a variable.
+	escaped := strings.ReplaceAll(plain, "$", "$$")
+	quoted, err := jsonText(escaped)
+	if err != nil {
+		return "", err
+	}
+	// As it appears in the file, between the quotes.
+	c.secrets = append(c.secrets, quoted[1:len(quoted)-1])
+	return escaped, nil
+}
+
+// flowNode parses v written as JSON, which YAML reads the same way and
+// which prints on one line wherever it's put.
+func flowNode(v any) (ast.Node, error) {
+	text, err := jsonText(v)
+	if err != nil {
+		return nil, err
+	}
+	f, err := parser.ParseBytes([]byte(text), 0)
+	if err != nil {
+		return nil, err
+	}
+	return f.Docs[0].Body, nil
+}
+
+func jsonText(v any) (string, error) {
+	var buf bytes.Buffer
+	if err := writeJSON(&buf, v); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+func writeJSON(buf *bytes.Buffer, v any) error {
+	switch v := v.(type) {
+	case yaml.MapSlice:
+		buf.WriteByte('{')
+		for i, item := range v {
+			if i > 0 {
+				buf.WriteString(", ")
+			}
+			if err := writeJSON(buf, fmt.Sprint(item.Key)); err != nil {
+				return err
+			}
+			buf.WriteString(": ")
+			if err := writeJSON(buf, item.Value); err != nil {
+				return err
+			}
+		}
+		buf.WriteByte('}')
+	case []any:
+		buf.WriteByte('[')
+		for i, item := range v {
+			if i > 0 {
+				buf.WriteString(", ")
+			}
+			if err := writeJSON(buf, item); err != nil {
+				return err
+			}
+		}
+		buf.WriteByte(']')
+	default:
+		enc := json.NewEncoder(buf)
+		enc.SetEscapeHTML(false)
+		if err := enc.Encode(v); err != nil {
+			return err
+		}
+		buf.Truncate(buf.Len() - 1)
+	}
+	return nil
+}
+
+// parseArmored reads a whole file as an ASCII-armored age file.
+func parseArmored(content string) (Secret, error) {
+	armored := strings.TrimSpace(content)
+	if !strings.HasPrefix(armored, armor.Header) || !strings.HasSuffix(armored, armor.Footer) {
+		return Secret{}, errors.New("expected an ASCII-armored age file, as `sensible secret encrypt --raw` prints")
+	}
+	return Secret{armored: armored + "\n"}, nil
+}

@@ -2,7 +2,11 @@ package features
 
 import (
 	"fmt"
+	"maps"
+	"path/filepath"
+	"slices"
 
+	"chameth.com/sensible/internal/config"
 	"chameth.com/sensible/internal/host"
 )
 
@@ -248,4 +252,62 @@ func docker(h Host) ([]host.Resource, error) {
 		rs = append(rs, host.User{Name: u, Groups: []string{"docker"}})
 	}
 	return rs, nil
+}
+
+// stacks deploys the host's compose stacks. Each is recreated whenever its
+// files change, and stacks no role declares any more are taken down.
+func stacks(h Host) ([]host.Resource, error) {
+	var rs []host.Resource
+	if len(h.Config.Stacks) > 0 {
+		rs = append(
+			rs,
+			host.Dir{Path: config.StacksDir, Owner: "root", Group: "docker", Mode: 0o750},
+			host.Dir{Path: config.VolumesDir, Owner: "root", Group: "root", Mode: 0o755},
+		)
+	}
+	for _, s := range h.Config.Stacks {
+		rs = append(rs, stack(s)...)
+	}
+	return append(rs, host.ComposeProjects{Path: config.StacksDir}), nil
+}
+
+func stack(s config.Stack) []host.Resource {
+	dir := s.Dir()
+	rs := []host.Resource{host.Dir{Path: dir, Owner: "root", Group: "docker", Mode: 0o750}}
+	watch := make([]string, 0, len(s.Files)+1)
+	dirs := map[string]bool{dir: true}
+	for _, f := range s.Files {
+		path := filepath.Join(dir, f.Path)
+		var parents []string
+		for p := filepath.Dir(path); !dirs[p]; p = filepath.Dir(p) {
+			dirs[p] = true
+			parents = append([]string{p}, parents...)
+		}
+		for _, p := range parents {
+			rs = append(rs, host.Dir{Path: p, Owner: "root", Group: "docker", Mode: 0o750})
+		}
+		file := host.File{
+			Path:    path,
+			Content: f.Content,
+			Owner:   "root",
+			Group:   "docker",
+			Mode:    0o640,
+			Secrets: f.Secrets,
+			Hidden:  f.Hidden,
+		}
+		rs = append(rs, file)
+		watch = append(watch, file.ID())
+	}
+	owned := host.OwnedDir{Path: dir, Recursive: true}
+	rs = append(rs, owned)
+	watch = append(watch, owned.ID())
+
+	if len(s.Volumes) > 0 {
+		rs = append(rs, host.Dir{Path: filepath.Join(config.VolumesDir, s.Name), Owner: "root", Group: "root", Mode: 0o755})
+	}
+	for _, name := range slices.Sorted(maps.Keys(s.Volumes)) {
+		v := s.Volumes[name]
+		rs = append(rs, host.Dir{Path: s.VolumeDir(name), Owner: v.Owner, Group: v.Group, Mode: v.Mode})
+	}
+	return append(rs, host.ComposeStack{Dir: dir, Watch: watch})
 }

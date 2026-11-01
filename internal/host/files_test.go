@@ -35,6 +35,39 @@ func TestFile_ReportsContentAndModeChanges(t *testing.T) {
 	assert.Equal(t, "mode: 0644 → 0640\n@@ -1,3 +1,3 @@\n one\n-two\n+2\n three\n", change.Diff)
 }
 
+func TestFile_MasksSecretsInDiff(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/etc/conf", "user: a\npass: hunter2\n")
+
+	change := checkApply(
+		t,
+		sys,
+		File{Path: "/etc/conf", Content: "user: b\npass: hunter2\n", Secrets: []string{"hunter2"}},
+	)
+	assert.Equal(t, "@@ -1,2 +1,2 @@\n-user: a\n+user: b\n pass: (secret)\n", change.Diff)
+
+	change = checkApply(t, sys, File{Path: "/etc/conf", Content: "user: b\npass: hunter3\n", Secrets: []string{"hunter3"}})
+	assert.NotContains(t, change.Diff, "hunter3")
+
+	change = checkApply(
+		t,
+		sys,
+		File{Path: "/etc/conf", Content: "user: b\npass: hunter4\n", Secrets: []string{"hunter4", "hunter3"}},
+	)
+	assert.Equal(t, "change secret values\n", change.Diff)
+}
+
+func TestFile_HidesContent(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/etc/app/.keep", "")
+
+	change := checkApply(t, sys, File{Path: "/etc/app/env", Content: "TOKEN=a\n", Hidden: true})
+	assert.Equal(t, "create file\ncontent hidden\n", change.Diff)
+
+	change = checkApply(t, sys, File{Path: "/etc/app/env", Content: "TOKEN=b\n", Hidden: true})
+	assert.Equal(t, "content hidden\n", change.Diff)
+}
+
 func TestFile_KeepsUnmanagedModeOnRewrite(t *testing.T) {
 	sys := newTestSys(t)
 	sys.write("/etc/conf", "old\n")
@@ -265,6 +298,29 @@ func TestOwnedDir_RemovesUndeclaredEntries(t *testing.T) {
 	names, err := sys.ReadDir("/etc/sudoers.d")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"keep"}, names)
+}
+
+func TestOwnedDir_RecursiveCleansDeclaredDirs(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/srv/app/keep", "")
+	sys.write("/srv/app/conf/keep", "")
+	sys.write("/srv/app/conf/stray", "")
+	sys.write("/srv/app/old/nested", "")
+	st := newRunState()
+	st.declare(File{Path: "/srv/app/keep"})
+	st.declare(Dir{Path: "/srv/app/conf"})
+	st.declare(File{Path: "/srv/app/conf/keep"})
+	ctx := withRunState(context.Background(), st)
+	r := OwnedDir{Path: "/srv/app", Recursive: true}
+
+	change, err := r.Check(ctx, sys)
+	require.NoError(t, err)
+	assert.Equal(t, "remove /srv/app/conf/stray\nremove /srv/app/old\n", change.Diff)
+
+	require.NoError(t, r.Apply(ctx, sys))
+	assert.True(t, sys.exists("/srv/app/conf/keep"))
+	assert.False(t, sys.exists("/srv/app/conf/stray"))
+	assert.False(t, sys.exists("/srv/app/old"))
 }
 
 func TestUnifiedDiff(t *testing.T) {

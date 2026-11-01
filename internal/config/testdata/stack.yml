@@ -1,0 +1,18 @@
+# The web server.
+x-common: &common
+  restart: always # always
+services:
+  web:
+    <<: *common
+    image: !param image
+    command: !param command
+    labels: !param labels
+    environment:
+      PASSWORD: SECRET
+      HOME: $$HOME
+      EXTRA: !param extra
+    volumes:
+      - !volume data:/var/lib/data
+      - type: bind
+        source: !volume uploads
+        target: /uploads

@@ -1,0 +1,17 @@
+# The web server.
+x-common: &common
+  restart: always # always
+services:
+  web:
+    <<: *common
+    image: "nginx:2"
+    command: ["serve", "--port", "80"]
+    labels: {"a": "b"}
+    environment:
+      PASSWORD: "pa$$$$word"
+      HOME: $$HOME
+    volumes:
+      - "/srv/volumes/web/data:/var/lib/data"
+      - type: bind
+        source: "/srv/volumes/web/uploads"
+        target: /uploads

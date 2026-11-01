@@ -79,6 +79,9 @@ type Config struct {
 	Timezone  *TimezoneConfig       `yaml:"timezone"`
 	Locale    *LocaleConfig         `yaml:"locale"`
 	NTP       *NTPConfig            `yaml:"ntp"`
+	// Stacks come from the host's roles that have a docker-compose.yml,
+	// rather than from a module, and are in name order.
+	Stacks []Stack `yaml:"-"`
 }
 
 type PackagesConfig struct {
@@ -162,6 +165,8 @@ type Repo struct {
 	keys            *keyring
 	// roles maps every role, including child roles, to its children.
 	roles map[string][]string
+	// stacks are the roles with a docker-compose.yml.
+	stacks map[string]*stackDef
 }
 
 // Open reads hosts.d and sensible.yml from dir and checks the directory's
@@ -383,6 +388,7 @@ func writeAtomic(path string, content []byte, perm os.FileMode) error {
 // have that don't exist.
 func (r *Repo) checkLayout() error {
 	r.roles = map[string][]string{}
+	r.stacks = map[string]*stackDef{}
 	entries, err := readDir(r.path("roles"))
 	if err != nil {
 		return err
@@ -394,6 +400,9 @@ func (r *Repo) checkLayout() error {
 		if err := r.checkRole(e.Name(), true); err != nil {
 			return err
 		}
+	}
+	if err := r.checkStackNames(); err != nil {
+		return err
 	}
 
 	for _, host := range slices.Sorted(maps.Keys(r.inventory.Hosts)) {
@@ -413,48 +422,85 @@ func (r *Repo) checkLayout() error {
 	return nil
 }
 
-// checkRole records the role and its child roles, which are its
-// subdirectories. Only top-level roles may have children.
+// checkRole records the role, its child roles and its stack. Only
+// top-level roles may have children.
 func (r *Repo) checkRole(role string, topLevel bool) error {
-	entries, err := readDir(r.path("roles", role))
+	dir := r.path("roles", role)
+	entries, err := readDir(dir)
 	if err != nil {
 		return err
 	}
+	settings, err := r.readRoleSettings(role)
+	if err != nil {
+		return err
+	}
+	if len(settings.Children) > 0 && !topLevel {
+		return fmt.Errorf("%s: children: roles nest one level deep", r.path("roles", role, "role.yml"))
+	}
+
+	isStack := slices.ContainsFunc(entries, func(e os.DirEntry) bool { return e.Name() == host.ComposeFile })
+	covered := map[string]bool{}
+	if isStack {
+		if covered, err = r.checkStack(role, settings); err != nil {
+			return err
+		}
+	} else if settings.Compose != nil {
+		return fmt.Errorf("%s: compose settings need a %s", r.path("roles", role, "role.yml"), host.ComposeFile)
+	}
+
 	var children []string
+	for _, name := range settings.Children {
+		if name == "" || name == "." || name == ".." || strings.Contains(name, "/") {
+			return fmt.Errorf("%s: children: invalid name %q", r.path("roles", role, "role.yml"), name)
+		}
+		if covered[name] {
+			return fmt.Errorf("%s: %q is both a child role and in compose.files", r.path("roles", role, "role.yml"), name)
+		}
+		if info, err := os.Stat(filepath.Join(dir, name)); err != nil || !info.IsDir() {
+			return fmt.Errorf("%s: children: %q isn't a directory in %s", r.path("roles", role, "role.yml"), name, dir)
+		}
+		child := role + "/" + name
+		if err := r.checkRole(child, false); err != nil {
+			return err
+		}
+		children = append(children, child)
+	}
+
 	hasBase, hasVariant := false, false
 	for _, e := range entries {
-		file := r.path("roles", role, e.Name())
-		if e.IsDir() {
-			if !topLevel {
-				return fmt.Errorf("%s: unexpected directory; roles nest one level deep", file)
-			}
-			child := role + "/" + e.Name()
-			if err := r.checkRole(child, false); err != nil {
-				return err
-			}
-			children = append(children, child)
-			continue
-		}
-		if e.Name() == "role.yml" {
+		file := filepath.Join(dir, e.Name())
+		switch {
+		case covered[e.Name()] || slices.Contains(settings.Children, e.Name()):
+		case e.IsDir():
+			return fmt.Errorf("%s: unexpected directory; list it in children, or in compose.files for a stack", file)
+		case e.Name() == "role.yml":
 			hasBase = true
-			continue
+		case e.Name() == host.ComposeFile:
+		case isVariantFile(e.Name()):
+			family := strings.TrimSuffix(strings.TrimPrefix(e.Name(), "role."), ".yml")
+			if !slices.Contains(host.OSFamilies, family) {
+				return fmt.Errorf("%s: unknown OS %q; expected one of %s", file, family, strings.Join(host.OSFamilies, ", "))
+			}
+			hasVariant = true
+		default:
+			return fmt.Errorf(
+				"%s: unexpected file; expected role.yml, role.<os>.yml, %s, or a file in compose.files",
+				file,
+				host.ComposeFile,
+			)
 		}
-		middle, ok := strings.CutPrefix(e.Name(), "role.")
-		family, ok2 := strings.CutSuffix(middle, ".yml")
-		if !ok || !ok2 {
-			return fmt.Errorf("%s: unexpected file; expected role.yml, role.<os>.yml or a child role directory", file)
-		}
-		if !slices.Contains(host.OSFamilies, family) {
-			return fmt.Errorf("%s: unknown OS %q; expected one of %s", file, family, strings.Join(host.OSFamilies, ", "))
-		}
-		hasVariant = true
 	}
-	// A parent needs no settings of its own, but OS variants need a base.
-	if !hasBase && (hasVariant || len(children) == 0) {
-		return fmt.Errorf("%s: missing role.yml", r.path("roles", role))
+	// A stack needs no settings of its own, but OS variants need a base.
+	if !hasBase && (hasVariant || !isStack) {
+		return fmt.Errorf("%s: missing role.yml", dir)
 	}
+	slices.Sort(children)
 	r.roles[role] = children
 	return nil
+}
+
+func isVariantFile(name string) bool {
+	return strings.HasPrefix(name, "role.") && strings.HasSuffix(name, ".yml") && name != "role.yml"
 }
 
 // readDir lists a directory without hidden files, returning nothing if it

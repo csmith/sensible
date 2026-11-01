@@ -38,6 +38,7 @@ func testHost(osFamily string) Host {
 			Timezone: &config.TimezoneConfig{Zone: "Europe/London"},
 			Locale:   &config.LocaleConfig{Lang: "en_GB.UTF-8", Generate: []string{"en_US.UTF-8"}},
 			NTP:      &config.NTPConfig{Servers: []string{"ntp.example.com"}},
+			Stacks:   []config.Stack{{Name: "web", Files: []config.StackFile{{Path: "docker-compose.yml"}}}},
 		},
 		Facts: host.Facts{
 			OSFamily: osFamily,
@@ -106,6 +107,8 @@ func TestResources_order(t *testing.T) {
 				"file:/etc/sysctl.d/99-tailscale.conf",
 				"tailscale-set",
 				"package:docker",
+				"compose:/srv/compose/web",
+				"compose-projects:/srv/compose",
 				"owned-dir:/etc/sudoers.d",
 			},
 		},
@@ -131,6 +134,8 @@ func TestResources_order(t *testing.T) {
 				"tailscale-set",
 				"apt-repo:docker",
 				"package:docker-ce",
+				"compose:/srv/compose/web",
+				"compose-projects:/srv/compose",
 				"owned-dir:/etc/sudoers.d",
 			},
 		},
@@ -234,6 +239,12 @@ func TestResources_featuresTurnOff(t *testing.T) {
 			absent: []string{"package:docker", "command:install and start docker"},
 		},
 		{
+			name:    "no stacks",
+			modify:  func(h *Host) { h.Config.Stacks = nil },
+			absent:  []string{"dir:/srv/compose", "dir:/srv/volumes"},
+			present: []string{"compose-projects:/srv/compose"},
+		},
+		{
 			name:   "no tailscale",
 			modify: func(h *Host) { h.Config.Tailscale = nil },
 			absent: []string{"package:tailscale", "tailscale-set"},
@@ -297,6 +308,82 @@ func TestResources_featuresTurnOff(t *testing.T) {
 			},
 		)
 	}
+}
+
+func TestResources_stack(t *testing.T) {
+	h := testHost(archLinux)
+	h.Config.Stacks = []config.Stack{
+		{
+			Name: "twowords-centralpark",
+			Files: []config.StackFile{
+				{Path: "docker-compose.yml", Content: "services: {}\n", Secrets: []string{"pw"}},
+				{Path: ".env", Content: "A=b\n", Hidden: true},
+				{Path: "conf/sub/site.conf", Content: "s\n"},
+				{Path: "conf/other.conf", Content: "o\n"},
+			},
+			Volumes: map[string]config.Volume{
+				"uploads":  {Owner: "33", Mode: 0o750},
+				"database": {Owner: "postgres", Group: "postgres", Mode: 0o700},
+			},
+		},
+	}
+	rs, err := Resources(h)
+	require.NoError(t, err)
+
+	dir := "/srv/compose/twowords-centralpark"
+	compose, ok := find[host.ComposeStack](rs, "compose:"+dir)
+	require.True(t, ok)
+	assert.Equal(
+		t,
+		host.ComposeStack{
+			Dir: dir,
+			Watch: []string{
+				"file:" + dir + "/docker-compose.yml",
+				"file:" + dir + "/.env",
+				"file:" + dir + "/conf/sub/site.conf",
+				"file:" + dir + "/conf/other.conf",
+				"owned-dir:" + dir,
+			},
+		},
+		compose,
+	)
+
+	var stack []host.Resource
+	for i, r := range rs {
+		if r.ID() == "dir:/srv/compose" {
+			stack = rs[i:]
+			break
+		}
+	}
+	assert.Equal(
+		t,
+		[]host.Resource{
+			host.Dir{Path: "/srv/compose", Owner: "root", Group: "docker", Mode: 0o750},
+			host.Dir{Path: "/srv/volumes", Owner: "root", Group: "root", Mode: 0o755},
+			host.Dir{Path: dir, Owner: "root", Group: "docker", Mode: 0o750},
+			host.File{
+				Path:    dir + "/docker-compose.yml",
+				Content: "services: {}\n",
+				Owner:   "root",
+				Group:   "docker",
+				Mode:    0o640,
+				Secrets: []string{"pw"},
+			},
+			host.File{Path: dir + "/.env", Content: "A=b\n", Owner: "root", Group: "docker", Mode: 0o640, Hidden: true},
+			host.Dir{Path: dir + "/conf", Owner: "root", Group: "docker", Mode: 0o750},
+			host.Dir{Path: dir + "/conf/sub", Owner: "root", Group: "docker", Mode: 0o750},
+			host.File{Path: dir + "/conf/sub/site.conf", Content: "s\n", Owner: "root", Group: "docker", Mode: 0o640},
+			host.File{Path: dir + "/conf/other.conf", Content: "o\n", Owner: "root", Group: "docker", Mode: 0o640},
+			host.OwnedDir{Path: dir, Recursive: true},
+			host.Dir{Path: "/srv/volumes/twowords-centralpark", Owner: "root", Group: "root", Mode: 0o755},
+			host.Dir{Path: "/srv/volumes/twowords-centralpark/database", Owner: "postgres", Group: "postgres", Mode: 0o700},
+			host.Dir{Path: "/srv/volumes/twowords-centralpark/uploads", Owner: "33", Mode: 0o750},
+			compose,
+			host.ComposeProjects{Path: "/srv/compose"},
+			host.OwnedDir{Path: "/etc/sudoers.d"},
+		},
+		stack,
+	)
 }
 
 func TestResources_sharedDependenciesOnce(t *testing.T) {

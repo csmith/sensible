@@ -27,7 +27,7 @@ Commands:
   apply [hosts...] [--addr host=address] [--yes]
   facts <host> [--addr host=address]
   config <host> [--os family] [--addr host=address]
-  secret encrypt
+  secret encrypt [--raw]
   secret show <file> <path>
   agent
 
@@ -69,7 +69,7 @@ var errUsage = errors.New("usage")
 func command(ctx context.Context, name string, args []string) error {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	addrs := addrFlag{}
-	user, rotate, yes, osFamily, hostKey := new(string), new(bool), new(bool), new(string), new(string)
+	user, rotate, yes, osFamily, hostKey, raw := new(string), new(bool), new(bool), new(string), new(string), new(bool)
 	switch name {
 	case "bootstrap":
 		user = fs.String("user", "", "Account to set the host up through: root or chris")
@@ -80,6 +80,8 @@ func command(ctx context.Context, name string, args []string) error {
 	case "apply":
 		fs.Var(addrs, "addr", "Address to use for a host, as host=address (repeatable)")
 		yes = fs.Bool("yes", false, "Apply without asking")
+	case "secret":
+		raw = fs.Bool("raw", false, "Print an armored age file, e.g. for a stack's .age file, and keep piped input exactly")
 	default:
 	}
 	if name == "config" {
@@ -115,7 +117,7 @@ func command(ctx context.Context, name string, args []string) error {
 	case name == "config" && len(args) == 1:
 		return run.ShowConfig(ctx, *configDir, args[0], *osFamily, addrs[args[0]], os.Stdout)
 	case name == "secret" && len(args) == 1 && args[0] == "encrypt":
-		return run.EncryptSecret(*configDir, os.Stdin, os.Stdout)
+		return run.EncryptSecret(*configDir, *raw, os.Stdin, os.Stdout)
 	case name == "secret" && len(args) == 3 && args[0] == "show":
 		return run.ShowSecret(*configDir, args[1], args[2], os.Stdout)
 	default:

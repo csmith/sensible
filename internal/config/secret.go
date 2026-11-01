@@ -91,6 +91,13 @@ func (r *Repo) Encrypt(plaintext string) (string, error) {
 	return s.yaml(), nil
 }
 
+// EncryptFile encrypts plaintext to the inventory's recipients, returning an
+// ASCII-armored age file.
+func (r *Repo) EncryptFile(plaintext string) (string, error) {
+	s, err := r.encryptSecret(plaintext)
+	return s.armored, err
+}
+
 func (r *Repo) encryptSecret(plaintext string) (Secret, error) {
 	if len(r.recipients) == 0 {
 		return Secret{}, errors.New("no secrets.recipients in sensible.yml")

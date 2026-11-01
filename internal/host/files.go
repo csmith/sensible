@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -26,7 +27,7 @@ func (r File) Check(ctx context.Context, sys Sys) (Change, error) {
 	}
 	info, err := sys.Lstat(r.Path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return drift("create file\n" + unifiedDiff("", r.Content)), nil
+		return drift("create file\n" + r.contentDiff("")), nil
 	}
 	if err != nil {
 		return Change{}, err
@@ -34,7 +35,7 @@ func (r File) Check(ctx context.Context, sys Sys) (Change, error) {
 	switch {
 	case info.IsSymlink():
 		target, _ := sys.Readlink(r.Path)
-		return drift(fmt.Sprintf("replace symlink to %s with a file\n", target) + unifiedDiff("", r.Content)), nil
+		return drift(fmt.Sprintf("replace symlink to %s with a file\n", target) + r.contentDiff("")), nil
 	case !info.IsRegular():
 		return Change{}, fmt.Errorf("%s exists and isn't a regular file", r.Path)
 	}
@@ -43,8 +44,37 @@ func (r File) Check(ctx context.Context, sys Sys) (Change, error) {
 	if err != nil {
 		return Change{}, err
 	}
-	diff := owner.diff(info, r.Mode) + unifiedDiff(string(current), r.Content)
+	diff := owner.diff(info, r.Mode) + r.contentDiff(string(current))
 	return Change{InSync: diff == "", Diff: diff}, nil
+}
+
+// contentDiff describes replacing current with the file's content, keeping
+// secrets out of it.
+func (r File) contentDiff(current string) string {
+	switch {
+	case current == r.Content:
+		return ""
+	case r.Hidden:
+		return "content hidden\n"
+	}
+	if diff := unifiedDiff(r.mask(current), r.mask(r.Content)); diff != "" {
+		return diff
+	}
+	return "change secret values\n"
+}
+
+func (r File) mask(content string) string {
+	// Longest first, so a secret containing another is masked whole.
+	secrets := slices.SortedFunc(
+		slices.Values(r.Secrets),
+		func(a, b string) int { return len(b) - len(a) },
+	)
+	for _, s := range secrets {
+		if s != "" {
+			content = strings.ReplaceAll(content, s, "(secret)")
+		}
+	}
+	return content
 }
 
 func (r File) Apply(ctx context.Context, sys Sys) error {
@@ -366,18 +396,39 @@ func (r OwnedDir) Apply(ctx context.Context, sys Sys) error {
 }
 
 func (r OwnedDir) undeclared(ctx context.Context, sys Sys) ([]string, error) {
-	names, err := sys.ReadDir(r.Path)
+	return undeclaredIn(sys, state(ctx).declared, r.Path, r.Recursive)
+}
+
+// undeclaredIn lists the entries in dir that aren't declared, looking inside
+// declared directories if recursive is set.
+func undeclaredIn(sys Sys, declared map[string]bool, dir string, recursive bool) ([]string, error) {
+	names, err := sys.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	declared := state(ctx).declared
 	var extra []string
 	for _, name := range names {
-		if path := filepath.Join(r.Path, name); !declared[path] {
+		path := filepath.Join(dir, name)
+		if !declared[path] {
 			extra = append(extra, path)
+			continue
+		}
+		if !recursive {
+			continue
+		}
+		info, err := sys.Lstat(path)
+		if err != nil {
+			return nil, err
+		}
+		if info.IsDir() {
+			inner, err := undeclaredIn(sys, declared, path, true)
+			if err != nil {
+				return nil, err
+			}
+			extra = append(extra, inner...)
 		}
 	}
 	return extra, nil

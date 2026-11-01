@@ -1,0 +1,9 @@
+{
+  "name": "web",
+  "services": {
+    "app": {},
+    "worker": {"deploy": {"replicas": 2}},
+    "off": {"scale": 0},
+    "manual": {"scale": 1}
+  }
+}

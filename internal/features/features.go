@@ -57,6 +57,7 @@ func Resources(h Host) (host.ResourceList, error) {
 		access,
 		tailscale,
 		docker,
+		stacks,
 		// After everything that writes sudoers files.
 		sudoersCleanUp,
 	}

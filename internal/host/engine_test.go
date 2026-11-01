@@ -119,17 +119,55 @@ func TestEngineCheck_Statuses(t *testing.T) {
 	assert.Empty(t, log, "check mustn't apply anything")
 }
 
-func TestEngineCheck_SkipsOwnedDirAfterFailure(t *testing.T) {
+func TestEngineCheck_SkipsCleanUpAfterFailure(t *testing.T) {
 	var log []string
 	got, _ := collectChecked(
 		t,
 		ResourceList{
 			&fakeResource{id: "broken", checkErr: errors.New("boom"), log: &log},
 			OwnedDir{Path: "/etc/sudoers.d"},
+			ComposeProjects{Path: "/srv/compose"},
 		},
 	)
 
-	assert.Equal(t, StatusSkipped, got[1].Status)
+	assert.Equal(
+		t,
+		[]string{"broken failed", "owned-dir:/etc/sudoers.d skipped", "compose-projects:/srv/compose skipped"},
+		statuses(got),
+	)
+}
+
+func TestEngine_ComposeStackSeesItsFilesChange(t *testing.T) {
+	var log []string
+	stack := ComposeStack{Dir: "/srv/compose/web", Watch: []string{"conf", "env"}}
+	repo := &fakeResource{id: "repo", log: &log}
+	got, _ := collectChecked(
+		t,
+		ResourceList{
+			repo,
+			&fakeResource{id: "conf", inSync: true, log: &log},
+			&fakeResource{id: "env", needs: repo, log: &log},
+			stack,
+		},
+	)
+	assert.Equal(t, "env deferred", statuses(got)[2])
+	assert.Equal(t, "recreate, as its files change\n", got[3].Diff)
+
+	sys := newTestSys(t)
+	sys.on("docker compose *", "", 0)
+	e := newTestEngine()
+	e.sys = sys
+	_, err := e.apply(
+		context.Background(),
+		ResourceList{&fakeResource{id: "conf", inSync: true, log: &log}, &fakeResource{id: "env", log: &log}, stack},
+		func(Applied) error { return nil },
+	)
+	require.NoError(t, err)
+	assert.Equal(
+		t,
+		[]string{"docker compose --file /srv/compose/web/docker-compose.yml up --detach --force-recreate --remove-orphans"},
+		sys.ran,
+	)
 }
 
 func TestEngineApply_AppliesDeferredAndRunsHandlersOnce(t *testing.T) {

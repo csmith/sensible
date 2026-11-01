@@ -35,11 +35,19 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 	}
 
 	var merged ast.Node
+	var stacks []Stack
 	set := map[string]setBy{}
 	for _, role := range slices.Sorted(maps.Keys(roles)) {
-		node, err := r.expandRole(name, role, osFamily, roles[role])
+		node, params, err := r.expandRole(name, role, osFamily, roles[role])
 		if err != nil {
 			return Config{}, fmt.Errorf("%s: role %s: %w", name, role, err)
+		}
+		if _, ok := r.stacks[role]; ok {
+			s, err := r.renderStack(role, params)
+			if err != nil {
+				return Config{}, fmt.Errorf("%s: role %s: %w", name, role, err)
+			}
+			stacks = append(stacks, s)
 		}
 		if err := checkConflicts("role "+role, node, "", set); err != nil {
 			return Config{}, fmt.Errorf("%s: %w", name, err)
@@ -47,7 +55,8 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 		merged = merge(merged, node)
 	}
 
-	var c Config
+	slices.SortFunc(stacks, func(a, b Stack) int { return strings.Compare(a.Name, b.Name) })
+	c := Config{Stacks: stacks}
 	if merged == nil {
 		return c, nil
 	}
@@ -61,6 +70,7 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 	if err := decode(r.keys.context(), merged, &c); err != nil {
 		return Config{}, fmt.Errorf("merging configuration for %s: %w", name, err)
 	}
+	c.Stacks = stacks
 	return c, nil
 }
 
@@ -89,7 +99,9 @@ func (p RoleParams) String() string {
 	return p.node.String()
 }
 
-func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (ast.Node, error) {
+// expandRole returns the role's settings for the host, and the values of its
+// parameters.
+func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (ast.Node, map[string]ast.Node, error) {
 	files := []string{filepath.Join("roles", role, "role.yml")}
 	if osFamily != "" {
 		files = append(files, filepath.Join("roles", role, "role."+osFamily+".yml"))
@@ -106,7 +118,7 @@ func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (ast.N
 		// a parent that doesn't need one.
 		node, err := r.readLayer(file, true)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if node == nil {
 			continue
@@ -116,9 +128,9 @@ func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (ast.N
 		if i == 0 {
 			node = merge(nil, node)
 		}
-		body, p, err := splitParams(node)
+		body, p, err := splitParams(node, i == 0)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", r.path(file), err)
+			return nil, nil, fmt.Errorf("%s: %w", r.path(file), err)
 		}
 		declared = merge(declared, p)
 		layers = append(layers, layer{file, body})
@@ -126,25 +138,28 @@ func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (ast.N
 
 	values, perr := resolveParams(declared, params)
 	if perr != nil {
-		return nil, fmt.Errorf("%s: %w", r.sources[joinPath(host, "roles", role, perr.key)].source, perr)
+		return nil, nil, fmt.Errorf("%s: %w", r.sources[joinPath(host, "roles", role, perr.key)].source, perr)
 	}
 
 	var merged ast.Node
 	for _, l := range layers {
 		node, err := substitute(l.node, values)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", r.path(l.file), err)
+			return nil, nil, fmt.Errorf("%s: %w", r.path(l.file), err)
 		}
 		// Each file is checked alone first, so errors name the file at fault.
 		if err := decode(r.keys.context(), merge(nil, node), &Config{}); err != nil {
-			return nil, fmt.Errorf("%s: %w", r.path(l.file), err)
+			return nil, nil, fmt.Errorf("%s: %w", r.path(l.file), err)
 		}
 		merged = merge(merged, node)
 	}
-	return merged, nil
+	return merged, values, nil
 }
 
-func splitParams(node ast.Node) (*ast.MappingNode, ast.Node, error) {
+// splitParams separates a role file's parameters from the settings it
+// merges into hosts' config. The settings that apply to the role alone are
+// dropped from base, the role.yml, as checkLayout has read them.
+func splitParams(node ast.Node, base bool) (*ast.MappingNode, ast.Node, error) {
 	if tag, ok := node.(*ast.TagNode); ok && tag.Start.Value == replaceTag {
 		node = tag.Value
 	}
@@ -152,7 +167,11 @@ func splitParams(node ast.Node) (*ast.MappingNode, ast.Node, error) {
 	body := ast.Mapping(m.Start, m.IsFlowStyle)
 	var params ast.Node
 	for _, v := range m.Values {
-		if keyString(v.Key) != "params" {
+		key := keyString(v.Key)
+		if base && slices.Contains(roleSettingKeys, key) {
+			continue
+		}
+		if key != "params" {
 			body.Values = append(body.Values, v)
 			continue
 		}

@@ -145,17 +145,23 @@ func orEmpty(v any) any {
 }
 
 // EncryptSecret encrypts in to sensible.yml's recipients and prints it as
-// a !age scalar. One trailing newline is dropped, as `<<<` adds one.
-func EncryptSecret(configDir string, in io.Reader, out io.Writer) error {
+// a !age scalar. One trailing newline is dropped, as `<<<` adds one. If raw
+// is set, it prints an armored age file instead, and keeps piped input as it
+// is, as it's usually a whole file.
+func EncryptSecret(configDir string, raw bool, in io.Reader, out io.Writer) error {
 	repo, err := config.Open(configDir, nil)
 	if err != nil {
 		return err
 	}
-	plaintext, err := readSecret(in)
+	plaintext, err := readSecret(in, !raw)
 	if err != nil {
 		return err
 	}
-	text, err := repo.Encrypt(plaintext)
+	encrypt := repo.Encrypt
+	if raw {
+		encrypt = repo.EncryptFile
+	}
+	text, err := encrypt(plaintext)
 	if err != nil {
 		return err
 	}
@@ -164,13 +170,17 @@ func EncryptSecret(configDir string, in io.Reader, out io.Writer) error {
 }
 
 // readSecret asks for the value without echoing it when in is a terminal,
-// and otherwise reads all of in, dropping one trailing newline.
-func readSecret(in io.Reader) (string, error) {
+// and otherwise reads all of in, dropping one trailing newline if trim is
+// set.
+func readSecret(in io.Reader, trim bool) (string, error) {
 	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
 		return passwordFromTerminal("Value to encrypt: ")
 	}
 	plaintext, err := io.ReadAll(in)
-	return strings.TrimSuffix(string(plaintext), "\n"), err
+	if trim {
+		return strings.TrimSuffix(string(plaintext), "\n"), err
+	}
+	return string(plaintext), err
 }
 
 // ShowSecret decrypts the !age value at a dotted path in a config file,

@@ -141,10 +141,11 @@ beta:
     stacks/one:
     bare:
 `,
-			"roles/stacks/role.yml":          "params:\n  users: []\ndocker:\n  users: !param users\n",
+			"roles/stacks/role.yml":          "children: [one, two]\nparams:\n  users: []\ndocker:\n  users: !param users\n",
 			"roles/stacks/one/role.yml":      "packages:\n  install: [a]\n",
 			"roles/stacks/two/role.yml":      "packages:\n  install: [b]\n",
 			"roles/stacks/two/role.arch.yml": "aur:\n  packages: [c]\n",
+			"roles/bare/role.yml":            "children: [child]\n",
 			"roles/bare/child/role.yml":      "vim:\n",
 		},
 	).open(t)
@@ -169,6 +170,7 @@ func TestHostConfig_parentParamsDontReachChildren(t *testing.T) {
 		t,
 		map[string]string{
 			"hosts.d/hosts.yml":         "alpha:\n  roles:\n    stacks: {users: [chris]}\n",
+			"roles/stacks/role.yml":     "children: [one]\n",
 			"roles/stacks/one/role.yml": "params:\n  users: []\ndocker:\n  users: !param users\n",
 		},
 	).open(t).HostConfig("alpha", "debian")
@@ -285,16 +287,6 @@ func TestHostConfig_errors(t *testing.T) {
 			files: map[string]string{"roles/base/role.yml": "params: [a]\n"},
 			want:  []string{"roles/base/role.yml", "params must be a mapping"},
 		},
-		{
-			name:  "syntax error",
-			files: map[string]string{"roles/base/role.yml": "users: [\n"},
-			want:  []string{"roles/base/role.yml"},
-		},
-		{
-			name:  "not a mapping",
-			files: map[string]string{"roles/base/role.yml": "- a\n- b\n"},
-			want:  []string{"roles/base/role.yml", "mapping"},
-		},
 	}
 	for _, tt := range tests {
 		t.Run(
@@ -353,35 +345,130 @@ func TestOpen(t *testing.T) {
 			`"archlinux"`,
 		},
 		{"unexpected role file", map[string]string{"roles/base/role.yml": "", "roles/base/notes.txt": ""}, "notes.txt"},
+		{"syntax error", map[string]string{"roles/base/role.yml": "users: [\n"}, "roles/base/role.yml"},
+		{"role not a mapping", map[string]string{"roles/base/role.yml": "- a\n- b\n"}, "mapping"},
 		{
 			"child role missing role.yml",
-			map[string]string{"roles/base/child/role.arch.yml": ""},
+			map[string]string{"roles/base/role.yml": "children: [child]\n", "roles/base/child/role.arch.yml": ""},
 			"roles/base/child: missing role.yml",
 		},
 		{
 			"empty child role",
-			map[string]string{"roles/base/role.yml": "", "roles/base/child/.keep": ""},
+			map[string]string{"roles/base/role.yml": "children: [child]\n", "roles/base/child/.keep": ""},
 			"roles/base/child: missing role.yml",
 		},
 		{
 			"grandchild role",
-			map[string]string{"roles/base/child/role.yml": "", "roles/base/child/deeper/role.yml": ""},
+			map[string]string{
+				"roles/base/role.yml":              "children: [child]\n",
+				"roles/base/child/role.yml":        "children: [deeper]\n",
+				"roles/base/child/deeper/role.yml": "",
+			},
 			"roles nest one level deep",
 		},
 		{
-			"parent OS variant without base",
-			map[string]string{"roles/base/role.arch.yml": "", "roles/base/child/role.yml": ""},
-			"roles/base: missing role.yml",
+			"undeclared child",
+			map[string]string{"roles/base/role.yml": "", "roles/base/child/role.yml": ""},
+			"roles/base/child: unexpected directory",
+		},
+		{
+			"child isn't a directory",
+			map[string]string{"roles/base/role.yml": "children: [child]\n"},
+			`"child" isn't a directory`,
+		},
+		{
+			"parent without role.yml",
+			map[string]string{"roles/base/child/role.yml": ""},
+			"roles/base/child: unexpected directory",
 		},
 		{
 			"unknown child role",
-			map[string]string{"hosts.d/hosts.yml": "a: {roles: {base/two: }}\n", "roles/base/one/role.yml": ""},
+			map[string]string{
+				"hosts.d/hosts.yml":       "a: {roles: {base/two: }}\n",
+				"roles/base/role.yml":     "children: [one]\n",
+				"roles/base/one/role.yml": "",
+			},
 			`role "base/two"`,
 		},
 		{
 			"role and its parent",
-			map[string]string{"hosts.d/hosts.yml": "a: {roles: {base: , base/one: }}\n", "roles/base/one/role.yml": ""},
+			map[string]string{
+				"hosts.d/hosts.yml":       "a: {roles: {base: , base/one: }}\n",
+				"roles/base/role.yml":     "children: [one]\n",
+				"roles/base/one/role.yml": "",
+			},
 			`a has role "base/one" and its parent "base"`,
+		},
+		{
+			"compose settings without a compose file",
+			map[string]string{"roles/web/role.yml": "compose:\n  files: [a]\n", "roles/web/a": ""},
+			"compose settings need a docker-compose.yml",
+		},
+		{
+			"unlisted stack file",
+			map[string]string{"roles/web/docker-compose.yml": "", "roles/web/nginx.conf": ""},
+			"roles/web/nginx.conf: unexpected file",
+		},
+		{
+			"unlisted stack directory",
+			map[string]string{"roles/web/docker-compose.yml": "", "roles/web/conf/a": ""},
+			"roles/web/conf: unexpected directory",
+		},
+		{
+			"missing stack file",
+			map[string]string{"roles/web/docker-compose.yml": "", "roles/web/role.yml": "compose:\n  files: [a]\n"},
+			"compose.files",
+		},
+		{
+			"stack file outside the role",
+			map[string]string{
+				"roles/web/docker-compose.yml": "",
+				"roles/web/role.yml":           "compose:\n  files: [../other/role.yml]\n",
+				"roles/other/role.yml":         "",
+			},
+			"isn't a path inside the role",
+		},
+		{
+			"stack copies its role file",
+			map[string]string{"roles/web/docker-compose.yml": "", "roles/web/role.yml": "compose:\n  files: [role.yml]\n"},
+			"read by sensible",
+		},
+		{
+			"stack file and its encrypted copy",
+			map[string]string{
+				"roles/web/docker-compose.yml": "",
+				"roles/web/role.yml":           "compose:\n  files: [.env, .env.age]\n",
+				"roles/web/.env":               "",
+				"roles/web/.env.age":           "",
+			},
+			"would both be written as .env",
+		},
+		{
+			"invalid project name",
+			map[string]string{"roles/Web/docker-compose.yml": ""},
+			"can't be a Docker Compose project name",
+		},
+		{
+			"stacks with the same project name",
+			map[string]string{
+				"roles/a-b/docker-compose.yml": "",
+				"roles/a/role.yml":             "children: [b]\n",
+				"roles/a/b/docker-compose.yml": "",
+			},
+			`would both be the stack "a-b"`,
+		},
+		{
+			"invalid volume name",
+			map[string]string{
+				"roles/web/docker-compose.yml": "",
+				"roles/web/role.yml":           "compose:\n  volumes:\n    a/b: {}\n",
+			},
+			`invalid volume name "a/b"`,
+		},
+		{
+			"stack OS variant without base",
+			map[string]string{"roles/web/docker-compose.yml": "", "roles/web/role.arch.yml": ""},
+			"roles/web: missing role.yml",
 		},
 		{"bad recipient", map[string]string{"sensible.yml": "secrets:\n  recipients: [nope]\n"}, "recipients"},
 		{"unknown settings key", map[string]string{"sensible.yml": "identity: op://x\n"}, "identity"},

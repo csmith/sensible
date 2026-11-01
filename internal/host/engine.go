@@ -22,7 +22,7 @@ func (e *engine) check(ctx context.Context, list ResourceList, send func(Checked
 	for _, r := range list {
 		st.declare(r)
 		res := Checked{ID: r.ID()}
-		if _, ok := r.(OwnedDir); ok && failed {
+		if isCleanUp(r) && failed {
 			res.Status = StatusSkipped
 		} else {
 			change, err := r.Check(ctx, e.sys)
@@ -41,6 +41,7 @@ func (e *engine) check(ctx context.Context, list ResourceList, send func(Checked
 		switch res.Status {
 		case StatusDrifted, StatusDeferred:
 			pending = true
+			st.modified[r.ID()] = true
 		case StatusFailed:
 			failed = true
 		default:
@@ -123,6 +124,7 @@ func (e *engine) applyOne(ctx context.Context, st *runState, r Resource) Applied
 			res.Status, res.Error = StatusFailed, err.Error()
 		} else {
 			res.Status = StatusChanged
+			st.modified[r.ID()] = true
 		}
 		st.changed()
 	}
@@ -141,10 +143,25 @@ func (e *engine) record(res Applied) {
 	}
 }
 
+// isCleanUp reports whether r removes what earlier resources didn't declare,
+// which is only safe if they all succeeded.
+func isCleanUp(r Resource) bool {
+	switch r.(type) {
+	case OwnedDir, ComposeProjects:
+		return true
+	default:
+		return false
+	}
+}
+
 // runState is shared by the resources in one check or apply.
 type runState struct {
-	// declared holds the paths of every File seen so far, for OwnedDir.
+	// declared holds the paths of every File, Dir and ComposeStack seen so
+	// far, for the clean-up resources.
 	declared map[string]bool
+	// modified holds the IDs of resources that changed earlier in an apply,
+	// or that a check found would change.
+	modified map[string]bool
 
 	osFamily string
 
@@ -155,15 +172,24 @@ type runState struct {
 	// install refreshes the package index.
 	aptSourcesChanged bool
 	aptUpdated        bool
+
+	// containers is every container on the host, for ComposeStack.
+	containers []composeContainer
 }
 
 func newRunState() *runState {
-	return &runState{declared: map[string]bool{}}
+	return &runState{declared: map[string]bool{}, modified: map[string]bool{}}
 }
 
 func (s *runState) declare(r Resource) {
-	if f, ok := r.(File); ok {
-		s.declared[f.Path] = true
+	switch r := r.(type) {
+	case File:
+		s.declared[r.Path] = true
+	case Dir:
+		s.declared[r.Path] = true
+	case ComposeStack:
+		s.declared[r.Dir] = true
+	default:
 	}
 }
 
@@ -172,6 +198,7 @@ func (s *runState) declare(r Resource) {
 func (s *runState) changed() {
 	s.pacman = nil
 	s.dpkg = nil
+	s.containers = nil
 }
 
 type runStateKey struct{}
