@@ -415,6 +415,10 @@ func hostPlanLines(h *hostRun, p palette) []string {
 		default:
 			lines = append(lines, p.fail("✗ "+name+": "+c.Error))
 		}
+		if c.Warning != "" {
+			lines = append(lines, p.change("!")+" "+name)
+			lines = append(lines, indent(c.Warning, "  ")...)
+		}
 	}
 	if unchanged > 0 {
 		lines = append(lines, p.dim(fmt.Sprintf("✓ %d unchanged", unchanged)))

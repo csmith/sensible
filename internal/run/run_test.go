@@ -763,3 +763,19 @@ func TestRendererSendsEachUpdateInOneSynchronisedWrite(t *testing.T) {
 	assert.True(t, strings.HasPrefix(w.writes[0], "\x1b[?2026h"))
 	assert.True(t, strings.HasSuffix(w.writes[0], "\x1b[?2026l"))
 }
+
+func TestHostPlanLines_showsWarnings(t *testing.T) {
+	h := &hostRun{
+		resources: host.ResourceList{host.DockerNetwork{Name: "web"}, host.DockerNetwork{Name: "six"}},
+		checked: []host.Checked{
+			{ID: "docker-network:web", Status: host.StatusInSync, Warning: "IPv6 is on rather than off\n"},
+			{ID: "docker-network:six", Status: host.StatusInSync},
+		},
+	}
+
+	assert.Equal(
+		t,
+		[]string{"! docker-network web", "  IPv6 is on rather than off", "✓ 2 unchanged"},
+		hostPlanLines(h, false),
+	)
+}

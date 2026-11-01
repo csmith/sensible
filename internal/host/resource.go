@@ -38,6 +38,9 @@ type Change struct {
 	InSync bool
 	// Diff is a human-readable description of what would change.
 	Diff string
+	// Warning describes drift that won't be changed, e.g. because changing
+	// it would be disruptive.
+	Warning string
 }
 
 // Facts describe a host, as gathered by its agent.
@@ -80,6 +83,8 @@ var resourceTypes = registry(
 	ComposeStack{},
 	ComposeProjects{},
 	TailscaleSet{},
+	DockerNetwork{},
+	DockerNetworks{},
 )
 
 // File manages a regular file.
@@ -275,6 +280,21 @@ type ComposeProjects struct {
 	Path string `json:"path"`
 }
 
+// DockerNetwork creates a Docker network, labelled as sensible's. An
+// existing network whose settings differ is left alone with a warning, as
+// changing them means recreating it, disconnecting every container.
+type DockerNetwork struct {
+	Name string `json:"name"`
+	// Subnets are in CIDR form. Empty lets Docker choose, and isn't checked.
+	Subnets []string `json:"subnets,omitempty"`
+	IPv6    bool     `json:"ipv6,omitempty"`
+}
+
+// DockerNetworks removes networks sensible created that no DockerNetwork
+// earlier in the same run declared. It's skipped if anything on the host
+// failed.
+type DockerNetworks struct{}
+
 // TailscaleSet applies settings with `tailscale set`. It fails if Tailscale
 // isn't logged in.
 type TailscaleSet struct {
@@ -321,5 +341,9 @@ func (r OwnedDir) Notifies() ResourceList { return r.Notify }
 func (r ComposeStack) ID() string { return "compose:" + r.Dir }
 
 func (r ComposeProjects) ID() string { return "compose-projects:" + r.Path }
+
+func (r DockerNetwork) ID() string { return "docker-network:" + r.Name }
+
+func (r DockerNetworks) ID() string { return "docker-networks" }
 
 func (r TailscaleSet) ID() string { return "tailscale-set" }

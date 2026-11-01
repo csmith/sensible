@@ -32,7 +32,10 @@ func testHost(osFamily string) Host {
 				Plugins:       []string{"git"},
 				PromptColours: map[string]string{"alice": "blue"},
 			},
-			Docker:   &config.DockerConfig{Users: []string{"alice"}},
+			Docker: &config.DockerConfig{
+				Users:    []string{"alice"},
+				Networks: map[string]config.DockerNetworkConfig{"web": {}},
+			},
 			Vim:      &config.VimConfig{},
 			Hostname: &config.HostnameConfig{},
 			Timezone: &config.TimezoneConfig{Zone: "Europe/London"},
@@ -107,8 +110,10 @@ func TestResources_order(t *testing.T) {
 				"file:/etc/sysctl.d/99-tailscale.conf",
 				"tailscale-set",
 				"package:docker",
+				"docker-network:web",
 				"compose:/srv/compose/web",
 				"compose-projects:/srv/compose",
+				"docker-networks",
 				"owned-dir:/etc/sudoers.d",
 			},
 		},
@@ -134,8 +139,10 @@ func TestResources_order(t *testing.T) {
 				"tailscale-set",
 				"apt-repo:docker",
 				"package:docker-ce",
+				"docker-network:web",
 				"compose:/srv/compose/web",
 				"compose-projects:/srv/compose",
+				"docker-networks",
 				"owned-dir:/etc/sudoers.d",
 			},
 		},
@@ -234,9 +241,10 @@ func TestResources_featuresTurnOff(t *testing.T) {
 			present: []string{"owned-dir:/etc/sudoers.d"},
 		},
 		{
-			name:   "no docker",
-			modify: func(h *Host) { h.Config.Docker = nil },
-			absent: []string{"package:docker", "command:install and start docker"},
+			name:    "no docker",
+			modify:  func(h *Host) { h.Config.Docker = nil },
+			absent:  []string{"package:docker", "command:install and start docker", "docker-network:web"},
+			present: []string{"docker-networks"},
 		},
 		{
 			name:    "no stacks",
@@ -380,10 +388,37 @@ func TestResources_stack(t *testing.T) {
 			host.Dir{Path: "/srv/volumes/twowords-centralpark/uploads", Owner: "33", Mode: 0o750},
 			compose,
 			host.ComposeProjects{Path: "/srv/compose"},
+			host.DockerNetworks{},
 			host.OwnedDir{Path: "/etc/sudoers.d"},
 		},
 		stack,
 	)
+}
+
+func TestResources_dockerNetworks(t *testing.T) {
+	h := testHost(archLinux)
+	h.Config.Docker.Networks = map[string]config.DockerNetworkConfig{
+		"web": {},
+		"six": {Subnets: []string{"fd00:dead:beef::/48", "10.1.0.0/16"}, IPv6: true},
+	}
+	rs, err := Resources(h)
+	require.NoError(t, err)
+
+	six, ok := find[host.DockerNetwork](rs, "docker-network:six")
+	require.True(t, ok)
+	assert.Equal(
+		t,
+		host.DockerNetwork{Name: "six", Subnets: []string{"fd00:dead:beef::/48", "10.1.0.0/16"}, IPv6: true},
+		six,
+	)
+	got := ids(rs)
+	assert.Less(t, indexAfter(got, "docker-network:six", -1), indexAfter(got, "docker-network:web", -1))
+
+	for subnets, want := range map[string]string{"fd00::/8": "needs ipv6: true", "10.1.0.0": "10.1.0.0"} {
+		h.Config.Docker.Networks = map[string]config.DockerNetworkConfig{"bad": {Subnets: []string{subnets}}}
+		_, err := Resources(h)
+		assert.ErrorContains(t, err, want)
+	}
 }
 
 func TestResources_sharedDependenciesOnce(t *testing.T) {

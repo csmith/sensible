@@ -1,0 +1,12 @@
+[
+  {
+    "Name": "six",
+    "EnableIPv6": true,
+    "IPAM": {
+      "Config": [
+        {"Subnet": "fd00:dead:beef::/48"},
+        {"Subnet": "172.18.0.0/16"}
+      ]
+    }
+  }
+]

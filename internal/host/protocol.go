@@ -42,10 +42,11 @@ type Check struct {
 }
 
 type Checked struct {
-	ID     string `json:"id"`
-	Status Status `json:"status"`
-	Diff   string `json:"diff,omitempty"`
-	Error  string `json:"error,omitempty"`
+	ID      string `json:"id"`
+	Status  Status `json:"status"`
+	Diff    string `json:"diff,omitempty"`
+	Warning string `json:"warning,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
 // Apply applies the resources from the preceding Check, replying with one

@@ -26,6 +26,7 @@ func (e *engine) check(ctx context.Context, list ResourceList, send func(Checked
 			res.Status = StatusSkipped
 		} else {
 			change, err := r.Check(ctx, e.sys)
+			res.Warning = change.Warning
 			switch {
 			case errors.Is(err, ErrNotYetCheckable) && pending:
 				res.Status, res.Error = StatusDeferred, err.Error()
@@ -147,7 +148,7 @@ func (e *engine) record(res Applied) {
 // which is only safe if they all succeeded.
 func isCleanUp(r Resource) bool {
 	switch r.(type) {
-	case OwnedDir, ComposeProjects:
+	case OwnedDir, ComposeProjects, DockerNetworks:
 		return true
 	default:
 		return false
@@ -162,6 +163,8 @@ type runState struct {
 	// modified holds the IDs of resources that changed earlier in an apply,
 	// or that a check found would change.
 	modified map[string]bool
+	// networks holds the names of every DockerNetwork seen so far.
+	networks map[string]bool
 
 	osFamily string
 
@@ -178,7 +181,7 @@ type runState struct {
 }
 
 func newRunState() *runState {
-	return &runState{declared: map[string]bool{}, modified: map[string]bool{}}
+	return &runState{declared: map[string]bool{}, modified: map[string]bool{}, networks: map[string]bool{}}
 }
 
 func (s *runState) declare(r Resource) {
@@ -189,6 +192,8 @@ func (s *runState) declare(r Resource) {
 		s.declared[r.Path] = true
 	case ComposeStack:
 		s.declared[r.Dir] = true
+	case DockerNetwork:
+		s.networks[r.Name] = true
 	default:
 	}
 }

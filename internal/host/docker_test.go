@@ -14,9 +14,7 @@ const composeArgs = "docker compose --file /srv/compose/web/docker-compose.yml "
 
 func webConfig(t *testing.T) string {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join("testdata", "web-config.json"))
-	require.NoError(t, err)
-	return string(b)
+	return readTestdata(t, "web-config.json")
 }
 
 func TestComposeStack_InSyncWhenEveryServiceRuns(t *testing.T) {
@@ -146,6 +144,104 @@ func TestComposeProjects_FailedDownKeepsFiles(t *testing.T) {
 
 func TestComposeProjects_NothingToDoWithoutStacksDir(t *testing.T) {
 	change, err := ComposeProjects{Path: "/srv/compose"}.Check(context.Background(), newTestSys(t))
+
+	require.NoError(t, err)
+	assert.True(t, change.InSync)
+}
+
+func readTestdata(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", name))
+	require.NoError(t, err)
+	return string(b)
+}
+
+const networkLs = "docker network ls --filter "
+
+func TestDockerNetwork_Creates(t *testing.T) {
+	sys := newTestSys(t)
+	sys.on(networkLs+"name=^six$ --format {{.Name}}", "sixth\n", 0)
+	sys.on("docker network create *", "", 0)
+	r := DockerNetwork{Name: "six", Subnets: []string{"fd00:dead:beef::/48"}, IPv6: true}
+
+	change, err := r.Check(context.Background(), sys)
+	require.NoError(t, err)
+	assert.Equal(t, "create network\n", change.Diff)
+
+	require.NoError(t, r.Apply(context.Background(), sys))
+	assert.Equal(
+		t,
+		"docker network create --label sensible.managed=true --ipv6 --subnet fd00:dead:beef::/48 six",
+		sys.ran[len(sys.ran)-1],
+	)
+}
+
+func TestDockerNetwork_ComparesDeclaredFamilies(t *testing.T) {
+	tests := []struct {
+		name    string
+		network DockerNetwork
+		warning string
+	}{
+		{"matching IPv6 subnet", DockerNetwork{Subnets: []string{"fd00:dead:beef::/48"}, IPv6: true}, ""},
+		{"no subnets declared", DockerNetwork{IPv6: true}, ""},
+		{
+			"different IPv4 subnet",
+			DockerNetwork{Subnets: []string{"fd00:dead:beef::/48", "10.0.0.0/8"}, IPv6: true},
+			"subnets are 172.18.0.0/16 rather than 10.0.0.0/8\n",
+		},
+		{
+			"IPv6 off",
+			DockerNetwork{Subnets: []string{"10.0.0.0/8"}},
+			"IPv6 is on rather than off\nsubnets are 172.18.0.0/16 rather than 10.0.0.0/8\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				sys := newTestSys(t)
+				sys.on(networkLs+"name=^six$ --format {{.Name}}", "six\n", 0)
+				sys.on("docker network inspect six", readTestdata(t, "network-six.json"), 0)
+				tt.network.Name = "six"
+
+				change, err := tt.network.Check(context.Background(), sys)
+
+				require.NoError(t, err)
+				assert.True(t, change.InSync)
+				if tt.warning == "" {
+					assert.Empty(t, change.Warning)
+				} else {
+					assert.Equal(t, tt.warning+"remove the network by hand for it to be recreated\n", change.Warning)
+				}
+			},
+		)
+	}
+}
+
+func TestDockerNetwork_NotYetCheckableWithoutDocker(t *testing.T) {
+	_, err := DockerNetwork{Name: "web"}.Check(context.Background(), newTestSys(t))
+
+	assert.ErrorIs(t, err, ErrNotYetCheckable)
+}
+
+func TestDockerNetworks_RemovesUndeclared(t *testing.T) {
+	sys := newTestSys(t)
+	sys.on(networkLs+"label=sensible.managed=true --format {{.Name}}", "web\nold\n", 0)
+	sys.on("docker network rm old", "", 0)
+	st := newRunState()
+	st.declare(DockerNetwork{Name: "web"})
+	ctx := withRunState(context.Background(), st)
+
+	change, err := DockerNetworks{}.Check(ctx, sys)
+	require.NoError(t, err)
+	assert.Equal(t, "remove network old\n", change.Diff)
+
+	require.NoError(t, DockerNetworks{}.Apply(ctx, sys))
+	assert.Equal(t, "docker network rm old", sys.ran[len(sys.ran)-1])
+}
+
+func TestDockerNetworks_NothingWithoutDocker(t *testing.T) {
+	change, err := DockerNetworks{}.Check(context.Background(), newTestSys(t))
 
 	require.NoError(t, err)
 	assert.True(t, change.InSync)

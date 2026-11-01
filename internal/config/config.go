@@ -122,6 +122,16 @@ type ZshConfig struct {
 
 type DockerConfig struct {
 	Users []string `yaml:"users"`
+	// Networks are created before any stack, so stacks can share them as
+	// external networks.
+	Networks map[string]DockerNetworkConfig `yaml:"networks"`
+}
+
+type DockerNetworkConfig struct {
+	// Subnets are in CIDR form. Docker picks one for each address family
+	// without one.
+	Subnets []string `yaml:"subnets"`
+	IPv6    bool     `yaml:"ipv6"`
 }
 
 type VimConfig struct{}

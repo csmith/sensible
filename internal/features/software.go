@@ -3,6 +3,7 @@ package features
 import (
 	"fmt"
 	"maps"
+	"net/netip"
 	"path/filepath"
 	"slices"
 
@@ -251,6 +252,19 @@ func docker(h Host) ([]host.Resource, error) {
 	for _, u := range c.Users {
 		rs = append(rs, host.User{Name: u, Groups: []string{"docker"}})
 	}
+	for _, name := range slices.Sorted(maps.Keys(c.Networks)) {
+		n := c.Networks[name]
+		for _, s := range n.Subnets {
+			p, err := netip.ParsePrefix(s)
+			if err != nil {
+				return nil, fmt.Errorf("host %s: docker network %s: %w", h.Name, name, err)
+			}
+			if p.Addr().Is6() && !n.IPv6 {
+				return nil, fmt.Errorf("host %s: docker network %s has an IPv6 subnet, so needs ipv6: true", h.Name, name)
+			}
+		}
+		rs = append(rs, host.DockerNetwork{Name: name, Subnets: n.Subnets, IPv6: n.IPv6})
+	}
 	return rs, nil
 }
 
@@ -268,7 +282,8 @@ func stacks(h Host) ([]host.Resource, error) {
 	for _, s := range h.Config.Stacks {
 		rs = append(rs, stack(s)...)
 	}
-	return append(rs, host.ComposeProjects{Path: config.StacksDir}), nil
+	// Networks are removed after the stacks that might use them.
+	return append(rs, host.ComposeProjects{Path: config.StacksDir}, host.DockerNetworks{}), nil
 }
 
 func stack(s config.Stack) []host.Resource {

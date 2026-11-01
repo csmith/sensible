@@ -3,8 +3,11 @@ package host
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
+	"net/netip"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -182,4 +185,154 @@ func (r ComposeProjects) Apply(ctx context.Context, sys Sys) error {
 		}
 	}
 	return nil
+}
+
+// networkLabel marks the networks sensible created, which it may remove.
+const networkLabel = "sensible.managed=true"
+
+func (r DockerNetwork) Check(ctx context.Context, sys Sys) (Change, error) {
+	existing, ok, err := r.inspect(ctx, sys)
+	if err != nil || !ok {
+		return drift("create network\n"), err
+	}
+	var warnings []string
+	if existing.EnableIPv6 != r.IPv6 {
+		warnings = append(warnings, fmt.Sprintf("IPv6 is %s rather than %s", onOff(existing.EnableIPv6), onOff(r.IPv6)))
+	}
+	var subnets []string
+	for _, c := range existing.IPAM.Config {
+		subnets = append(subnets, c.Subnet)
+	}
+	// Docker picks a subnet for any family none is given for, so only the
+	// families with declared subnets are compared.
+	for _, ipv6 := range []bool{false, true} {
+		want := subnetsIn(r.Subnets, ipv6)
+		if have := subnetsIn(subnets, ipv6); len(want) > 0 && !slices.Equal(have, want) {
+			warnings = append(
+				warnings,
+				fmt.Sprintf("subnets are %s rather than %s", listOrNone(have), strings.Join(want, ", ")),
+			)
+		}
+	}
+	if len(warnings) == 0 {
+		return Change{InSync: true}, nil
+	}
+	return Change{
+		InSync:  true,
+		Warning: strings.Join(warnings, "\n") + "\nremove the network by hand for it to be recreated\n",
+	}, nil
+}
+
+func (r DockerNetwork) Apply(ctx context.Context, sys Sys) error {
+	args := []string{"docker", "network", "create", "--label", networkLabel}
+	if r.IPv6 {
+		args = append(args, "--ipv6")
+	}
+	for _, s := range r.Subnets {
+		args = append(args, "--subnet", s)
+	}
+	_, err := runOK(ctx, sys, argv(append(args, r.Name)...))
+	return err
+}
+
+type networkInfo struct {
+	EnableIPv6 bool `json:"EnableIPv6"`
+	IPAM       struct {
+		Config []struct {
+			Subnet string `json:"Subnet"`
+		} `json:"Config"`
+	} `json:"IPAM"`
+}
+
+func (r DockerNetwork) inspect(ctx context.Context, sys Sys) (networkInfo, bool, error) {
+	names, err := listNetworks(ctx, sys, "name=^"+r.Name+"$")
+	if err != nil || !slices.Contains(names, r.Name) {
+		return networkInfo{}, false, err
+	}
+	res, err := runOK(ctx, sys, argv("docker", "network", "inspect", r.Name))
+	if err != nil {
+		return networkInfo{}, false, err
+	}
+	var info []networkInfo
+	if err := json.Unmarshal([]byte(res.Stdout), &info); err != nil {
+		return networkInfo{}, false, fmt.Errorf("parsing network %s: %w", r.Name, err)
+	}
+	if len(info) != 1 {
+		return networkInfo{}, false, fmt.Errorf("expected one network called %s, found %d", r.Name, len(info))
+	}
+	return info[0], true, nil
+}
+
+// listNetworks returns the names of the networks matching filter. Before
+// Docker is installed, that's none, but the check can't be relied on yet.
+func listNetworks(ctx context.Context, sys Sys, filter string) ([]string, error) {
+	res, err := runOK(ctx, sys, argv("docker", "network", "ls", "--filter", filter, "--format", "{{.Name}}"))
+	if err != nil {
+		return nil, notYetIfMissing(err)
+	}
+	return strings.Fields(res.Stdout), nil
+}
+
+func (r DockerNetworks) Check(ctx context.Context, sys Sys) (Change, error) {
+	extra, err := r.undeclared(ctx, sys)
+	if err != nil {
+		return Change{}, err
+	}
+	var diff strings.Builder
+	for _, name := range extra {
+		diff.WriteString("remove network " + name + "\n")
+	}
+	return Change{InSync: len(extra) == 0, Diff: diff.String()}, nil
+}
+
+func (r DockerNetworks) Apply(ctx context.Context, sys Sys) error {
+	extra, err := r.undeclared(ctx, sys)
+	if err != nil {
+		return err
+	}
+	for _, name := range extra {
+		if _, err := runOK(ctx, sys, argv("docker", "network", "rm", name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// undeclared lists sensible's networks that aren't declared. A host without
+// Docker has none.
+func (r DockerNetworks) undeclared(ctx context.Context, sys Sys) ([]string, error) {
+	names, err := listNetworks(ctx, sys, "label="+networkLabel)
+	if errors.Is(err, exec.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	declared := state(ctx).networks
+	return slices.DeleteFunc(names, func(n string) bool { return declared[n] }), nil
+}
+
+// subnetsIn returns the subnets of one address family, sorted. Subnets that
+// don't parse count as IPv4.
+func subnetsIn(subnets []string, ipv6 bool) []string {
+	var out []string
+	for _, s := range subnets {
+		p, err := netip.ParsePrefix(s)
+		if (err == nil && p.Addr().Is6()) == ipv6 {
+			out = append(out, s)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+func listOrNone(items []string) string {
+	if len(items) == 0 {
+		return "none"
+	}
+	return strings.Join(items, ", ")
+}
+
+func onOff(b bool) string {
+	return map[bool]string{true: "on", false: "off"}[b]
 }

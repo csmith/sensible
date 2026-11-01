@@ -769,3 +769,21 @@ func writeFile(t *testing.T, dir, name, content string) {
 func nest(yaml string) string {
 	return strings.ReplaceAll(yaml, "\n", "\n  ")
 }
+
+func TestHostConfig_dockerNetworks(t *testing.T) {
+	c, err := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml": "alpha:\n  roles:\n    a:\n    b:\n",
+			"roles/a/role.yml":  "docker:\n  networks:\n    web:\n",
+			"roles/b/role.yml":  "docker:\n  networks:\n    six: {ipv6: true, subnets: ['fd00:dead:beef::/48']}\n",
+		},
+	).open(t).HostConfig("alpha", "debian")
+
+	require.NoError(t, err)
+	assert.Equal(
+		t,
+		map[string]DockerNetworkConfig{"web": {}, "six": {IPv6: true, Subnets: []string{"fd00:dead:beef::/48"}}},
+		c.Docker.Networks,
+	)
+}
