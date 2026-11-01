@@ -178,6 +178,51 @@ func (r User) creation(sys Sys) ([]string, error) {
 	return changes, nil
 }
 
+func (r GroupMembers) Check(_ context.Context, sys Sys) (Change, error) {
+	extra, err := r.extra(sys)
+	if err != nil {
+		return Change{}, err
+	}
+	var diff strings.Builder
+	for _, m := range extra {
+		diff.WriteString("- " + m + "\n")
+	}
+	return Change{InSync: len(extra) == 0, Diff: diff.String()}, nil
+}
+
+func (r GroupMembers) Apply(ctx context.Context, sys Sys) error {
+	extra, err := r.extra(sys)
+	if err != nil {
+		return err
+	}
+	for _, m := range extra {
+		if _, err := runOK(ctx, sys, argv("gpasswd", "--delete", m, r.Group)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// extra lists the group's members that aren't in Members. A group that
+// doesn't exist has none.
+func (r GroupMembers) extra(sys Sys) ([]string, error) {
+	data, err := sys.ReadFile("/etc/group")
+	if err != nil {
+		return nil, err
+	}
+	for line := range strings.Lines(string(data)) {
+		fields := strings.Split(strings.TrimRight(line, "\n"), ":")
+		if len(fields) < 4 || fields[0] != r.Group || fields[3] == "" {
+			continue
+		}
+		return slices.DeleteFunc(
+			strings.Split(fields[3], ","),
+			func(m string) bool { return slices.Contains(r.Members, m) },
+		), nil
+	}
+	return nil, nil
+}
+
 func (r User) modifications(sys Sys, u UserInfo) ([]string, error) {
 	missing := r.missingGroups(u)
 	if err := r.checkGroupsExist(sys, missing); err != nil {

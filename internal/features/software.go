@@ -249,9 +249,18 @@ func docker(h Host) ([]host.Resource, error) {
 		rs = append(rs, installPackages("docker", "docker-compose")...)
 	}
 
+	members := slices.Clone(c.Users)
 	for _, u := range c.Users {
 		rs = append(rs, host.User{Name: u, Groups: []string{"docker"}})
 	}
+	// Users given the group directly keep it too.
+	for name, u := range h.Config.Users {
+		if slices.Contains(u.Groups, "docker") {
+			members = append(members, name)
+		}
+	}
+	slices.Sort(members)
+	rs = append(rs, host.GroupMembers{Group: "docker", Members: slices.Compact(members)})
 	for _, name := range slices.Sorted(maps.Keys(c.Networks)) {
 		n := c.Networks[name]
 		for _, s := range n.Subnets {

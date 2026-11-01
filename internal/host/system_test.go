@@ -156,6 +156,35 @@ func TestUser_InSync(t *testing.T) {
 	}
 }
 
+func TestGroupMembers_RemovesUndeclared(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/etc/group", "docker:x:970:alice,bob,carol\n")
+	sys.on("gpasswd --delete *", "", 0)
+	r := GroupMembers{Group: "docker", Members: []string{"bob"}}
+
+	change, err := r.Check(context.Background(), sys)
+	require.NoError(t, err)
+	assert.Equal(t, "- alice\n- carol\n", change.Diff)
+
+	require.NoError(t, r.Apply(context.Background(), sys))
+	assert.Equal(t, []string{"gpasswd --delete alice docker", "gpasswd --delete carol docker"}, sys.ran)
+}
+
+func TestGroupMembers_InSync(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/etc/group", "docker:x:970:bob\nempty:x:971:\n")
+
+	for _, r := range []GroupMembers{
+		{Group: "docker", Members: []string{"alice", "bob"}},
+		{Group: "empty"},
+		{Group: "missing"},
+	} {
+		change, err := r.Check(context.Background(), sys)
+		require.NoError(t, err)
+		assert.True(t, change.InSync, "%s: %s", r.Group, change.Diff)
+	}
+}
+
 func TestUser_MissingGroupIsNotYetCheckable(t *testing.T) {
 	sys := newTestSys(t)
 

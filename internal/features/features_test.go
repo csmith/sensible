@@ -426,6 +426,20 @@ func TestResources_dockerNetworks(t *testing.T) {
 	}
 }
 
+func TestResources_dockerGroupMembers(t *testing.T) {
+	h := testHost(archLinux)
+	h.Config.Docker.Users = []string{"alice", "carol"}
+	h.Config.Users["bob"] = config.UserConfig{Groups: []string{"docker"}}
+	rs, err := Resources(h)
+	require.NoError(t, err)
+
+	members, ok := find[host.GroupMembers](rs, "group-members:docker")
+	require.True(t, ok)
+	assert.Equal(t, []string{"alice", "bob", "carol"}, members.Members)
+	got := ids(rs)
+	assert.Less(t, indexAfter(got, "user:carol", -1), indexAfter(got, "group-members:docker", -1))
+}
+
 func TestResources_sharedDependenciesOnce(t *testing.T) {
 	rs, err := Resources(testHost(archLinux))
 	require.NoError(t, err)

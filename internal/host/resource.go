@@ -74,6 +74,7 @@ var resourceTypes = registry(
 	Service{},
 	ServiceAction{},
 	User{},
+	GroupMembers{},
 	GitCheckout{},
 	LineInFile{},
 	CommentOut{},
@@ -195,6 +196,13 @@ type User struct {
 	// Password is a crypt(3) hash, or "!" to lock the account. Empty leaves
 	// it alone.
 	Password string `json:"password,omitempty"`
+}
+
+// GroupMembers removes a group's members that aren't in Members. It never
+// adds them, which User does.
+type GroupMembers struct {
+	Group   string   `json:"group"`
+	Members []string `json:"members"`
 }
 
 // GitCheckout keeps a shallow clone of a repository at a commit, discarding
@@ -323,6 +331,8 @@ func (r Service) ID() string { return "service:" + r.Name }
 func (r ServiceAction) ID() string { return r.Action + ":" + r.Name }
 
 func (r User) ID() string { return "user:" + r.Name }
+
+func (r GroupMembers) ID() string { return "group-members:" + r.Group }
 
 func (r GitCheckout) ID() string { return "git:" + r.Path }
 
