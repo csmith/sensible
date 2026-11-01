@@ -331,11 +331,12 @@ func TestResources_stack(t *testing.T) {
 				{Path: "conf/other.conf", Content: "o\n", Perms: perms},
 			},
 			Dirs: map[string]config.Perms{"conf/sub": {Owner: "1000", Mode: 0o755}},
-			Volumes: map[string]config.Volume{
-				"uploads":  {Owner: "33", Mode: 0o750},
-				"database": {Owner: "postgres", Group: "postgres", Mode: 0o700},
-			},
 		},
+	}
+	h.Config.Volumes = []config.Volume{
+		{Path: "/srv/volumes/twowords/blobs", Owner: "33"},
+		{Path: "/srv/volumes/twowords-centralpark/database", Owner: "postgres", Group: "postgres", Mode: 0o700},
+		{Path: "/srv/volumes/twowords-centralpark/uploads", Owner: "33", Mode: 0o750},
 	}
 	rs, err := Resources(h)
 	require.NoError(t, err)
@@ -360,7 +361,7 @@ func TestResources_stack(t *testing.T) {
 
 	var stack []host.Resource
 	for i, r := range rs {
-		if r.ID() == "dir:/srv/compose" {
+		if r.ID() == "dir:/srv/volumes" {
 			stack = rs[i:]
 			break
 		}
@@ -368,8 +369,13 @@ func TestResources_stack(t *testing.T) {
 	assert.Equal(
 		t,
 		[]host.Resource{
-			host.Dir{Path: "/srv/compose", Owner: "root", Group: "docker", Mode: 0o750},
 			host.Dir{Path: "/srv/volumes", Owner: "root", Group: "root", Mode: 0o755},
+			host.Dir{Path: "/srv/volumes/twowords", Owner: "root", Group: "root", Mode: 0o755},
+			host.Dir{Path: "/srv/volumes/twowords/blobs", Owner: "33"},
+			host.Dir{Path: "/srv/volumes/twowords-centralpark", Owner: "root", Group: "root", Mode: 0o755},
+			host.Dir{Path: "/srv/volumes/twowords-centralpark/database", Owner: "postgres", Group: "postgres", Mode: 0o700},
+			host.Dir{Path: "/srv/volumes/twowords-centralpark/uploads", Owner: "33", Mode: 0o750},
+			host.Dir{Path: "/srv/compose", Owner: "root", Group: "docker", Mode: 0o750},
 			host.Dir{Path: dir, Owner: "root", Group: "docker", Mode: 0o750},
 			host.File{
 				Path:    dir + "/docker-compose.yml",
@@ -385,9 +391,6 @@ func TestResources_stack(t *testing.T) {
 			host.File{Path: dir + "/conf/sub/site.conf", Content: "s\n", Owner: "1000", Mode: 0o644},
 			host.File{Path: dir + "/conf/other.conf", Content: "o\n", Owner: "root", Group: "docker", Mode: 0o640},
 			host.OwnedDir{Path: dir, Recursive: true},
-			host.Dir{Path: "/srv/volumes/twowords-centralpark", Owner: "root", Group: "root", Mode: 0o755},
-			host.Dir{Path: "/srv/volumes/twowords-centralpark/database", Owner: "postgres", Group: "postgres", Mode: 0o700},
-			host.Dir{Path: "/srv/volumes/twowords-centralpark/uploads", Owner: "33", Mode: 0o750},
 			compose,
 			host.ComposeProjects{Path: "/srv/compose"},
 			host.DockerNetworks{},

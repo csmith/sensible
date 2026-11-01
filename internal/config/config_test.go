@@ -402,7 +402,7 @@ func TestOpen(t *testing.T) {
 		{
 			"compose settings without a compose file",
 			map[string]string{"roles/web/role.yml": "compose:\n  files: [a]\n", "roles/web/a": ""},
-			"compose settings need a docker-compose.yml",
+			"compose.files needs a docker-compose.yml",
 		},
 		{
 			"unlisted stack file",
@@ -465,11 +465,11 @@ func TestOpen(t *testing.T) {
 		{
 			"stacks with the same project name",
 			map[string]string{
-				"roles/a-b/docker-compose.yml": "",
+				"roles/a-b/role.yml":           "compose:\n  volumes: {data: }\n",
 				"roles/a/role.yml":             "children: [b]\n",
 				"roles/a/b/docker-compose.yml": "",
 			},
-			`would both be the stack "a-b"`,
+			`would both use the stack name "a-b"`,
 		},
 		{
 			"invalid volume name",

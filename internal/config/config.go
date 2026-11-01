@@ -82,6 +82,9 @@ type Config struct {
 	// Stacks come from the host's roles that have a docker-compose.yml,
 	// rather than from a module, and are in name order.
 	Stacks []Stack `yaml:"-"`
+	// Volumes are those of the host's roles and their parents, in path
+	// order.
+	Volumes []Volume `yaml:"-"`
 }
 
 type PackagesConfig struct {
@@ -177,6 +180,8 @@ type Repo struct {
 	roles map[string][]string
 	// stacks are the roles with a docker-compose.yml.
 	stacks map[string]*stackDef
+	// volumes are the compose.volumes of the roles that declare any.
+	volumes map[string]map[string]Perms
 }
 
 // Open reads hosts.d and sensible.yml from dir and checks the directory's
@@ -409,6 +414,7 @@ func writeAtomic(path string, content []byte, perm os.FileMode) error {
 func (r *Repo) checkLayout() error {
 	r.roles = map[string][]string{}
 	r.stacks = map[string]*stackDef{}
+	r.volumes = map[string]map[string]Perms{}
 	entries, err := readDir(r.path("roles"))
 	if err != nil {
 		return err
@@ -459,13 +465,9 @@ func (r *Repo) checkRole(role string, topLevel bool) error {
 	}
 
 	isStack := slices.ContainsFunc(entries, func(e os.DirEntry) bool { return e.Name() == host.ComposeFile })
-	covered := map[string]bool{}
-	if isStack {
-		if covered, err = r.checkStack(role, settings); err != nil {
-			return err
-		}
-	} else if settings.Compose != nil {
-		return fmt.Errorf("%s: compose settings need a %s", r.path("roles", role, "role.yml"), host.ComposeFile)
+	covered, err := r.checkCompose(role, settings, isStack)
+	if err != nil {
+		return err
 	}
 
 	var children []string
@@ -517,6 +519,23 @@ func (r *Repo) checkRole(role string, topLevel bool) error {
 	slices.Sort(children)
 	r.roles[role] = children
 	return nil
+}
+
+// checkCompose records the role's volumes and stack, returning the names of
+// the role directory's entries its stack's files cover.
+func (r *Repo) checkCompose(role string, settings roleSettings, isStack bool) (map[string]bool, error) {
+	if settings.Compose != nil {
+		if err := r.checkVolumes(role, settings.Compose.Volumes); err != nil {
+			return nil, err
+		}
+	}
+	if isStack {
+		return r.checkStack(role, settings)
+	}
+	if settings.Compose != nil && len(settings.Compose.Files) > 0 {
+		return nil, fmt.Errorf("%s: compose.files needs a %s", r.path("roles", role, "role.yml"), host.ComposeFile)
+	}
+	return map[string]bool{}, nil
 }
 
 func isVariantFile(name string) bool {

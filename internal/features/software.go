@@ -268,16 +268,24 @@ func docker(h Host) ([]host.Resource, error) {
 	return rs, nil
 }
 
-// stacks deploys the host's compose stacks. Each is recreated whenever its
-// files change, and stacks no role declares any more are taken down.
+// stacks deploys the host's compose stacks, after the volumes they mount.
+// Each is recreated whenever its files change, and stacks no role declares
+// any more are taken down.
 func stacks(h Host) ([]host.Resource, error) {
 	var rs []host.Resource
+	if len(h.Config.Volumes) > 0 {
+		rs = append(rs, host.Dir{Path: config.VolumesDir, Owner: "root", Group: "root", Mode: 0o755})
+	}
+	owners := map[string]bool{}
+	for _, v := range h.Config.Volumes {
+		if owner := filepath.Dir(v.Path); !owners[owner] {
+			owners[owner] = true
+			rs = append(rs, host.Dir{Path: owner, Owner: "root", Group: "root", Mode: 0o755})
+		}
+		rs = append(rs, host.Dir{Path: v.Path, Owner: v.Owner, Group: v.Group, Mode: v.Mode})
+	}
 	if len(h.Config.Stacks) > 0 {
-		rs = append(
-			rs,
-			host.Dir{Path: config.StacksDir, Owner: "root", Group: "docker", Mode: 0o750},
-			host.Dir{Path: config.VolumesDir, Owner: "root", Group: "root", Mode: 0o755},
-		)
+		rs = append(rs, host.Dir{Path: config.StacksDir, Owner: "root", Group: "docker", Mode: 0o750})
 	}
 	for _, s := range h.Config.Stacks {
 		rs = append(rs, stack(s)...)
@@ -321,13 +329,5 @@ func stack(s config.Stack) []host.Resource {
 	owned := host.OwnedDir{Path: dir, Recursive: true}
 	rs = append(rs, owned)
 	watch = append(watch, owned.ID())
-
-	if len(s.Volumes) > 0 {
-		rs = append(rs, host.Dir{Path: filepath.Join(config.VolumesDir, s.Name), Owner: "root", Group: "root", Mode: 0o755})
-	}
-	for _, name := range slices.Sorted(maps.Keys(s.Volumes)) {
-		v := s.Volumes[name]
-		rs = append(rs, host.Dir{Path: s.VolumeDir(name), Owner: v.Owner, Group: v.Group, Mode: v.Mode})
-	}
 	return append(rs, host.ComposeStack{Dir: dir, Watch: watch})
 }

@@ -56,7 +56,8 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 	}
 
 	slices.SortFunc(stacks, func(a, b Stack) int { return strings.Compare(a.Name, b.Name) })
-	c := Config{Stacks: stacks}
+	volumes := r.hostVolumes(slices.Collect(maps.Keys(roles)))
+	c := Config{Stacks: stacks, Volumes: volumes}
 	if merged == nil {
 		return c, nil
 	}
@@ -70,7 +71,7 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 	if err := decode(r.keys.context(), merged, &c); err != nil {
 		return Config{}, fmt.Errorf("merging configuration for %s: %w", name, err)
 	}
-	c.Stacks = stacks
+	c.Stacks, c.Volumes = stacks, volumes
 	return c, nil
 }
 

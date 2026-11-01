@@ -43,10 +43,10 @@ compose:
 			"roles/web/conf/.hidden":       "h\n",
 			"roles/web/conf/sub/site.conf": "s\n",
 			"roles/web/.role.yml.swp":      "ignored",
-			"roles/group/role.yml":         "children: [one]\n",
+			"roles/group/role.yml":         "children: [one]\ncompose:\n  volumes: {blobs: {owner: \"33\"}}\n",
 			"roles/group/one/docker-compose.yml": `services:
   app:
-    image: app
+    volumes: [!volume ../blobs:/b]
 `,
 		},
 	)
@@ -70,7 +70,13 @@ compose:
 	assert.Equal(t, "group-one", c.Stacks[0].Name)
 	assert.Equal(
 		t,
-		[]StackFile{{Path: "docker-compose.yml", Content: "services:\n  app:\n    image: app\n", Perms: defaults}},
+		[]StackFile{
+			{
+				Path:    "docker-compose.yml",
+				Content: "services:\n  app:\n    volumes: [\"/srv/volumes/group/blobs:/b\"]\n",
+				Perms:   defaults,
+			},
+		},
 		c.Stacks[0].Files,
 	)
 
@@ -82,11 +88,12 @@ compose:
 	assert.Equal(t, "/srv/compose/web", web.Dir())
 	assert.Equal(
 		t,
-		map[string]Volume{
-			"data":    {Owner: "70", Mode: 0o700},
-			"uploads": {Owner: "alice", Group: "users", Mode: fs.FileMode(0o750)},
+		[]Volume{
+			{Path: "/srv/volumes/group/blobs", Owner: "33"},
+			{Path: "/srv/volumes/web/data", Owner: "70", Mode: 0o700},
+			{Path: "/srv/volumes/web/uploads", Owner: "alice", Group: "users", Mode: fs.FileMode(0o750)},
 		},
-		web.Volumes,
+		c.Volumes,
 	)
 	assert.Equal(
 		t,
@@ -117,7 +124,13 @@ func TestHostConfig_stackErrors(t *testing.T) {
 			"undeclared volume",
 			"services:\n  a:\n    volumes: [!volume db:/x]\n",
 			nil,
-			`volume "db" isn't in the role's compose.volumes`,
+			`volume "db" isn't in role web's compose.volumes`,
+		},
+		{
+			"parent volume without a parent",
+			"services:\n  a:\n    volumes: [!volume ../db:/x]\n",
+			nil,
+			"role web has no parent",
 		},
 		{"unknown parameter", "services:\n  a:\n    image: !param image\n", nil, `unknown parameter "image"`},
 		{"plain secret", "services:\n  a:\n    image: !age x\n", nil, "ASCII-armored"},
@@ -144,6 +157,29 @@ func TestHostConfig_stackErrors(t *testing.T) {
 			},
 		)
 	}
+}
+
+func TestHostConfig_parentVolumesWithOnlyAChild(t *testing.T) {
+	c, err := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml":        "alpha:\n  roles: {group/one: }\n",
+			"roles/group/role.yml":     "children: [one]\ncompose:\n  volumes: {blobs: }\n",
+			"roles/group/one/role.yml": "",
+		},
+	).open(t).HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	assert.Equal(t, []Volume{{Path: "/srv/volumes/group/blobs"}}, c.Volumes)
+
+	_, err = newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml":                  "alpha:\n  roles: {group: }\n",
+			"roles/group/role.yml":               "children: [two]\ncompose:\n  volumes: {blobs: }\n",
+			"roles/group/two/docker-compose.yml": "services:\n  a:\n    volumes: [!volume ../missing:/x]\n",
+		},
+	).open(t).HostConfig("alpha", "debian")
+	assert.ErrorContains(t, err, `volume "missing" isn't in role group's compose.volumes`)
 }
 
 func readTestdata(t *testing.T, name string) string {

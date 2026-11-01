@@ -25,7 +25,8 @@ import (
 const (
 	// StacksDir holds each stack's files, in a directory named after it.
 	StacksDir = "/srv/compose"
-	// VolumesDir holds each stack's volumes, in a directory named after it.
+	// VolumesDir holds the volumes each role declares, in a directory named
+	// as the role's stack would be.
 	VolumesDir = "/srv/volumes"
 )
 
@@ -44,16 +45,11 @@ type Stack struct {
 	Files []StackFile
 	// Dirs are the directories within listed directories, by path relative
 	// to the stack's directory. Other directories are root:docker 0750.
-	Dirs    map[string]Perms
-	Volumes map[string]Volume
+	Dirs map[string]Perms
 }
 
 func (s Stack) Dir() string {
 	return filepath.Join(StacksDir, s.Name)
-}
-
-func (s Stack) VolumeDir(name string) string {
-	return filepath.Join(VolumesDir, s.Name, name)
 }
 
 type StackFile struct {
@@ -75,9 +71,13 @@ type Perms struct {
 	Mode  fs.FileMode `yaml:"mode"`
 }
 
-// Volume is a directory a stack's compose file refers to with !volume.
-// Sensible manages the directory itself but never its contents.
-type Volume Perms
+// Volume is a directory a role declares in compose.volumes, for its own
+// stack or its children's to mount with !volume. Sensible manages the
+// directory itself but never its contents.
+type Volume struct {
+	Path string
+	Perms
+}
 
 // fileEntry is one of compose.files: a path, or a mapping that also sets
 // its files' ownership and mode.
@@ -127,14 +127,14 @@ func dirPerms(p Perms) Perms {
 
 // stackDef is what a stack's role declares.
 type stackDef struct {
+	role string
 	name string
 	// files are the paths of every file to copy, relative to the role's
 	// directory, excluding the compose file.
 	files []string
 	// perms are each file's ownership and mode, by its path in files.
-	perms   map[string]Perms
-	dirs    map[string]Perms
-	volumes map[string]Volume
+	perms map[string]Perms
+	dirs  map[string]Perms
 }
 
 // roleSettings are the keys in a role's role.yml that apply to the role
@@ -142,8 +142,8 @@ type stackDef struct {
 type roleSettings struct {
 	Children []string `yaml:"children"`
 	Compose  *struct {
-		Files   []fileEntry       `yaml:"files"`
-		Volumes map[string]Volume `yaml:"volumes"`
+		Files   []fileEntry      `yaml:"files"`
+		Volumes map[string]Perms `yaml:"volumes"`
 	} `yaml:"compose"`
 }
 
@@ -177,7 +177,7 @@ var projectName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 // role directory's entries its files cover.
 func (r *Repo) checkStack(role string, s roleSettings) (map[string]bool, error) {
 	roleFile := r.path("roles", role, "role.yml")
-	def := &stackDef{name: strings.ReplaceAll(role, "/", "-"), perms: map[string]Perms{}, dirs: map[string]Perms{}}
+	def := &stackDef{role: role, name: stackName(role), perms: map[string]Perms{}, dirs: map[string]Perms{}}
 	if !projectName.MatchString(def.name) {
 		return nil, fmt.Errorf(
 			"%s: %q can't be a Docker Compose project name; use lower case letters, digits, \"-\" and \"_\"",
@@ -187,13 +187,7 @@ func (r *Repo) checkStack(role string, s roleSettings) (map[string]bool, error) 
 	}
 	var files []fileEntry
 	if s.Compose != nil {
-		def.volumes = s.Compose.Volumes
 		files = s.Compose.Files
-	}
-	for name := range def.volumes {
-		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/:") {
-			return nil, fmt.Errorf("%s: invalid volume name %q", roleFile, name)
-		}
 	}
 
 	covered := map[string]bool{}
@@ -259,24 +253,69 @@ func stackPath(rel string) string {
 	return strings.TrimSuffix(rel, ageSuffix)
 }
 
-// checkStackNames rejects stacks whose roles' names map to the same project.
+// stackName is the name of the role's stack and of its volumes' directory.
+func stackName(role string) string {
+	return strings.ReplaceAll(role, "/", "-")
+}
+
+// checkVolumes records the volumes a role declares.
+func (r *Repo) checkVolumes(role string, volumes map[string]Perms) error {
+	for name := range volumes {
+		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/:") {
+			return fmt.Errorf("%s: invalid volume name %q", r.path("roles", role, "role.yml"), name)
+		}
+	}
+	if len(volumes) > 0 {
+		r.volumes[role] = volumes
+	}
+	return nil
+}
+
+// checkStackNames rejects roles with stacks or volumes whose names map to
+// the same stack name.
 func (r *Repo) checkStackNames() error {
+	roles := slices.Collect(maps.Keys(r.stacks))
+	for role := range r.volumes {
+		if _, ok := r.stacks[role]; !ok {
+			roles = append(roles, role)
+		}
+	}
+	slices.Sort(roles)
 	seen := map[string]string{}
-	for _, role := range slices.Sorted(maps.Keys(r.stacks)) {
-		name := r.stacks[role].name
+	for _, role := range roles {
+		name := stackName(role)
 		if other, ok := seen[name]; ok {
-			return fmt.Errorf("roles %q and %q would both be the stack %q", other, role, name)
+			return fmt.Errorf("roles %q and %q would both use the stack name %q", other, role, name)
 		}
 		seen[name] = role
 	}
 	return nil
 }
 
+// hostVolumes are the volumes of the given roles and of their parents.
+func (r *Repo) hostVolumes(roles []string) []Volume {
+	owners := map[string]bool{}
+	for _, role := range roles {
+		owners[role] = true
+		if parent, _, ok := strings.Cut(role, "/"); ok {
+			owners[parent] = true
+		}
+	}
+	var volumes []Volume
+	for role := range owners {
+		for name, perms := range r.volumes[role] {
+			volumes = append(volumes, Volume{Path: filepath.Join(VolumesDir, stackName(role), name), Perms: perms})
+		}
+	}
+	slices.SortFunc(volumes, func(a, b Volume) int { return strings.Compare(a.Path, b.Path) })
+	return volumes
+}
+
 // renderStack reads a stack's files, replacing the compose file's tags and
 // decrypting .age files.
 func (r *Repo) renderStack(role string, params map[string]ast.Node) (Stack, error) {
 	def := r.stacks[role]
-	s := Stack{Name: def.name, Dirs: def.dirs, Volumes: def.volumes}
+	s := Stack{Name: def.name, Dirs: def.dirs}
 
 	composePath := filepath.Join("roles", role, host.ComposeFile)
 	compose, err := r.renderCompose(composePath, def, params)
@@ -458,22 +497,36 @@ func (c *composeRenderer) value(node ast.Node) (any, error) {
 	}
 }
 
+// volume resolves a !volume tag: a volume name, or ../ and the name of the
+// parent role's volume, optionally followed by the rest of a mount.
+func (c *composeRenderer) volume(tag *ast.TagNode) (string, error) {
+	v, ok := tag.Value.(*ast.StringNode)
+	if !ok {
+		return "", nodeError(tag, "!volume needs a volume name")
+	}
+	name, rest, mount := strings.Cut(v.Value, ":")
+	owner := c.def.role
+	if parentName, ok := strings.CutPrefix(name, "../"); ok {
+		parent, _, isChild := strings.Cut(owner, "/")
+		if !isChild {
+			return "", nodeError(tag, fmt.Sprintf("volume %q is a parent's, but role %s has no parent", name, owner))
+		}
+		owner, name = parent, parentName
+	}
+	if _, ok := c.repo.volumes[owner][name]; !ok {
+		return "", nodeError(tag, fmt.Sprintf("volume %q isn't in role %s's compose.volumes", name, owner))
+	}
+	path := filepath.Join(VolumesDir, stackName(owner), name)
+	if mount {
+		path += ":" + rest
+	}
+	return path, nil
+}
+
 // scalar resolves an !age or !volume tag to the string that replaces it.
 func (c *composeRenderer) scalar(tag *ast.TagNode) (string, error) {
 	if tag.Start.Value == volumeTag {
-		v, ok := tag.Value.(*ast.StringNode)
-		if !ok {
-			return "", nodeError(tag, "!volume needs a volume name")
-		}
-		name, rest, mount := strings.Cut(v.Value, ":")
-		if _, ok := c.def.volumes[name]; !ok {
-			return "", nodeError(tag, fmt.Sprintf("volume %q isn't in the role's compose.volumes", name))
-		}
-		path := filepath.Join(VolumesDir, c.def.name, name)
-		if mount {
-			path += ":" + rest
-		}
-		return path, nil
+		return c.volume(tag)
 	}
 
 	var s Secret
