@@ -52,11 +52,15 @@ func TestResources_backups(t *testing.T) {
 	assert.Equal(
 		t,
 		"#!/bin/sh\n"+managedHeader+"status=0\n"+
+			"echo 'Backing up web-data'\n"+
 			"/usr/local/sbin/sensible-restic backup --host testhost --tag web-data -- /srv/volumes/web/data || status=1\n"+
+			"echo 'Backing up web-db'\n"+
 			"/usr/local/sbin/sensible-restic backup --host testhost --tag web-db --stdin-filename web-db --stdin-from-command"+
 			" -- docker compose exec -T db pg_dumpall -U postgres || status=1\n"+
+			"echo 'Forgetting old snapshots'\n"+
 			"/usr/local/sbin/sensible-restic forget --host testhost --keep-daily 7 --keep-weekly 10 || status=1\n"+
 			"if [ \"$(date +%u)\" = 7 ]; then\n"+
+			"\techo 'Pruning the repository'\n"+
 			"\t/usr/local/sbin/sensible-restic prune || status=1\n"+
 			"fi\n"+
 			"exit \"$status\"\n",

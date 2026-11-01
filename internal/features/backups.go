@@ -109,12 +109,13 @@ func backupScriptContent(h Host) (string, error) {
 		case b.Path != "" && !path.IsAbs(b.Path):
 			return "", fmt.Errorf("host %s: backup %s: path %q isn't absolute", h.Name, name, b.Path)
 		case b.Path != "":
-			lines = append(lines, run(append(hostTag, "--", b.Path)...))
+			lines = append(lines, echo("Backing up "+name), run(append(hostTag, "--", b.Path)...))
 		default:
 			// Unlike piping the command's output to restic, a command that fails
 			// leaves no snapshot behind.
 			lines = append(
 				lines,
+				echo("Backing up "+name),
 				run(append(append(hostTag, "--stdin-filename", name, "--stdin-from-command", "--"), b.Command...)...),
 			)
 		}
@@ -146,8 +147,10 @@ func backupScriptContent(h Host) (string, error) {
 	return strings.Join(
 		append(
 			lines,
+			echo("Forgetting old snapshots"),
 			run(forget...),
 			`if [ "$(date +%u)" = 7 ]; then`,
+			"\t"+echo("Pruning the repository"),
 			"\t"+run("prune"),
 			"fi",
 			`exit "$status"`,
@@ -190,6 +193,10 @@ func resticEnv(hostName string, env map[string]string) (string, error) {
 		lines = append(lines, name+"="+shellQuote(env[name]))
 	}
 	return managedLines(lines), nil
+}
+
+func echo(message string) string {
+	return "echo " + shellQuote(message)
 }
 
 func shellLine(argv []string) string {
