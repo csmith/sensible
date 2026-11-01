@@ -245,7 +245,8 @@ type Command struct {
 // OwnedDir removes every entry in Path that no File earlier in the same run
 // declared. It's skipped if anything on the host failed.
 type OwnedDir struct {
-	Path string `json:"path"`
+	Path   string       `json:"path"`
+	Notify ResourceList `json:"notify,omitempty"`
 }
 
 // TailscaleSet applies settings with `tailscale set`. It fails if Tailscale
@@ -288,6 +289,7 @@ func (r Download) ID() string { return "download:" + r.Path }
 
 func (r Command) ID() string { return "command:" + r.Name }
 
-func (r OwnedDir) ID() string { return "owned-dir:" + r.Path }
+func (r OwnedDir) ID() string             { return "owned-dir:" + r.Path }
+func (r OwnedDir) Notifies() ResourceList { return r.Notify }
 
 func (r TailscaleSet) ID() string { return "tailscale-set" }

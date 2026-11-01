@@ -43,6 +43,10 @@ func Resources(h Host) (host.ResourceList, error) {
 	features := []func(Host) ([]host.Resource, error){
 		packages,
 		aur,
+		hostname,
+		timezone,
+		locale,
+		ntp,
 		vim,
 		users,
 		zsh,

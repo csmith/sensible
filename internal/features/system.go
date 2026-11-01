@@ -1,0 +1,178 @@
+package features
+
+import (
+	"fmt"
+	"regexp"
+	"slices"
+	"strings"
+	"time"
+
+	"chameth.com/sensible/internal/host"
+)
+
+var hostnamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$`)
+
+func hostname(h Host) ([]host.Resource, error) {
+	c := h.Config.Hostname
+	if c == nil {
+		return nil, nil
+	}
+	name := c.Name
+	if name == "" {
+		name = h.Name
+	}
+	// The kernel's limit.
+	if len(name) > 64 || !hostnamePattern.MatchString(name) {
+		return nil, fmt.Errorf("host %s: invalid hostname %q", h.Name, name)
+	}
+
+	rs := []host.Resource{
+		host.File{Path: "/etc/hostname", Content: name + "\n", Owner: "root", Group: "root", Mode: 0o644},
+		host.Command{
+			Name:      "set hostname",
+			CheckArgv: []string{"sh", "-c", `test "$(uname -n)" = "$1"`, "sh", name},
+			ApplyArgv: []string{"hostnamectl", "hostname", "--static", "--transient", name},
+		},
+	}
+	// Debian doesn't resolve the host's own name through nss-myhostname, as
+	// Arch does, so it's mapped in /etc/hosts.
+	if h.Facts.OSFamily == debian {
+		line := "127.0.1.1\t" + name
+		if short, _, ok := strings.Cut(name, "."); ok {
+			line += " " + short
+		}
+		rs = append(rs, host.LineInFile{Path: "/etc/hosts", Regexp: `^127\.0\.1\.1\s`, Line: line})
+	}
+	return rs, nil
+}
+
+func timezone(h Host) ([]host.Resource, error) {
+	c := h.Config.Timezone
+	if c == nil {
+		return nil, nil
+	}
+	if _, err := time.LoadLocation(c.Zone); err != nil || c.Zone == "" || c.Zone == "Local" {
+		return nil, fmt.Errorf("host %s: invalid timezone %q", h.Name, c.Zone)
+	}
+
+	rs := []host.Resource{
+		host.Package{Name: "tzdata"},
+		host.Symlink{Path: "/etc/localtime", Target: "/usr/share/zoneinfo/" + c.Zone},
+	}
+	if h.Facts.OSFamily == debian {
+		rs = append(rs, host.File{Path: "/etc/timezone", Content: c.Zone + "\n", Owner: "root", Group: "root", Mode: 0o644})
+	}
+	return rs, nil
+}
+
+func locale(h Host) ([]host.Resource, error) {
+	c := h.Config.Locale
+	if c == nil {
+		return nil, nil
+	}
+	if c.Lang == "" {
+		return nil, fmt.Errorf("host %s: locale needs a lang", h.Name)
+	}
+
+	var (
+		genLines []string
+		names    []string
+	)
+	for _, l := range append([]string{c.Lang}, c.Generate...) {
+		charset, normalised, ok := parseLocale(l)
+		if !ok {
+			return nil, fmt.Errorf("host %s: locale %q should be written as language_TERRITORY.charset", h.Name, l)
+		}
+		line := l + " " + charset
+		if !slices.Contains(genLines, line) {
+			genLines = append(genLines, line)
+			names = append(names, normalised)
+		}
+	}
+
+	var rs []host.Resource
+	confPath := "/etc/locale.conf"
+	if h.Facts.OSFamily == debian {
+		rs = installPackages("locales")
+		confPath = "/etc/default/locale"
+	}
+	return append(
+		rs,
+		host.File{Path: "/etc/locale.gen", Content: managedLines(genLines), Owner: "root", Group: "root", Mode: 0o644},
+		// Locales that are no longer listed are left until locale-gen next runs.
+		host.Command{
+			Name: "generate locales",
+			CheckArgv: append(
+				[]string{"sh", "-c", `l=$(locale -a) && for n; do printf '%s\n' "$l" | grep -qxF "$n" || exit 1; done`, "sh"},
+				names...,
+			),
+			ApplyArgv: []string{"locale-gen"},
+		},
+		host.File{
+			Path:    confPath,
+			Content: managedLines([]string{"LANG=" + c.Lang}),
+			Owner:   "root",
+			Group:   "root",
+			Mode:    0o644,
+		},
+	), nil
+}
+
+// parseLocale splits a locale such as "en_GB.UTF-8" or "de_DE.UTF-8@euro"
+// into its charset and the name `locale -a` lists it as, e.g. "en_GB.utf8".
+func parseLocale(l string) (charset, normalised string, ok bool) {
+	lang, rest, ok := strings.Cut(l, ".")
+	if !ok || lang == "" || strings.ContainsAny(lang, " @") {
+		return "", "", false
+	}
+	charset, modifier, hasModifier := strings.Cut(rest, "@")
+	if charset == "" || strings.ContainsAny(rest, " ") {
+		return "", "", false
+	}
+	var b strings.Builder
+	for _, r := range strings.ToLower(charset) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	normalised = lang + "." + b.String()
+	if hasModifier {
+		normalised += "@" + modifier
+	}
+	return charset, normalised, true
+}
+
+const timesyncdConfDir = "/etc/systemd/timesyncd.conf.d"
+
+func ntp(h Host) ([]host.Resource, error) {
+	c := h.Config.NTP
+	if c == nil {
+		return nil, nil
+	}
+
+	restart := host.ResourceList{host.ServiceAction{Name: "systemd-timesyncd", Action: "restart"}}
+	var rs []host.Resource
+	// Arch's systemd includes timesyncd; Debian packages it separately.
+	if h.Facts.OSFamily == debian {
+		rs = installPackages("systemd-timesyncd")
+	}
+	if len(c.Servers) > 0 {
+		rs = append(
+			rs,
+			host.Dir{Path: timesyncdConfDir, Owner: "root", Group: "root", Mode: 0o755},
+			host.File{
+				Path:    timesyncdConfDir + "/sensible.conf",
+				Content: managedLines([]string{"[Time]", "NTP=" + strings.Join(c.Servers, " ")}),
+				Owner:   "root",
+				Group:   "root",
+				Mode:    0o644,
+				Notify:  restart,
+			},
+		)
+	}
+	return append(
+		rs,
+		host.OwnedDir{Path: timesyncdConfDir, Notify: restart},
+		host.Service{Name: "systemd-timesyncd", Enabled: true, Running: true},
+	), nil
+}

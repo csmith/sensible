@@ -75,6 +75,10 @@ type Config struct {
 	Zsh       *ZshConfig            `yaml:"zsh"`
 	Docker    *DockerConfig         `yaml:"docker"`
 	Vim       *VimConfig            `yaml:"vim"`
+	Hostname  *HostnameConfig       `yaml:"hostname"`
+	Timezone  *TimezoneConfig       `yaml:"timezone"`
+	Locale    *LocaleConfig         `yaml:"locale"`
+	NTP       *NTPConfig            `yaml:"ntp"`
 }
 
 type PackagesConfig struct {
@@ -118,6 +122,28 @@ type DockerConfig struct {
 }
 
 type VimConfig struct{}
+
+type HostnameConfig struct {
+	// Name defaults to the host's inventory name.
+	Name string `yaml:"name"`
+}
+
+type TimezoneConfig struct {
+	// Zone is a tz database name, e.g. "Europe/London".
+	Zone string `yaml:"zone"`
+}
+
+type LocaleConfig struct {
+	// Lang is the system's LANG, e.g. "en_GB.UTF-8". It's always generated.
+	Lang string `yaml:"lang"`
+	// Generate are further locales to generate.
+	Generate []string `yaml:"generate"`
+}
+
+type NTPConfig struct {
+	// Servers replace the distribution's default servers. Empty keeps them.
+	Servers []string `yaml:"servers"`
+}
 
 // DNSCredentials are the DNS provider's API credentials.
 type DNSCredentials struct {

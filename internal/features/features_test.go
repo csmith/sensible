@@ -32,8 +32,12 @@ func testHost(osFamily string) Host {
 				Plugins:       []string{"git"},
 				PromptColours: map[string]string{"alice": "blue"},
 			},
-			Docker: &config.DockerConfig{Users: []string{"alice"}},
-			Vim:    &config.VimConfig{},
+			Docker:   &config.DockerConfig{Users: []string{"alice"}},
+			Vim:      &config.VimConfig{},
+			Hostname: &config.HostnameConfig{},
+			Timezone: &config.TimezoneConfig{Zone: "Europe/London"},
+			Locale:   &config.LocaleConfig{Lang: "en_GB.UTF-8", Generate: []string{"en_US.UTF-8"}},
+			NTP:      &config.NTPConfig{Servers: []string{"ntp.example.com"}},
 		},
 		Facts: host.Facts{
 			OSFamily: osFamily,
@@ -77,6 +81,14 @@ func TestResources_order(t *testing.T) {
 				"package:nano",
 				"package:htop",
 				"aur:widget-bin",
+				"file:/etc/hostname",
+				"symlink:/etc/localtime",
+				"file:/etc/locale.gen",
+				"command:generate locales",
+				"file:/etc/locale.conf",
+				"file:" + timesyncdConfDir + "/sensible.conf",
+				"owned-dir:" + timesyncdConfDir,
+				"service:systemd-timesyncd",
 				"symlink:/usr/local/bin/vi",
 				"user:alice",
 				"package:zsh",
@@ -102,6 +114,12 @@ func TestResources_order(t *testing.T) {
 			want: []string{
 				"package:nano",
 				"package:htop",
+				"line:/etc/hosts:" + `^127\.0\.1\.1\s`,
+				"file:/etc/timezone",
+				"package:locales",
+				"file:/etc/default/locale",
+				"package:systemd-timesyncd",
+				"service:systemd-timesyncd",
 				"package:vim",
 				"user:alice",
 				"file:/home/alice/.zshrc",
@@ -157,6 +175,11 @@ func TestResources_errors(t *testing.T) {
 		{"unsupported OS", func(h *Host) { h.Facts.OSFamily = "redhat" }},
 		{"Debian without release", func(h *Host) { h.Facts.Release = "" }},
 		{"AUR on Debian", func(h *Host) {}},
+		{"invalid hostname", func(h *Host) { h.Config.Hostname.Name = "bad_name" }},
+		{"unknown timezone", func(h *Host) { h.Config.Timezone.Zone = "Europe/Nowhere" }},
+		{"local timezone", func(h *Host) { h.Config.Timezone.Zone = "Local" }},
+		{"locale without lang", func(h *Host) { h.Config.Locale.Lang = "" }},
+		{"locale without charset", func(h *Host) { h.Config.Locale.Generate = []string{"en_US"} }},
 		{"pam_rssh without a release", func(h *Host) {
 			h.Config.AUR.Packages = nil
 			h.Facts.Release = "buster"
@@ -230,6 +253,25 @@ func TestResources_featuresTurnOff(t *testing.T) {
 			name:   "no vim",
 			modify: func(h *Host) { h.Config.Vim = nil },
 			absent: []string{"package:vim", "symlink:/usr/local/bin/vi"},
+		},
+		{
+			name: "no system settings",
+			modify: func(h *Host) {
+				h.Config.Hostname, h.Config.Timezone, h.Config.Locale, h.Config.NTP = nil, nil, nil, nil
+			},
+			absent: []string{
+				"file:/etc/hostname",
+				"symlink:/etc/localtime",
+				"file:/etc/locale.gen",
+				"service:systemd-timesyncd",
+				"owned-dir:" + timesyncdConfDir,
+			},
+		},
+		{
+			name:    "no NTP servers",
+			modify:  func(h *Host) { h.Config.NTP.Servers = nil },
+			absent:  []string{"file:" + timesyncdConfDir + "/sensible.conf", "dir:" + timesyncdConfDir},
+			present: []string{"owned-dir:" + timesyncdConfDir, "service:systemd-timesyncd"},
 		},
 		{
 			name:   "no packages, AUR or pam_rssh",
@@ -419,4 +461,76 @@ func TestResources_zshSetsShells(t *testing.T) {
 	assert.Equal(t, []string{"alice /usr/bin/zsh", "carol /usr/bin/zsh"}, shells)
 	_, ok := find[host.File](rs, "file:/home/carol/.zshrc")
 	assert.False(t, ok)
+}
+
+func TestResources_hostname(t *testing.T) {
+	tests := []struct {
+		name       string
+		osFamily   string
+		configured string
+		want       string
+		hostsLine  string
+	}{
+		{"defaults to inventory name", archLinux, "", "testhost", ""},
+		{
+			"Debian maps the short name too",
+			debian,
+			"testhost.example.com",
+			"testhost.example.com",
+			"127.0.1.1\ttesthost.example.com testhost",
+		},
+		{"Debian short name", debian, "", "testhost", "127.0.1.1\ttesthost"},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				h := testHost(tt.osFamily)
+				h.Config.AUR = nil
+				h.Config.Hostname.Name = tt.configured
+				rs, err := Resources(h)
+				require.NoError(t, err)
+
+				f, ok := find[host.File](rs, "file:/etc/hostname")
+				require.True(t, ok)
+				assert.Equal(t, tt.want+"\n", f.Content)
+				c, ok := find[host.Command](rs, "command:set hostname")
+				require.True(t, ok)
+				assert.Equal(t, tt.want, c.ApplyArgv[len(c.ApplyArgv)-1])
+
+				l, ok := find[host.LineInFile](rs, "line:/etc/hosts:"+`^127\.0\.1\.1\s`)
+				assert.Equal(t, tt.hostsLine != "", ok)
+				assert.Equal(t, tt.hostsLine, l.Line)
+			},
+		)
+	}
+}
+
+func TestResources_locale(t *testing.T) {
+	h := testHost(archLinux)
+	h.Config.Locale.Generate = []string{"en_GB.UTF-8", "de_DE.ISO-8859-15@euro"}
+	rs, err := Resources(h)
+	require.NoError(t, err)
+
+	f, ok := find[host.File](rs, "file:/etc/locale.gen")
+	require.True(t, ok)
+	assert.Equal(t, managedLines([]string{"en_GB.UTF-8 UTF-8", "de_DE.ISO-8859-15@euro ISO-8859-15"}), f.Content)
+
+	c, ok := find[host.Command](rs, "command:generate locales")
+	require.True(t, ok)
+	assert.Equal(t, []string{"en_GB.utf8", "de_DE.iso885915@euro"}, c.CheckArgv[4:])
+}
+
+func TestResources_ntpRestartsOnChange(t *testing.T) {
+	rs, err := Resources(testHost(archLinux))
+	require.NoError(t, err)
+	restart := host.ResourceList{host.ServiceAction{Name: "systemd-timesyncd", Action: "restart"}}
+
+	f, ok := find[host.File](rs, "file:"+timesyncdConfDir+"/sensible.conf")
+	require.True(t, ok)
+	assert.Contains(t, f.Content, "NTP=ntp.example.com\n")
+	assert.Equal(t, restart, f.Notify)
+	d, ok := find[host.OwnedDir](rs, "owned-dir:"+timesyncdConfDir)
+	require.True(t, ok)
+	assert.Equal(t, restart, d.Notify)
 }
