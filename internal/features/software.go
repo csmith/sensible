@@ -11,6 +11,51 @@ import (
 	"chameth.com/sensible/internal/host"
 )
 
+func aptRepos(h Host) ([]host.Resource, error) {
+	if len(h.Config.AptRepos) == 0 {
+		return nil, nil
+	}
+	if h.Facts.OSFamily != debian {
+		return nil, fmt.Errorf("host %s: apt_repos only works on Debian", h.Name)
+	}
+	var rs []host.Resource
+	for _, name := range slices.Sorted(maps.Keys(h.Config.AptRepos)) {
+		c := h.Config.AptRepos[name]
+		switch {
+		case !jobName.MatchString(name):
+			return nil, fmt.Errorf(
+				"host %s: invalid apt repo name %q; use lower case letters, digits, \"-\" and \"_\"",
+				h.Name,
+				name,
+			)
+		case len(c.URIs) == 0 || len(c.Suites) == 0 || c.SigningKeyURL == "":
+			return nil, fmt.Errorf("host %s: apt repo %s needs uris, suites and signing_key_url", h.Name, name)
+		}
+		rs = append(
+			rs,
+			host.AptRepo{
+				Name:          name,
+				URIs:          c.URIs,
+				Suites:        c.Suites,
+				Components:    c.Components,
+				SigningKeyURL: c.SigningKeyURL,
+			},
+		)
+	}
+	return rs, nil
+}
+
+// aptCleanUp removes the apt sources and keys that no repo declared.
+func aptCleanUp(h Host) ([]host.Resource, error) {
+	if h.Facts.OSFamily != debian {
+		return nil, nil
+	}
+	return []host.Resource{
+		host.OwnedDir{Path: host.AptSourcesDir},
+		host.OwnedDir{Path: host.AptKeyringsDir},
+	}, nil
+}
+
 func packages(h Host) ([]host.Resource, error) {
 	c := h.Config.Packages
 	if c == nil {

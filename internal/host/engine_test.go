@@ -258,6 +258,41 @@ func TestEngineApply_LostConnectionStopsAfterCurrentResource(t *testing.T) {
 	assert.Equal(t, []string{"config", "reload"}, log)
 }
 
+func TestEngine_OwnedDirKeepsAptRepoFiles(t *testing.T) {
+	sys := newDebianSys(t)
+	sys.urls["https://pkgs.example.com/key.gpg"] = "\x99binary"
+	sys.write(AptSourcesDir+"/example.sources", "")
+	sys.write(AptSourcesDir+"/stray.list", "")
+	sys.write(AptKeyringsDir+"/example.asc", "")
+	sys.write(AptKeyringsDir+"/stray.gpg", "")
+	e := newTestEngine()
+	e.sys = sys
+
+	_, err := e.apply(
+		context.Background(),
+		ResourceList{
+			AptRepo{
+				Name:          "example",
+				URIs:          []string{"https://pkgs.example.com/debian"},
+				Suites:        []string{"trixie"},
+				SigningKeyURL: "https://pkgs.example.com/key.gpg",
+			},
+			OwnedDir{Path: AptSourcesDir},
+			OwnedDir{Path: AptKeyringsDir},
+		},
+		func(Applied) error { return nil },
+	)
+
+	require.NoError(t, err)
+	names, err := sys.ReadDir(AptSourcesDir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"example.sources"}, names)
+	// The key isn't armored, so the old armored copy goes too.
+	names, err = sys.ReadDir(AptKeyringsDir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"example.gpg"}, names)
+}
+
 func TestEngine_OwnedDirSeesFilesDeclaredEarlier(t *testing.T) {
 	sys := newTestSys(t)
 	sys.write("/etc/sudoers.d/keep", "x\n")

@@ -127,6 +127,7 @@ func TestResources_order(t *testing.T) {
 		{
 			osFamily: debian,
 			want: []string{
+				"apt-repo:raspi",
 				"package:nano",
 				"package:htop",
 				"line:/etc/hosts:" + `^127\.0\.1\.1\s`,
@@ -156,6 +157,8 @@ func TestResources_order(t *testing.T) {
 				"service:sensible-prune.timer",
 				"systemd-units:sensible-",
 				"owned-dir:/etc/sudoers.d",
+				"owned-dir:/etc/apt/sources.list.d",
+				"owned-dir:/etc/apt/keyrings",
 			},
 		},
 	}
@@ -166,6 +169,7 @@ func TestResources_order(t *testing.T) {
 				h := testHost(tt.osFamily)
 				if tt.osFamily == debian {
 					h.Config.AUR.Packages = nil
+					h.Config.AptRepos = map[string]config.AptRepoConfig{"raspi": testAptRepo}
 				}
 				rs, err := Resources(h)
 				require.NoError(t, err)
@@ -176,10 +180,17 @@ func TestResources_order(t *testing.T) {
 					require.Greater(t, i, last, "%s should follow the previous resource", id)
 					last = i
 				}
-				assert.Equal(t, "owned-dir:/etc/sudoers.d", got[len(got)-1])
+				assert.Equal(t, tt.want[len(tt.want)-1], got[len(got)-1])
 			},
 		)
 	}
+}
+
+var testAptRepo = config.AptRepoConfig{
+	URIs:          []string{"http://archive.raspberrypi.com/debian/"},
+	Suites:        []string{"trixie"},
+	Components:    []string{"main"},
+	SigningKeyURL: "https://archive.raspberrypi.com/debian/raspberrypi.gpg.key",
 }
 
 func indexAfter(ids []string, id string, after int) int {
@@ -207,6 +218,24 @@ func TestResources_errors(t *testing.T) {
 		{"invalid job name", func(h *Host) { h.Config.Jobs["Prune"] = h.Config.Jobs["prune"] }},
 		{"job without a command", func(h *Host) { h.Config.Jobs["prune"] = config.JobConfig{Schedule: "daily"} }},
 		{"job without a schedule", func(h *Host) { h.Config.Jobs["prune"] = config.JobConfig{Command: []string{"true"}} }},
+		{"apt repos on Arch", func(h *Host) {
+			h.Facts.OSFamily = archLinux
+			h.Config.AptRepos = map[string]config.AptRepoConfig{"raspi": testAptRepo}
+		}},
+		{"invalid apt repo name", func(h *Host) {
+			h.Config.AUR.Packages = nil
+			h.Config.AptRepos = map[string]config.AptRepoConfig{"../raspi": testAptRepo}
+		}},
+		{"apt repo without a signing key", func(h *Host) {
+			h.Config.AUR.Packages = nil
+			repo := testAptRepo
+			repo.SigningKeyURL = ""
+			h.Config.AptRepos = map[string]config.AptRepoConfig{"raspi": repo}
+		}},
+		{"apt repo clashing with docker's", func(h *Host) {
+			h.Config.AUR.Packages = nil
+			h.Config.AptRepos = map[string]config.AptRepoConfig{"docker": testAptRepo}
+		}},
 		{"pam_rssh without a release", func(h *Host) {
 			h.Config.AUR.Packages = nil
 			h.Facts.Release = "buster"

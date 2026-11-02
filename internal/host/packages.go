@@ -307,11 +307,18 @@ func pacman(ctx context.Context, sys Sys) (*pacmanDB, error) {
 	return db, nil
 }
 
+const (
+	AptSourcesDir  = "/etc/apt/sources.list.d"
+	AptKeyringsDir = "/etc/apt/keyrings"
+)
+
 func (r AptRepo) Check(ctx context.Context, sys Sys) (Change, error) {
 	key, keyPath, err := r.key(ctx, sys)
 	if err != nil {
 		return Change{}, err
 	}
+	// The key's path is only known once it's downloaded.
+	state(ctx).declared[keyPath] = true
 	var diff strings.Builder
 	if current, err := sys.ReadFile(keyPath); errors.Is(err, fs.ErrNotExist) {
 		diff.WriteString("add signing key " + keyPath + "\n")
@@ -350,7 +357,7 @@ func (r AptRepo) Apply(ctx context.Context, sys Sys) error {
 }
 
 func (r AptRepo) sourcesPath() string {
-	return "/etc/apt/sources.list.d/" + r.Name + ".sources"
+	return AptSourcesDir + "/" + r.Name + ".sources"
 }
 
 func (r AptRepo) sources(keyPath string) string {
@@ -374,7 +381,7 @@ func (r AptRepo) key(ctx context.Context, sys Sys) ([]byte, string, error) {
 	if strings.HasPrefix(strings.TrimSpace(string(key)), "-----BEGIN PGP") {
 		ext = "asc"
 	}
-	return key, "/etc/apt/keyrings/" + r.Name + "." + ext, nil
+	return key, AptKeyringsDir + "/" + r.Name + "." + ext, nil
 }
 
 func (r AURPackage) Check(ctx context.Context, sys Sys) (Change, error) {

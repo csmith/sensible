@@ -265,8 +265,8 @@ type Command struct {
 	Env map[string]string `json:"env,omitempty"`
 }
 
-// OwnedDir removes every entry in Path that no File or Dir earlier in the
-// same run declared. It's skipped if anything on the host failed.
+// OwnedDir removes every entry in Path that no File, Dir or AptRepo earlier
+// in the same run declared. It's skipped if anything on the host failed.
 type OwnedDir struct {
 	Path string `json:"path"`
 	// Recursive also cleans the declared directories inside Path.

@@ -41,6 +41,7 @@ func Resources(h Host) (host.ResourceList, error) {
 	}
 
 	features := []func(Host) ([]host.Resource, error){
+		aptRepos,
 		packages,
 		aur,
 		hostname,
@@ -61,8 +62,9 @@ func Resources(h Host) (host.ResourceList, error) {
 		backups,
 		// After stacks and backups, as jobs may use them.
 		jobs,
-		// After everything that writes sudoers files.
+		// After everything that writes sudoers files or adds apt repos.
 		sudoersCleanUp,
+		aptCleanUp,
 	}
 
 	var out host.ResourceList
@@ -74,9 +76,16 @@ func Resources(h Host) (host.ResourceList, error) {
 		for _, r := range rs {
 			// Features share dependencies, such as git or the AUR build account,
 			// and each declares them. Only the first identical copy is kept.
-			if !slices.ContainsFunc(out, func(o host.Resource) bool { return reflect.DeepEqual(o, r) }) {
-				out = append(out, r)
+			if slices.ContainsFunc(out, func(o host.Resource) bool { return reflect.DeepEqual(o, r) }) {
+				continue
 			}
+			// Repos with the same name write the same files, so would undo each
+			// other every run.
+			repo, ok := r.(host.AptRepo)
+			if ok && slices.ContainsFunc(out, func(o host.Resource) bool { return o.ID() == r.ID() }) {
+				return nil, fmt.Errorf("host %s: apt repo %s is declared twice with different settings", h.Name, repo.Name)
+			}
+			out = append(out, r)
 		}
 	}
 	return out, nil
