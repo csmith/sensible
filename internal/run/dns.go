@@ -158,6 +158,27 @@ func (z *dnsZones) planNames(ctx context.Context, names []managedName, p *dnsPla
 	}
 }
 
+func (p dnsPlan) step() crossHostStep {
+	changes := 0
+	for _, c := range p.changes {
+		changes += len(c.diffs)
+	}
+	return crossHostStep{
+		name:    "DNS changes",
+		changes: changes,
+		apply: func(ctx context.Context, out *renderer) bool {
+			out.section("Applying DNS changes")
+			ok := true
+			for _, c := range p.changes {
+				err := c.apply(ctx)
+				ok = ok && err == nil
+				out.dnsResult(c, err)
+			}
+			return ok
+		},
+	}
+}
+
 func (r *Runner) dnsClient() (dnsClient, error) {
 	user, err := r.DNSSettings.AuthUser.Reveal()
 	if err != nil {

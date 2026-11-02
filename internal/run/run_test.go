@@ -512,6 +512,62 @@ func writeFile(t *testing.T, path, content string) {
 }
 
 func TestExecute_dnsIsPlannedFromFactsAndAppliedAfterHosts(t *testing.T) {
+	f, client, account := dnsFixture(t)
+	acidburn := f.target(
+		"acidburn",
+		&fakeAgent{
+			status: deferDocker,
+			facts:  host.Facts{DefaultIPv4: "203.0.113.2", DefaultIPv6: "2001:0db8:0::1"},
+		},
+	)
+	acidburn.dnsName = "acidburn.example.com"
+
+	err := f.runner.Execute(t.Context(), []target{acidburn, f.target("smarts", &fakeAgent{})}, true, true)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"me@example.com", "key"}, *account)
+	out := f.out.String()
+	assert.Contains(
+		t,
+		out,
+		"> Resolving DNS changes\n  ~ A acidburn.example.com  203.0.113.1 → 203.0.113.2\n  ✓ 1 unchanged\n",
+	)
+	assert.NotContains(t, out, "AAAA")
+	assert.Contains(t, out, "2 changes on 2 targets")
+	assert.Greater(
+		t,
+		strings.Index(out, "> Applying DNS changes\n  ✓ A acidburn.example.com\n"),
+		strings.Index(out, "✓ service docker"),
+	)
+	require.Len(t, client.modified, 1)
+	assert.Equal(t, "example.com", client.modified[0].domain)
+}
+
+func TestExecute_dnsIsHeldBackWhenAHostFailsToPlan(t *testing.T) {
+	f, client, _ := dnsFixture(t)
+	acidburn := f.target("acidburn", &fakeAgent{status: deferDocker, facts: host.Facts{DefaultIPv4: "203.0.113.2"}})
+	acidburn.dnsName = "acidburn.example.com"
+
+	err := f.runner.Execute(
+		t.Context(),
+		[]target{acidburn, {name: "smarts", err: errors.New("no credentials")}},
+		true,
+		true,
+	)
+
+	require.ErrorIs(t, err, errFailed)
+	out := f.out.String()
+	assert.Contains(t, out, "~ A acidburn.example.com  203.0.113.1 → 203.0.113.2")
+	assert.Contains(t, out, "! DNS changes won't be applied, as not every host could be planned")
+	assert.Contains(t, out, "✓ service docker")
+	assert.NotContains(t, out, "Applying DNS changes")
+	assert.Empty(t, client.modified)
+}
+
+// dnsFixture is a runner whose DNS account is a fake holding acidburn's
+// records, and the credentials it was opened with.
+func dnsFixture(t *testing.T) (*runnerFixture, *fakeDNS, *[]string) {
+	t.Helper()
 	repo, dir, source := testRepo(t)
 	user, err := repo.Encrypt("me@example.com")
 	require.NoError(t, err)
@@ -541,34 +597,7 @@ func TestExecute_dnsIsPlannedFromFactsAndAppliedAfterHosts(t *testing.T) {
 		account = []string{user, key}
 		return client
 	}
-	acidburn := f.target(
-		"acidburn",
-		&fakeAgent{
-			status: deferDocker,
-			facts:  host.Facts{DefaultIPv4: "203.0.113.2", DefaultIPv6: "2001:0db8:0::1"},
-		},
-	)
-	acidburn.dnsName = "acidburn.example.com"
-
-	err = f.runner.Execute(t.Context(), []target{acidburn, f.target("smarts", &fakeAgent{})}, true, true)
-
-	require.NoError(t, err)
-	assert.Equal(t, []string{"me@example.com", "key"}, account)
-	out := f.out.String()
-	assert.Contains(
-		t,
-		out,
-		"> Resolving DNS changes\n  ~ A acidburn.example.com  203.0.113.1 → 203.0.113.2\n  ✓ 1 unchanged\n",
-	)
-	assert.NotContains(t, out, "AAAA")
-	assert.Contains(t, out, "2 changes on 2 targets")
-	assert.Greater(
-		t,
-		strings.Index(out, "> Applying DNS changes\n  ✓ A acidburn.example.com\n"),
-		strings.Index(out, "✓ service docker"),
-	)
-	require.Len(t, client.modified, 1)
-	assert.Equal(t, "example.com", client.modified[0].domain)
+	return f, client, &account
 }
 
 func indentYAML(s string) string {

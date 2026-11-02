@@ -276,8 +276,17 @@ func (r *Runner) Execute(ctx context.Context, targets []target, apply, yes bool)
 		out.finish(t, out.dnsLines(dns)...)
 	}
 
-	s := summarise(runs, dns.changes)
 	failed := len(dns.errs) > 0 || anyFailed(runs)
+	steps := slices.DeleteFunc([]crossHostStep{dns.step()}, func(s crossHostStep) bool { return s.changes == 0 })
+	if anyFailed(runs) && len(steps) > 0 {
+		out.line("")
+		for _, st := range steps {
+			out.line(out.p.change(fmt.Sprintf("! %s won't be applied, as not every host could be planned", st.name)))
+		}
+		steps = nil
+	}
+
+	s := summarise(runs, steps)
 	if s.empty() {
 		// With failures, there may be changes that couldn't be planned.
 		if !failed {
@@ -301,15 +310,23 @@ func (r *Runner) Execute(ctx context.Context, targets []target, apply, yes bool)
 	}
 
 	r.applyAll(runs, out)
-	if len(dns.changes) > 0 {
-		out.section("Applying DNS changes")
-	}
-	for _, c := range dns.changes {
-		err := c.apply(ctx)
-		failed = failed || err != nil
-		out.dnsResult(c, err)
+	for _, st := range steps {
+		if !st.apply(ctx, out) {
+			failed = true
+		}
 	}
 	return failedErr(failed || anyFailed(runs))
+}
+
+// crossHostStep is a change worked out from the configuration of every
+// host, such as DNS records. It's only applied when every host in the run
+// planned, as a host that didn't may have changed what it should be.
+type crossHostStep struct {
+	// name is plural, e.g. "DNS changes".
+	name    string
+	changes int
+	// apply reports whether every change succeeded.
+	apply func(ctx context.Context, out *renderer) bool
 }
 
 func anyFailed(runs []*hostRun) bool {
@@ -426,7 +443,7 @@ type summary struct {
 	changes, targets, deferred int
 }
 
-func summarise(runs []*hostRun, dns []*dnsChange) summary {
+func summarise(runs []*hostRun, steps []crossHostStep) summary {
 	var s summary
 	for _, h := range runs {
 		if !h.pending() {
@@ -443,11 +460,9 @@ func summarise(runs []*hostRun, dns []*dnsChange) summary {
 			}
 		}
 	}
-	if len(dns) > 0 {
+	for _, st := range steps {
 		s.targets++
-		for _, c := range dns {
-			s.changes += len(c.diffs)
-		}
+		s.changes += st.changes
 	}
 	return s
 }
