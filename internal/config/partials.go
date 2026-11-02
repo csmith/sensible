@@ -30,6 +30,7 @@ type partialDef struct {
 	name       string
 	params     ast.Node
 	hasCompose bool
+	hasEnv     bool
 	// vhosts are those written in the partial's files.
 	vhosts []string
 }
@@ -130,7 +131,11 @@ func (d *partialDef) split(node ast.Node) (ast.Node, error) {
 			d.params = v.Value
 		case "compose":
 			for _, c := range mappingValues(v.Value) {
-				if keyString(c.Key) != "volumes" {
+				switch keyString(c.Key) {
+				case "volumes":
+				case "env":
+					d.hasEnv = !isNull(c.Value)
+				default:
 					return nil, nodeError(c.Key, "a partial can't set compose."+keyString(c.Key))
 				}
 			}
@@ -298,15 +303,11 @@ func (r *Repo) partialVolumes(role string, volumes map[string]Perms) (map[string
 		if err != nil {
 			return nil, err
 		}
-		var section ast.Node
-		for _, v := range mappingValues(node) {
-			if keyString(v.Key) == "compose" {
-				section = v.Value
-			}
-		}
-		if isNull(section) {
+		setting := composeSetting(node, "volumes")
+		if setting == nil {
 			continue
 		}
+		section := ast.Mapping(setting.GetToken(), false, setting)
 		values, _ := resolveParams(use.def.params, RoleParams{node: use.args})
 		values[stackPlaceholder], _ = flowNode(stackName(role))
 		f := filler{values: values, fixed: true, exact: func(v, _ ast.Node) (ast.Node, error) { return merge(nil, v), nil }}
@@ -437,6 +438,9 @@ func (r *Repo) partialSettings(role, file string, values map[string]ast.Node) (a
 	f := filler{values: values, exact: func(v, _ ast.Node) (ast.Node, error) { return merge(nil, v), nil }}
 	filled, _, err := f.fill(body)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkNoGenerated(filled); err != nil {
 		return nil, err
 	}
 	volumePath := func(tag *ast.TagNode) (string, error) { return r.volumePath(role, tag) }

@@ -280,8 +280,8 @@ func newRunnerFixture(t *testing.T, resources host.ResourceList) *runnerFixture 
 			return f.answer, nil
 		},
 		Builds: newFakeBuilds(t),
-		Compile: func(target, host.Facts) (host.ResourceList, error) {
-			return resources, nil
+		Compile: func(target, host.Facts) (compiled, error) {
+			return compiled{resources: resources}, nil
 		},
 	}
 	return f
@@ -468,11 +468,11 @@ func TestExecute_failuresDontClaimNoChanges(t *testing.T) {
 
 func TestExecute_compileErrorIsReportedForThatHost(t *testing.T) {
 	f := newRunnerFixture(t, testResources)
-	f.runner.Compile = func(t target, _ host.Facts) (host.ResourceList, error) {
+	f.runner.Compile = func(t target, _ host.Facts) (compiled, error) {
 		if t.name == "weird" {
-			return nil, errors.New("unsupported OS family")
+			return compiled{}, errors.New("unsupported OS family")
 		}
-		return testResources, nil
+		return compiled{resources: testResources}, nil
 	}
 	weird := &fakeAgent{}
 	changed := &fakeAgent{status: deferDocker}
@@ -864,4 +864,73 @@ func TestHostPlanLines_showsWarnings(t *testing.T) {
 		[]string{"! docker-network web", "  IPv6 is on rather than off", "✓ 2 unchanged"},
 		hostPlanLines(h, false),
 	)
+}
+
+func TestExecute_savesGeneratedValuesBeforeApplying(t *testing.T) {
+	tests := []struct {
+		name         string
+		apply        bool
+		answer       bool
+		saveErr      error
+		wantSaved    []string
+		wantMessages []string
+		wantOut      string
+	}{
+		{"plan", false, true, nil, nil, []string{"FactsRequest", "Check", "Bye"}, ""},
+		{"declined", true, false, nil, nil, []string{"FactsRequest", "Check", "Bye"}, ""},
+		{
+			"applied",
+			true,
+			true,
+			nil,
+			[]string{"acidburn"},
+			[]string{"FactsRequest", "Check", "Apply", "Bye"},
+			"> Saving generated secrets\n  ✓ acidburn\n> Applying changes on acidburn\n",
+		},
+		{
+			"save fails",
+			true,
+			true,
+			errors.New("disk full"),
+			[]string{"acidburn"},
+			[]string{"FactsRequest", "Check", "Bye"},
+			"> Saving generated secrets\n  ✗ acidburn: disk full\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				f := newRunnerFixture(t, testResources)
+				f.answer = tt.answer
+				var saved []string
+				changed := &fakeAgent{status: deferDocker}
+				f.runner.Compile = func(tg target, _ host.Facts) (compiled, error) {
+					return compiled{
+						resources: testResources,
+						save: func() error {
+							assert.NotContains(t, changed.messages(), "Apply")
+							saved = append(saved, tg.name)
+							return tt.saveErr
+						},
+					}, nil
+				}
+
+				err := f.runner.Execute(t.Context(), []target{f.target("acidburn", changed)}, tt.apply, false)
+
+				if tt.saveErr != nil {
+					require.ErrorIs(t, err, errFailed)
+				} else {
+					require.NoError(t, err)
+				}
+				assert.Equal(t, tt.wantSaved, saved)
+				assert.Equal(t, tt.wantMessages, changed.messages())
+				if tt.wantOut == "" {
+					assert.NotContains(t, f.out.String(), "Saving generated secrets")
+				} else {
+					assert.Contains(t, f.out.String(), tt.wantOut)
+				}
+			},
+		)
+	}
 }

@@ -40,6 +40,9 @@ type HostEntry struct {
 	SSHKey       Secret    `yaml:"ssh_key"`
 	SudoPassword Secret    `yaml:"sudo_password"`
 	Rotated      time.Time `yaml:"rotated"`
+	// Generated are the values of the host's !generated tags, by stack and
+	// name.
+	Generated map[string]map[string]Secret `yaml:"generated"`
 }
 
 // HostKeys drops duplicate keys, as a key is often in both a hand-written
@@ -399,6 +402,48 @@ func (r *Repo) WriteCredentials(name, sshKey, sudoPassword string, rotated time.
 	)
 }
 
+// SaveGenerated encrypts the values the stacks generated for the host into
+// its state file. Values the host already has are kept as they are.
+func (r *Repo) SaveGenerated(name string, stacks []Stack) error {
+	if err := r.checkHost(name); err != nil {
+		return err
+	}
+	values := map[string]map[string]Secret{}
+	for _, s := range stacks {
+		for key, plain := range s.Generated {
+			secret, err := r.encryptSecret(plain)
+			if err != nil {
+				return err
+			}
+			if values[s.Name] == nil {
+				values[s.Name] = map[string]Secret{}
+			}
+			values[s.Name][key] = secret
+		}
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	return r.updateState(
+		name,
+		func(s *hostState) {
+			for stack, secrets := range values {
+				for key, secret := range secrets {
+					if s.Generated == nil {
+						s.Generated = map[string]map[string]Secret{}
+					}
+					if s.Generated[stack] == nil {
+						s.Generated[stack] = map[string]Secret{}
+					}
+					if s.Generated[stack][key].IsZero() {
+						s.Generated[stack][key] = secret
+					}
+				}
+			}
+		},
+	)
+}
+
 // AddHostKey adds a key to the host's host_keys in its state file.
 func (r *Repo) AddHostKey(name string, key ssh.PublicKey) error {
 	if err := r.checkHost(name); err != nil {
@@ -476,10 +521,11 @@ func (r *Repo) readHosts() error {
 
 // hostState is what sensible writes for a host.
 type hostState struct {
-	SSHKey       Secret    `yaml:"ssh_key"`
-	SudoPassword Secret    `yaml:"sudo_password"`
-	Rotated      time.Time `yaml:"rotated"`
-	HostKeys     []HostKey `yaml:"host_keys"`
+	SSHKey       Secret                       `yaml:"ssh_key"`
+	SudoPassword Secret                       `yaml:"sudo_password"`
+	Rotated      time.Time                    `yaml:"rotated"`
+	HostKeys     []HostKey                    `yaml:"host_keys"`
+	Generated    map[string]map[string]Secret `yaml:"generated"`
 }
 
 func stateFile(host string) string {
@@ -522,6 +568,15 @@ func (r *Repo) updateState(name string, change func(*hostState)) error {
 			out.WriteString("  host_keys:\n")
 			for _, k := range s.HostKeys {
 				out.WriteString("    - " + k.String() + "\n")
+			}
+		}
+		if len(s.Generated) > 0 {
+			out.WriteString("  generated:\n")
+			for _, stack := range slices.Sorted(maps.Keys(s.Generated)) {
+				out.WriteString("    " + stack + ":\n")
+				for _, key := range slices.Sorted(maps.Keys(s.Generated[stack])) {
+					out.WriteString("      " + key + ": " + indent(s.Generated[stack][key].yaml(), "      ") + "\n")
+				}
 			}
 		}
 	}
@@ -706,6 +761,14 @@ func (r *Repo) checkCompose(role string, settings roleSettings, isStack bool) (m
 	if settings.Compose != nil && len(settings.Compose.Files) > 0 {
 		return nil, fmt.Errorf(
 			"%s: compose.files needs a %s, in the role or one of its partials",
+			r.path("roles", role, "role.yml"),
+			host.ComposeFile,
+		)
+	}
+	hasEnv := settings.Compose != nil && !isNull(settings.Compose.Env.node)
+	if hasEnv || slices.ContainsFunc(r.rolePartials[role], func(u partialUse) bool { return u.def.hasEnv }) {
+		return nil, fmt.Errorf(
+			"%s: compose.env needs a %s, in the role or one of its partials",
 			r.path("roles", role, "role.yml"),
 			host.ComposeFile,
 		)

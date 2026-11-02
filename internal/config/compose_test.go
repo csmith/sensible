@@ -5,8 +5,10 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -383,4 +385,281 @@ func TestVhosts_anchoredHostEntry(t *testing.T) {
 	).open(t)
 
 	assert.Equal(t, map[string][]string{"x.example.com": {"alpha"}}, r.Vhosts())
+}
+
+func stackFile(t *testing.T, s Stack, path string) StackFile {
+	t.Helper()
+	for _, f := range s.Files {
+		if f.Path == path {
+			return f
+		}
+	}
+	require.Failf(t, "missing stack file", "%s has no %s", s.Name, path)
+	return StackFile{}
+}
+
+func newGeneratedRepo(t *testing.T) *testRepo {
+	t.Helper()
+	return newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml": "alpha:\n  roles: {app: }\nbeta:\n  roles: {app: }\n",
+			"partials/postgres/partial.yml": `
+params:
+  password: ~
+compose:
+  env:
+    PG_PASSWORD: "{password}"
+`,
+			"partials/postgres/docker-compose.yml": `
+services:
+  db:
+    environment:
+      POSTGRES_PASSWORD: "{password}"
+`,
+			"roles/app/role.yml": `
+params:
+  token: !generated token
+partials:
+  - {partial: postgres, password: !generated db}
+compose:
+  env:
+    DB_PASSWORD: !generated db
+    LOG_LEVEL: info
+`,
+			"roles/app/docker-compose.yml": `
+services:
+  app:
+    environment:
+      DATABASE_URL: postgres://app:${DB_PASSWORD}@db/app
+      PASSWORD: !generated db
+      TOKEN: !param token
+`,
+		},
+	)
+}
+
+func TestHostConfig_generatedValues(t *testing.T) {
+	tr := newGeneratedRepo(t)
+	r := tr.open(t)
+
+	c, err := r.HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	s := c.Stacks[0]
+	require.Len(t, s.Generated, 2)
+	db, token := s.Generated["db"], s.Generated["token"]
+	assert.NotEqual(t, db, token)
+
+	compose := stackFile(t, s, "docker-compose.yml")
+	assert.Equal(t, 2, strings.Count(compose.Content, db), "role and partial compose files")
+	assert.Contains(t, compose.Content, token)
+	assert.Contains(t, compose.Content, "${DB_PASSWORD}")
+	assert.ElementsMatch(t, []string{db, db, token}, compose.Secrets)
+
+	env := stackFile(t, s, ".env")
+	assert.Equal(t, "DB_PASSWORD='"+db+"'\nLOG_LEVEL='info'\nPG_PASSWORD='"+db+"'\n", env.Content)
+	assert.Equal(t, filePerms(Perms{}), env.Perms)
+	assert.Equal(t, []string{db, db}, env.Secrets)
+	assert.False(t, env.Hidden)
+
+	again, err := r.HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	assert.NotEqual(t, db, again.Stacks[0].Generated["db"], "unsaved values aren't reused")
+
+	require.NoError(t, r.SaveGenerated("alpha", c.Stacks))
+	for _, r := range []*Repo{r, tr.open(t)} {
+		saved, err := r.HostConfig("alpha", "debian")
+		require.NoError(t, err)
+		assert.Empty(t, saved.Stacks[0].Generated)
+		assert.Equal(t, compose.Content, stackFile(t, saved.Stacks[0], "docker-compose.yml").Content)
+		assert.Equal(t, env.Content, stackFile(t, saved.Stacks[0], ".env").Content)
+
+		beta, err := r.HostConfig("beta", "debian")
+		require.NoError(t, err)
+		assert.NotEqual(t, db, beta.Stacks[0].Generated["db"], "each host has its own values")
+	}
+}
+
+func TestSaveGenerated_keepsSavedValues(t *testing.T) {
+	tr := newGeneratedRepo(t)
+	r := tr.open(t)
+	rotated := time.Date(2026, 10, 31, 12, 30, 0, 0, time.UTC)
+	require.NoError(t, r.WriteCredentials("alpha", "key", "password", rotated))
+	existing, err := r.Encrypt("hand-written")
+	require.NoError(t, err)
+	b, err := os.ReadFile(filepath.Join(tr.dir, "hosts.d", "alpha.state.yml"))
+	require.NoError(t, err)
+	writeFile(
+		t,
+		tr.dir,
+		"hosts.d/alpha.state.yml",
+		string(b)+"  generated:\n    app:\n      db: "+indent(existing, "      ")+"\n",
+	)
+	r = tr.open(t)
+
+	c, err := r.HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"token"}, slices.Collect(maps.Keys(c.Stacks[0].Generated)))
+	assert.Contains(t, stackFile(t, c.Stacks[0], ".env").Content, "DB_PASSWORD='hand-written'")
+
+	stale := []Stack{{Name: "app", Generated: map[string]string{"db": "other", "token": "t"}}}
+	require.NoError(t, r.SaveGenerated("alpha", stale))
+	alpha := tr.open(t).Inventory().Hosts["alpha"]
+	for name, want := range map[string]string{"db": "hand-written", "token": "t"} {
+		got, err := alpha.Generated["app"][name].Reveal()
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+	}
+	key, err := alpha.SSHKey.Reveal()
+	require.NoError(t, err)
+	assert.Equal(t, "key", key)
+}
+
+func TestHostConfig_composeEnv(t *testing.T) {
+	c, err := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml": "alpha:\n  roles: {web: {port: 8080}}\n",
+			"partials/x/partial.yml": `
+params:
+  name: web
+compose:
+  volumes:
+    data: {owner: "1000"}
+  env:
+    NAME: "{name}"
+    MODE: dev
+`,
+			"roles/web/role.yml": `
+params:
+  port: 80
+  site: site
+  unset: ~
+partials:
+  - {partial: x, name: !param site}
+compose:
+  env:
+    PORT: !param port
+    MODE: !replace prod
+    UNSET: !param unset
+`,
+			"roles/web/docker-compose.yml": "services: {}\n",
+		},
+	).open(t).HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	env := stackFile(t, c.Stacks[0], ".env")
+	assert.Equal(t, "MODE='prod'\nNAME='site'\nPORT='8080'\n", env.Content)
+	assert.Empty(t, env.Secrets)
+}
+
+func TestHostConfig_noComposeEnvNoFile(t *testing.T) {
+	c, err := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml":            "alpha:\n  roles: {web: }\n",
+			"roles/web/docker-compose.yml": "services: {}\n",
+		},
+	).open(t).HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	require.Len(t, c.Stacks[0].Files, 1)
+	assert.Nil(t, c.Stacks[0].Generated)
+}
+
+func TestHostConfig_generatedErrors(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{
+			"in role settings",
+			map[string]string{"roles/web/role.yml": "jobs:\n  a: {command: [!generated x], schedule: daily}\n"},
+			"!generated only works in a stack's compose file and compose.env",
+		},
+		{
+			"in role settings through a param",
+			map[string]string{"roles/web/role.yml": "params: {p: !generated x}\nntp:\n  servers: [!param p]\n"},
+			"!generated only works",
+		},
+		{
+			"in partial settings",
+			map[string]string{
+				"partials/x/partial.yml": "ntp:\n  servers: [!generated x]\n",
+				"roles/web/role.yml":     "partials: [{partial: x}]\n",
+			},
+			"!generated only works",
+		},
+		{
+			"invalid name",
+			map[string]string{"roles/web/docker-compose.yml": "services:\n  a:\n    image: !generated a/b\n"},
+			"!generated needs a name",
+		},
+		{
+			"invalid variable name",
+			map[string]string{"roles/web/role.yml": "compose:\n  env: {A-B: x}\n"},
+			`roles/web/role.yml: compose.env: [2:9] "A-B" isn't a variable name`,
+		},
+		{
+			"quote in a variable",
+			map[string]string{"roles/web/role.yml": "compose:\n  env: {A: \"it's\"}\n"},
+			"A can't be written to .env",
+		},
+		{
+			"mapping in a variable",
+			map[string]string{
+				"partials/x/partial.yml": "compose:\n  env: {A: {b: c}}\n",
+				"roles/web/role.yml":     "partials: [{partial: x}]\n",
+			},
+			"partials/x/partial.yml: compose.env: [2:12] a compose.env value must be a string, number or bool",
+		},
+		{
+			".env in compose.files",
+			map[string]string{
+				"roles/web/role.yml": "compose:\n  files: [.env]\n  env: {A: b}\n",
+				"roles/web/.env":     "A=c\n",
+			},
+			"can't also be in compose.files",
+		},
+		{
+			"partial and role set a variable differently",
+			map[string]string{
+				"partials/x/partial.yml": "compose:\n  env: {A: b}\n",
+				"roles/web/role.yml":     "partials: [{partial: x}]\ncompose:\n  env: {A: c}\n",
+			},
+			"compose.env: partial x and",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				files := map[string]string{
+					"hosts.d/hosts.yml":            "alpha:\n  roles: {web: }\n",
+					"roles/web/docker-compose.yml": "services: {}\n",
+				}
+				maps.Copy(files, tt.files)
+				_, err := newTestRepo(t, files).open(t).HostConfig("alpha", "debian")
+				require.ErrorContains(t, err, tt.want)
+			},
+		)
+	}
+}
+
+func TestOpen_composeEnvNeedsAStack(t *testing.T) {
+	for name, files := range map[string]map[string]string{
+		"role": {"roles/web/role.yml": "compose:\n  env: {A: b}\n"},
+		"partial": {
+			"partials/x/partial.yml": "compose:\n  env: {A: b}\n",
+			"roles/web/role.yml":     "partials: [{partial: x}]\n",
+		},
+	} {
+		t.Run(
+			name,
+			func(t *testing.T) {
+				files["hosts.d/hosts.yml"] = "alpha:\n  roles: {web: }\n"
+				_, err := newTestRepo(t, files).tryOpen()
+				assert.ErrorContains(t, err, "compose.env needs a docker-compose.yml")
+			},
+		)
+	}
 }

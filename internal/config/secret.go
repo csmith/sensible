@@ -3,10 +3,12 @@ package config
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -15,7 +17,10 @@ import (
 	"github.com/goccy/go-yaml/ast"
 )
 
-const ageTag = "!age"
+const (
+	ageTag       = "!age"
+	generatedTag = "!generated"
+)
 
 // Secret is an age-encrypted value, written in YAML as a scalar tagged !age.
 // Plain scalars are rejected when loading.
@@ -101,6 +106,45 @@ func (v Value) reveal() (value string, secret bool, err error) {
 	}
 	value, err = v.secret.Reveal()
 	return value, true, err
+}
+
+var generatedName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// generator gives the values of a stack's !generated tags on one host:
+// those saved in the host's state, and new ones for names it hasn't saved.
+type generator struct {
+	saved  map[string]Secret
+	values map[string]string
+	// created are the new values, which must be saved before they're used.
+	created map[string]string
+}
+
+func (g *generator) value(tag *ast.TagNode) (string, error) {
+	v, ok := tag.Value.(*ast.StringNode)
+	if !ok || !generatedName.MatchString(v.Value) {
+		return "", nodeError(tag, "!generated needs a name of letters, digits, \"-\" and \"_\"")
+	}
+	name := v.Value
+	if value, ok := g.values[name]; ok {
+		return value, nil
+	}
+	if g.values == nil {
+		g.values = map[string]string{}
+	}
+	if s, ok := g.saved[name]; ok {
+		value, err := s.Reveal()
+		if err != nil {
+			return "", nodeError(tag, fmt.Sprintf("generated value %s: %v", name, err))
+		}
+		g.values[name] = value
+		return value, nil
+	}
+	if g.created == nil {
+		g.created = map[string]string{}
+	}
+	g.values[name] = rand.Text()
+	g.created[name] = g.values[name]
+	return g.values[name], nil
 }
 
 func nodeError(node ast.Node, msg string) error {

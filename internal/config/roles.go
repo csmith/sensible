@@ -40,7 +40,7 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 		}
 		node := e.node
 		if _, ok := r.stacks[role]; ok {
-			s, err := r.renderStack(role, e)
+			s, err := r.renderStack(role, e, r.inventory.Hosts[name].Generated)
 			if err != nil {
 				return Config{}, fmt.Errorf("%s: role %s: %w", name, role, err)
 			}
@@ -122,6 +122,8 @@ type expansion struct {
 	params map[string]ast.Node
 	// partials are the values of each of the role's partials' placeholders.
 	partials []map[string]ast.Node
+	// env is the stack's compose.env, merged over its partials'.
+	env ast.Node
 }
 
 func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (expansion, error) {
@@ -178,6 +180,9 @@ func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (expan
 		if err != nil {
 			return expansion{}, fmt.Errorf("%s: %w", r.path(l.file), err)
 		}
+		if err := checkNoGenerated(node); err != nil {
+			return expansion{}, fmt.Errorf("%s: %w", r.path(l.file), err)
+		}
 		// Each file is checked alone first, so errors name the file at fault.
 		if err := decode(r.keys.context(), merge(nil, node), &Config{}); err != nil {
 			return expansion{}, fmt.Errorf("%s: %w", r.path(l.file), err)
@@ -195,7 +200,115 @@ func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (expan
 		}
 		merged = merge(merged, node)
 	}
-	return expansion{node: merged, params: values, partials: partials}, nil
+	env, err := r.stackEnv(role, values, partials)
+	if err != nil {
+		return expansion{}, err
+	}
+	return expansion{node: merged, params: values, partials: partials, env: env}, nil
+}
+
+// composeSetting is the named setting under compose in a role or partial
+// file, or nil.
+func composeSetting(node ast.Node, key string) *ast.MappingValueNode {
+	for _, v := range mappingValues(node) {
+		if keyString(v.Key) != "compose" {
+			continue
+		}
+		for _, c := range mappingValues(v.Value) {
+			if keyString(c.Key) == key {
+				return c
+			}
+		}
+	}
+	return nil
+}
+
+func composeEnv(node ast.Node) ast.Node {
+	if s := composeSetting(node, "env"); s != nil {
+		return s.Value
+	}
+	return nil
+}
+
+// stackEnv merges the role's compose.env, with its parameters' values, over
+// its partials'. As with other settings, the role can only change what a
+// partial sets with !replace.
+func (r *Repo) stackEnv(role string, values map[string]ast.Node, partials []map[string]ast.Node) (ast.Node, error) {
+	roleFile := filepath.Join("roles", role, "role.yml")
+	node, err := r.readLayer(roleFile, true)
+	if err != nil {
+		return nil, err
+	}
+	env, err := substitute(composeEnv(node), values)
+	if err != nil {
+		return nil, fmt.Errorf("%s: compose.env: %w", r.path(roleFile), err)
+	}
+	var merged ast.Node
+	set := map[string]setBy{}
+	for i, use := range r.rolePartials[role] {
+		file := use.def.file(partialFile)
+		node, err := r.readLayer(file, false)
+		if err != nil {
+			return nil, err
+		}
+		partialEnv := composeEnv(node)
+		if isNull(partialEnv) {
+			continue
+		}
+		f := filler{values: partials[i], exact: func(v, _ ast.Node) (ast.Node, error) { return merge(nil, v), nil }}
+		filled, _, err := f.fill(partialEnv)
+		if err == nil {
+			err = checkEnv(filled)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("%s: compose.env: %w", r.path(file), err)
+		}
+		if err := checkConflicts(use.source(), filled, set); err != nil {
+			return nil, fmt.Errorf("%s: compose.env: %w", r.path("roles", role), err)
+		}
+		merged = merge(merged, filled)
+	}
+	if isNull(env) {
+		return merged, nil
+	}
+	if err := checkEnv(env); err != nil {
+		return nil, fmt.Errorf("%s: compose.env: %w", r.path("roles", role, "role.yml"), err)
+	}
+	if err := checkConflicts(r.path("roles", role, "role.yml"), withoutReplaced(env), set); err != nil {
+		return nil, fmt.Errorf("%s: compose.env: %w", r.path("roles", role), err)
+	}
+	return merge(merged, env), nil
+}
+
+var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// checkEnv rejects compose.env entries that can't be variables.
+func checkEnv(env ast.Node) error {
+	if env.Type() != ast.MappingType {
+		return nodeError(env, "compose.env must be a mapping")
+	}
+	for _, mv := range mappingValues(env) {
+		if name := keyString(mv.Key); !envName.MatchString(name) {
+			return nodeError(mv.Key, fmt.Sprintf("%q isn't a variable name", name))
+		}
+		v := mv.Value
+		if tag, ok := v.(*ast.TagNode); ok && tag.Start.Value == replaceTag {
+			v = tag.Value
+		}
+		if _, ok := v.(ast.ScalarNode); !ok {
+			return nodeError(v, "a compose.env value must be a string, number or bool")
+		}
+	}
+	return nil
+}
+
+// checkNoGenerated rejects a !generated outside a stack's compose file and
+// compose.env, where it would be taken as the name it's given.
+func checkNoGenerated(node ast.Node) error {
+	if tag := findTag(node, generatedTag); tag != nil {
+		return nodeError(tag, "!generated only works in a stack's compose file and compose.env")
+	}
+	return nil
 }
 
 // splitParams separates a role file's parameters from the settings it

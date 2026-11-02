@@ -34,6 +34,9 @@ const (
 	volumeTag = "!volume"
 	vhostTag  = "!vhost"
 	ageSuffix = ".age"
+	// envFile is where compose.env is written, which compose reads for the
+	// variables in the stack's compose file.
+	envFile = ".env"
 )
 
 // Stack is a Docker Compose project, from a role with a docker-compose.yml.
@@ -47,6 +50,10 @@ type Stack struct {
 	// Dirs are the directories within listed directories, by path relative
 	// to the stack's directory. Other directories are root:docker 0750.
 	Dirs map[string]Perms
+	// Generated are the values of !generated tags that were created for
+	// this stack rather than saved for the host, by name. Repo.SaveGenerated
+	// must save them before the stack is deployed with them.
+	Generated map[string]string
 }
 
 func (s Stack) Dir() string {
@@ -146,7 +153,19 @@ type roleSettings struct {
 	Compose  *struct {
 		Files   []fileEntry      `yaml:"files"`
 		Volumes map[string]Perms `yaml:"volumes"`
+		// Env is resolved for each host, as it may hold role parameters.
+		Env rawNode `yaml:"env"`
 	} `yaml:"compose"`
+}
+
+// rawNode is a value left undecoded.
+type rawNode struct {
+	node ast.Node
+}
+
+func (n *rawNode) UnmarshalYAML(_ context.Context, node ast.Node) error {
+	n.node = node
+	return nil
 }
 
 var roleSettingKeys = []string{"children", "compose", "partials"}
@@ -314,16 +333,29 @@ func (r *Repo) hostVolumes(roles []string) []Volume {
 }
 
 // renderStack reads a stack's files, replacing the compose file's tags and
-// decrypting .age files.
-func (r *Repo) renderStack(role string, e expansion) (Stack, error) {
+// decrypting .age files. generated are the host's saved generated values,
+// by stack.
+func (r *Repo) renderStack(role string, e expansion, generated map[string]map[string]Secret) (Stack, error) {
 	def := r.stacks[role]
 	s := Stack{Name: def.name, Dirs: def.dirs}
 
-	compose, err := r.renderCompose(def, e)
+	c := &composeRenderer{repo: r, def: def, params: e.params, gen: &generator{saved: generated[def.name]}}
+	compose, err := c.renderCompose(e)
 	if err != nil {
 		return Stack{}, err
 	}
 	s.Files = append(s.Files, compose)
+	env, err := c.renderEnv(e.env)
+	if err != nil {
+		return Stack{}, fmt.Errorf("compose.env: %w", err)
+	}
+	if env != nil {
+		if slices.Contains(def.files, envFile) || slices.Contains(def.files, envFile+ageSuffix) {
+			return Stack{}, fmt.Errorf("compose.env is written to %s, so it can't also be in compose.files", envFile)
+		}
+		s.Files = append(s.Files, *env)
+	}
+	s.Generated = c.gen.created
 
 	for _, rel := range def.files {
 		path := r.path("roles", role, rel)
@@ -351,16 +383,15 @@ func (r *Repo) renderStack(role string, e expansion) (Stack, error) {
 // renderCompose merges the role's compose file over its partials' and
 // replaces their tags, leaving the rest of them, including comments, as
 // written.
-func (r *Repo) renderCompose(def *stackDef, e expansion) (StackFile, error) {
-	c := &composeRenderer{repo: r, def: def, params: e.params}
+func (c *composeRenderer) renderCompose(e expansion) (StackFile, error) {
 	f, set, err := c.partialsCompose(e.partials)
 	if err != nil {
 		return StackFile{}, err
 	}
-	file := filepath.Join("roles", def.role, host.ComposeFile)
-	if _, err := os.Stat(r.path(file)); f == nil || err == nil {
+	file := filepath.Join("roles", c.def.role, host.ComposeFile)
+	if _, err := os.Stat(c.repo.path(file)); f == nil || err == nil {
 		if f, err = c.roleCompose(file, f, set); err != nil {
-			return StackFile{}, fmt.Errorf("%s: %w", r.path(file), err)
+			return StackFile{}, fmt.Errorf("%s: %w", c.repo.path(file), err)
 		}
 	}
 	content := f.String()
@@ -429,6 +460,7 @@ type composeRenderer struct {
 	repo    *Repo
 	def     *stackDef
 	params  map[string]ast.Node
+	gen     *generator
 	secrets []string
 }
 
@@ -440,7 +472,7 @@ func (c *composeRenderer) replace(node ast.Node) (ast.Node, bool, error) {
 		switch n.Start.Value {
 		case paramTag:
 			return c.param(n)
-		case ageTag, volumeTag, vhostTag:
+		case ageTag, generatedTag, volumeTag, vhostTag:
 			s, err := c.scalar(n)
 			if err != nil {
 				return nil, false, err
@@ -515,8 +547,10 @@ func (c *composeRenderer) param(tag *ast.TagNode) (ast.Node, bool, error) {
 func (c *composeRenderer) value(node ast.Node) (any, error) {
 	switch n := node.(type) {
 	case *ast.TagNode:
-		if n.Start.Value == ageTag || n.Start.Value == volumeTag || n.Start.Value == vhostTag {
+		switch n.Start.Value {
+		case ageTag, generatedTag, volumeTag, vhostTag:
 			return c.scalar(n)
+		default:
 		}
 		return c.value(n.Value)
 	case *ast.MappingNode:
@@ -575,8 +609,8 @@ func (r *Repo) volumePath(role string, tag *ast.TagNode) (string, error) {
 	return path, nil
 }
 
-// scalar resolves an !age, !volume or !vhost tag to the string that
-// replaces it.
+// scalar resolves an !age, !generated, !volume or !vhost tag to the string
+// that replaces it in the compose file.
 func (c *composeRenderer) scalar(tag *ast.TagNode) (string, error) {
 	switch tag.Start.Value {
 	case volumeTag:
@@ -586,13 +620,9 @@ func (c *composeRenderer) scalar(tag *ast.TagNode) (string, error) {
 	default:
 	}
 
-	var s Secret
-	if err := s.UnmarshalYAML(c.repo.keys.context(), tag); err != nil {
-		return "", err
-	}
-	plain, err := s.Reveal()
+	plain, err := c.secret(tag)
 	if err != nil {
-		return "", nodeError(tag, err.Error())
+		return "", err
 	}
 	// Compose would otherwise read "$" as the start of a variable.
 	escaped := strings.ReplaceAll(plain, "$", "$$")
@@ -603,6 +633,83 @@ func (c *composeRenderer) scalar(tag *ast.TagNode) (string, error) {
 	// As it appears in the file, between the quotes.
 	c.secrets = append(c.secrets, quoted[1:len(quoted)-1])
 	return escaped, nil
+}
+
+// secret reveals an !age or !generated tag.
+func (c *composeRenderer) secret(tag *ast.TagNode) (string, error) {
+	if tag.Start.Value == generatedTag {
+		return c.gen.value(tag)
+	}
+	var s Secret
+	if err := s.UnmarshalYAML(c.repo.keys.context(), tag); err != nil {
+		return "", err
+	}
+	plain, err := s.Reveal()
+	if err != nil {
+		return "", nodeError(tag, err.Error())
+	}
+	return plain, nil
+}
+
+// renderEnv writes compose.env as the stack's .env, returning nil if it sets
+// nothing. Values are single-quoted, which compose reads literally.
+func (c *composeRenderer) renderEnv(env ast.Node) (*StackFile, error) {
+	var lines, secrets []string
+	allSecret := true
+	for _, mv := range mappingValues(env) {
+		name := keyString(mv.Key)
+		if isNull(mv.Value) {
+			continue
+		}
+		value, secret, err := c.envValue(mv.Value)
+		if err != nil {
+			return nil, err
+		}
+		if strings.ContainsAny(value, "'\r\n") {
+			return nil, nodeError(
+				mv.Value,
+				fmt.Sprintf("%s can't be written to %s, as it holds a single quote or line break", name, envFile),
+			)
+		}
+		lines = append(lines, name+"='"+value+"'")
+		if secret {
+			secrets = append(secrets, value)
+		} else {
+			allSecret = false
+		}
+	}
+	if len(lines) == 0 {
+		return nil, nil
+	}
+	slices.Sort(lines)
+	return &StackFile{
+		Path:    envFile,
+		Content: strings.Join(lines, "\n") + "\n",
+		Perms:   filePerms(Perms{}),
+		Secrets: secrets,
+		Hidden:  allSecret,
+	}, nil
+}
+
+// envValue is a compose.env value as written to .env, and whether it's
+// secret.
+func (c *composeRenderer) envValue(node ast.Node) (string, bool, error) {
+	if tag, ok := node.(*ast.TagNode); ok {
+		switch tag.Start.Value {
+		case ageTag, generatedTag:
+			v, err := c.secret(tag)
+			return v, true, err
+		case volumeTag, vhostTag:
+			v, err := c.scalar(tag)
+			return v, false, err
+		default:
+			return "", false, nodeError(tag, tag.Start.Value+" can't be used in compose.env")
+		}
+	}
+	if s, ok := node.(ast.ScalarNode); ok {
+		return fmt.Sprint(s.GetValue()), false, nil
+	}
+	return "", false, nodeError(node, "a compose.env value must be a string, number or bool")
 }
 
 // flowNode parses v written as JSON, which YAML reads the same way and

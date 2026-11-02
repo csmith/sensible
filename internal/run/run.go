@@ -53,12 +53,12 @@ func Run(ctx context.Context, opts Options) error {
 		Out:     out,
 		Confirm: confirmOnTerminal,
 		Builds:  builder,
-		Compile: func(t target, facts host.Facts) (host.ResourceList, error) {
+		Compile: func(t target, facts host.Facts) (compiled, error) {
 			cfg, err := repo.HostConfig(t.name, facts.OSFamily)
 			if err != nil {
-				return nil, err
+				return compiled{}, err
 			}
-			return features.Resources(
+			resources, err := features.Resources(
 				features.Host{
 					Name:        t.name,
 					Local:       t.local,
@@ -67,6 +67,14 @@ func Run(ctx context.Context, opts Options) error {
 					SensibleKey: t.sensibleKey,
 				},
 			)
+			if err != nil {
+				return compiled{}, err
+			}
+			c := compiled{resources: resources}
+			if slices.ContainsFunc(cfg.Stacks, func(s config.Stack) bool { return len(s.Generated) > 0 }) {
+				c.save = func() error { return repo.SaveGenerated(t.name, cfg.Stacks) }
+			}
+			return c, nil
 		},
 		DNS:         newDNSClient,
 		DNSSettings: repo.DNS(),
@@ -222,13 +230,21 @@ func isLocal(name string) bool {
 	return hostname == name || short == name
 }
 
+// compiled is what a host should have.
+type compiled struct {
+	resources host.ResourceList
+	// save keeps values generated for the resources, so later runs use the
+	// same ones. It's nil if nothing was generated.
+	save func() error
+}
+
 // Runner plans and applies a set of targets. Its fields are the parts that
 // vary between real runs and tests.
 type Runner struct {
 	Out         io.Writer
 	Confirm     func(prompt string) (bool, error)
 	Builds      Builds
-	Compile     func(t target, facts host.Facts) (host.ResourceList, error)
+	Compile     func(t target, facts host.Facts) (compiled, error)
 	DNS         func(user, key string) dnsClient
 	DNSSettings config.DNSSettings
 	// Vhosts maps each vhost to the hosts serving it, and DNSNames each
@@ -244,6 +260,7 @@ type hostRun struct {
 	upgraded  bool
 	facts     host.Facts
 	resources host.ResourceList
+	save      func() error
 	checked   []host.Checked
 	failed    bool
 	// done is closed when the host's current step, connecting or checking,
@@ -309,6 +326,7 @@ func (r *Runner) Execute(ctx context.Context, targets []target, apply, yes bool)
 		}
 	}
 
+	saveGenerated(runs, out)
 	r.applyAll(runs, out)
 	for _, st := range steps {
 		if !st.apply(ctx, out) {
@@ -382,13 +400,13 @@ func (r *Runner) checkAll(runs []*hostRun) {
 			close(h.done)
 			continue
 		}
-		var err error
-		h.resources, err = r.Compile(h.target, h.facts)
+		c, err := r.Compile(h.target, h.facts)
 		if err != nil {
 			h.err = err
 			close(h.done)
 			continue
 		}
+		h.resources, h.save = c.resources, c.save
 		go func() {
 			defer close(h.done)
 			h.check()
@@ -407,6 +425,30 @@ func (h *hostRun) check() {
 		if c.Status == host.StatusFailed {
 			h.failed = true
 		}
+	}
+}
+
+// saveGenerated saves the values generated for each host about to be
+// applied, so they're used from then on. A host whose values can't be saved
+// isn't applied.
+func saveGenerated(runs []*hostRun, out *renderer) {
+	var saving []*hostRun
+	for _, h := range runs {
+		if h.agent != nil && h.pending() && h.save != nil {
+			saving = append(saving, h)
+		}
+	}
+	if len(saving) == 0 {
+		return
+	}
+	out.section("Saving generated secrets")
+	for _, h := range saving {
+		if err := h.save(); err != nil {
+			h.err = err
+			out.item(out.p.fail("✗ " + h.name + ": " + err.Error()))
+			continue
+		}
+		out.item(out.p.ok("✓") + " " + h.name)
 	}
 }
 
