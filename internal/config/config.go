@@ -133,7 +133,8 @@ type Config struct {
 	Volumes []Volume `yaml:"-"`
 }
 
-// AptRepoConfig is a deb822 apt source, named by its key.
+// AptRepoConfig is a deb822 apt source, named by its key. "{release}" in
+// any field is replaced by the host's release codename, e.g. "trixie".
 type AptRepoConfig struct {
 	URIs          Set    `yaml:"uris"`
 	Suites        Set    `yaml:"suites"`

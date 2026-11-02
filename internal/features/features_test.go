@@ -202,6 +202,27 @@ func indexAfter(ids []string, id string, after int) int {
 	return -1
 }
 
+func TestAptRepos_release(t *testing.T) {
+	h := testHost(debian)
+	h.Config.AUR.Packages = nil
+	h.Config.AptRepos = map[string]config.AptRepoConfig{
+		"example": {
+			URIs:          []string{"https://pkgs.example.com/{release}"},
+			Suites:        []string{"{release}", "{release}-updates"},
+			Components:    []string{"main"},
+			SigningKeyURL: "https://pkgs.example.com/{release}.gpg",
+		},
+	}
+
+	rs, err := Resources(h)
+	require.NoError(t, err)
+	repo, ok := find[host.AptRepo](rs, "apt-repo:example")
+	require.True(t, ok)
+	assert.Equal(t, []string{"https://pkgs.example.com/trixie"}, repo.URIs)
+	assert.Equal(t, []string{"trixie", "trixie-updates"}, repo.Suites)
+	assert.Equal(t, "https://pkgs.example.com/trixie.gpg", repo.SigningKeyURL)
+}
+
 func TestResources_errors(t *testing.T) {
 	tests := []struct {
 		name   string

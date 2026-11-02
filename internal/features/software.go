@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"chameth.com/sensible/internal/config"
 	"chameth.com/sensible/internal/host"
@@ -31,14 +32,22 @@ func aptRepos(h Host) ([]host.Resource, error) {
 		case len(c.URIs) == 0 || len(c.Suites) == 0 || c.SigningKeyURL == "":
 			return nil, fmt.Errorf("host %s: apt repo %s needs uris, suites and signing_key_url", h.Name, name)
 		}
+		release := strings.NewReplacer("{release}", h.Facts.Release)
+		replaceAll := func(items []string) []string {
+			out := make([]string, len(items))
+			for i, item := range items {
+				out[i] = release.Replace(item)
+			}
+			return out
+		}
 		rs = append(
 			rs,
 			host.AptRepo{
 				Name:          name,
-				URIs:          c.URIs,
-				Suites:        c.Suites,
-				Components:    c.Components,
-				SigningKeyURL: c.SigningKeyURL,
+				URIs:          replaceAll(c.URIs),
+				Suites:        replaceAll(c.Suites),
+				Components:    replaceAll(c.Components),
+				SigningKeyURL: release.Replace(c.SigningKeyURL),
 			},
 		)
 	}
