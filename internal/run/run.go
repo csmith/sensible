@@ -421,7 +421,10 @@ func (r *Runner) applyAll(runs []*hostRun, out *renderer) {
 }
 
 func (h *hostRun) apply(out *renderer) {
-	done, err := h.agent.apply(func(a host.Applied) { out.applied(h, a) })
+	done, err := h.agent.apply(
+		func(a host.Applying) { out.applying(h, a) },
+		func(a host.Applied) { out.applied(h, a) },
+	)
 	if err != nil {
 		h.err = err
 		out.applyError(h, err)
@@ -626,7 +629,7 @@ func (a *agent) check(resources host.ResourceList) ([]host.Checked, error) {
 	}
 }
 
-func (a *agent) apply(each func(host.Applied)) (host.Done, error) {
+func (a *agent) apply(starting func(host.Applying), each func(host.Applied)) (host.Done, error) {
 	if err := a.conn.Send(host.Apply{}); err != nil {
 		return host.Done{}, err
 	}
@@ -636,6 +639,8 @@ func (a *agent) apply(each func(host.Applied)) (host.Done, error) {
 			return host.Done{Failed: true}, err
 		}
 		switch m := msg.(type) {
+		case host.Applying:
+			starting(m)
 		case host.Applied:
 			each(m)
 		case host.Done:

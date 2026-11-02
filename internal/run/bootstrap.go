@@ -356,6 +356,7 @@ func (b *bootstrapper) rotate(ctx context.Context, signer ssh.Signer, password s
 	}
 	var failure error
 	done, err := a.apply(
+		func(host.Applying) {},
 		func(r host.Applied) {
 			if r.Status == host.StatusFailed && failure == nil {
 				failure = fmt.Errorf("applying %s: %s", r.ID, r.Error)

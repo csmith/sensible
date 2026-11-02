@@ -170,9 +170,8 @@ func (p dnsPlan) step() crossHostStep {
 			out.section("Applying DNS changes")
 			ok := true
 			for _, c := range p.changes {
-				err := c.apply(ctx)
+				err := out.dnsApply(c, func() error { return c.apply(ctx) })
 				ok = ok && err == nil
-				out.dnsResult(c, err)
 			}
 			return ok
 		},

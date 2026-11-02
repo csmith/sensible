@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -86,11 +87,13 @@ type renderer struct {
 
 	// live is set on a terminal, where unfinished tasks are drawn below
 	// everything else and redrawn as they change.
-	live    bool
-	tasks   []*task
-	drawn   int
-	frame   int
-	ticking bool
+	live  bool
+	tasks []*task
+	// inProgress is what each host is changing now, drawn after the tasks.
+	inProgress []applyingItem
+	drawn      int
+	frame      int
+	ticking    bool
 	// pending is what's been written under the lock, sent in one write when
 	// it's released so the terminal never shows a partial update.
 	pending strings.Builder
@@ -146,7 +149,7 @@ func (r *renderer) lock() {
 // which terminals without it ignore.
 func (r *renderer) unlock() {
 	defer r.mu.Unlock()
-	if r.live && (len(r.tasks) > 0 || r.moved) {
+	if r.live && (len(r.tasks) > 0 || len(r.inProgress) > 0 || r.moved) {
 		r.drawLocked()
 	}
 	if r.pending.Len() == 0 {
@@ -213,11 +216,15 @@ func (r *renderer) begin(label func(frame string) string, head ...string) *task 
 	t := &task{label: label, head: head}
 	r.tasks = append(r.tasks, t)
 	r.flushLocked()
+	r.tickLocked()
+	return t
+}
+
+func (r *renderer) tickLocked() {
 	if r.live && !r.ticking {
 		r.ticking = true
 		go r.tick()
 	}
-	return t
 }
 
 // finish ends a task, with the lines that follow its head.
@@ -265,9 +272,16 @@ func (r *renderer) drawLocked() {
 		// would throw off the count moving up relies on.
 		r.pending.WriteString(truncate(t.label(f), width-1) + "\x1b[K\n")
 	}
+	for _, a := range r.inProgress {
+		label := itemIndent + frame + " " + a.name
+		if r.floor != a.h {
+			label += r.p.dim("  " + a.h.name)
+		}
+		r.pending.WriteString(truncate(label, width-1) + "\x1b[K\n")
+	}
 	// Clears anything left below from a longer list.
 	r.pending.WriteString("\x1b[J")
-	r.drawn = len(r.tasks)
+	r.drawn = len(r.tasks) + len(r.inProgress)
 	r.moved = false
 }
 
@@ -276,7 +290,7 @@ func (r *renderer) tick() {
 	defer ticker.Stop()
 	for range ticker.C {
 		r.lock()
-		if len(r.tasks) == 0 {
+		if len(r.tasks) == 0 && len(r.inProgress) == 0 {
 			r.ticking = false
 			r.unlock()
 			return
@@ -428,11 +442,34 @@ func hostPlanLines(h *hostRun, p palette) []string {
 	return lines
 }
 
+type applyingItem struct {
+	h    *hostRun
+	name string
+}
+
+// applying shows what h has started changing until its result arrives.
+func (r *renderer) applying(h *hostRun, a host.Applying) {
+	r.lock()
+	defer r.unlock()
+	r.startApplyLocked(h)
+	if !r.live {
+		return
+	}
+	r.stopApplyingLocked(h)
+	r.inProgress = append(r.inProgress, applyingItem{h: h, name: displayID(a.ID)})
+	r.tickLocked()
+}
+
+func (r *renderer) stopApplyingLocked(h *hostRun) {
+	r.inProgress = slices.DeleteFunc(r.inProgress, func(a applyingItem) bool { return a.h == h })
+}
+
 // applied shows one streamed result. Results for resources arrive in the
 // order they were checked, so their position tells which were deferred.
 func (r *renderer) applied(h *hostRun, a host.Applied) {
 	r.lock()
 	defer r.unlock()
+	r.stopApplyingLocked(h)
 	deferred := false
 	if !a.Handler {
 		i := r.position[h]
@@ -465,22 +502,14 @@ func (r *renderer) applied(h *hostRun, a host.Applied) {
 func (r *renderer) applyError(h *hostRun, err error) {
 	r.lock()
 	defer r.unlock()
+	r.stopApplyingLocked(h)
 	r.applyLineLocked(h, r.p.fail("✗ "+err.Error()))
 }
 
 // applyLineLocked adds a line to h's apply section, which streams if h holds
 // the floor and is held otherwise.
 func (r *renderer) applyLineLocked(h *hostRun, text string) {
-	if !r.started[h] {
-		r.started[h] = true
-		header := r.header("Applying changes on " + h.name)
-		if r.floor == nil {
-			r.floor = h
-			r.writeLocked(header)
-		} else {
-			r.held = append(r.held, &heldSection{h: h, lines: []string{header}})
-		}
-	}
+	r.startApplyLocked(h)
 	text = itemIndent + text
 	if r.floor == h {
 		r.writeLocked(text)
@@ -493,10 +522,27 @@ func (r *renderer) applyLineLocked(h *hostRun, text string) {
 	}
 }
 
+// startApplyLocked writes or holds h's apply section header, the first time
+// it's called for h.
+func (r *renderer) startApplyLocked(h *hostRun) {
+	if r.started[h] {
+		return
+	}
+	r.started[h] = true
+	header := r.header("Applying changes on " + h.name)
+	if r.floor == nil {
+		r.floor = h
+		r.writeLocked(header)
+	} else {
+		r.held = append(r.held, &heldSection{h: h, lines: []string{header}})
+	}
+}
+
 // applyDone ends h's apply section, passing the floor on if h held it.
 func (r *renderer) applyDone(h *hostRun) {
 	r.lock()
 	defer r.unlock()
+	r.stopApplyingLocked(h)
 	if n := r.skipped[h]; n > 0 {
 		r.applyLineLocked(h, r.p.dim(fmt.Sprintf("- %d skipped", n)))
 	}
@@ -525,12 +571,16 @@ func (r *renderer) applyDone(h *hostRun) {
 	}
 }
 
-func (r *renderer) dnsResult(c *dnsChange, err error) {
-	if err != nil {
-		r.item(r.p.fail(fmt.Sprintf("✗ %s %s: %v", c.types(), c.fqdn, err)))
-		return
+// dnsApply shows a DNS change with a spinner while apply makes it.
+func (r *renderer) dnsApply(c *dnsChange, apply func() error) error {
+	name := c.types() + " " + c.fqdn
+	t := r.beginItem(name)
+	if err := apply(); err != nil {
+		r.finish(t, itemIndent+r.p.fail(fmt.Sprintf("✗ %s: %v", name, err)))
+		return err
 	}
-	r.item(r.p.ok("✓") + fmt.Sprintf(" %s %s", c.types(), c.fqdn))
+	r.finish(t, itemIndent+r.p.ok("✓")+" "+name)
+	return nil
 }
 
 // displayID turns "file:/etc/x" into "file /etc/x".

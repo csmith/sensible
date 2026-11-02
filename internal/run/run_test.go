@@ -136,6 +136,7 @@ func (f *fakeAgent) apply(conn *host.Conn, resources host.ResourceList, checked 
 			a.Status, a.Error, failed = host.StatusFailed, "boom", true
 		case checked[i].Status != host.StatusInSync:
 			a.Status = host.StatusChanged
+			_ = conn.Send(host.Applying{ID: res.ID()})
 		}
 		_ = conn.Send(a)
 	}
@@ -783,6 +784,42 @@ func TestRendererWritesSectionsAboveUnfinishedTasks(t *testing.T) {
 
 	r.finish(b)
 	assert.Equal(t, "> Resolving changes on smarts", screen(t, buf.String())[4])
+}
+
+func TestRendererDrawsWhatEachHostIsApplying(t *testing.T) {
+	var buf bytes.Buffer
+	r := newLiveRenderer(&buf)
+	a := &hostRun{name: "acidburn"}
+	b := &hostRun{name: "smarts"}
+
+	r.applying(a, host.Applying{ID: "file:/a1"})
+	r.applying(b, host.Applying{ID: "package:vim"})
+	assert.Equal(
+		t,
+		[]string{"> Applying changes on acidburn", "  ⠋ file /a1", "  ⠋ package vim  smarts"},
+		screen(t, buf.String()),
+	)
+
+	r.applied(a, host.Applied{ID: "file:/a1", Status: host.StatusChanged})
+	assert.Equal(
+		t,
+		[]string{"> Applying changes on acidburn", "  ✓ file /a1", "  ⠋ package vim  smarts"},
+		screen(t, buf.String()),
+	)
+
+	r.applyDone(a)
+	r.applied(b, host.Applied{ID: "package:vim", Status: host.StatusFailed, Error: "boom"})
+	r.applyDone(b)
+	assert.Equal(
+		t,
+		[]string{
+			"> Applying changes on acidburn",
+			"  ✓ file /a1",
+			"> Applying changes on smarts",
+			"  ✗ package vim: boom",
+		},
+		screen(t, buf.String()),
+	)
 }
 
 func TestTruncate(t *testing.T) {

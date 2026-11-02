@@ -55,9 +55,10 @@ func (e *engine) check(ctx context.Context, list ResourceList, send func(Checked
 }
 
 // apply re-checks and applies each resource, stopping at the first failure,
-// then runs the handlers that changed resources notified. If send fails, it
+// then runs the handlers that changed resources notified. Each change is
+// sent as Applying before it's made and Applied after. If send fails, it
 // stops after the resource in progress but still runs the due handlers.
-func (e *engine) apply(ctx context.Context, list ResourceList, send func(Applied) error) (bool, error) {
+func (e *engine) apply(ctx context.Context, list ResourceList, send func(any) error) (bool, error) {
 	st := newRunState()
 	ctx = withRunState(ctx, st)
 	var (
@@ -66,11 +67,16 @@ func (e *engine) apply(ctx context.Context, list ResourceList, send func(Applied
 		handlers ResourceList
 		notified = map[string]bool{}
 	)
+	starting := func(id string, handler bool) {
+		if sendErr == nil {
+			sendErr = send(Applying{ID: id, Handler: handler})
+		}
+	}
 	for _, r := range list {
 		st.declare(r)
 		res := Applied{ID: r.ID(), Status: StatusSkipped}
 		if !failed {
-			res = e.applyOne(ctx, st, r)
+			res = e.applyOne(ctx, st, r, starting)
 		}
 
 		switch res.Status {
@@ -89,7 +95,10 @@ func (e *engine) apply(ctx context.Context, list ResourceList, send func(Applied
 		}
 
 		e.record(res)
-		if sendErr = send(res); sendErr != nil || ctx.Err() != nil {
+		if err := send(res); sendErr == nil {
+			sendErr = err
+		}
+		if sendErr != nil || ctx.Err() != nil {
 			break
 		}
 	}
@@ -99,6 +108,7 @@ func (e *engine) apply(ctx context.Context, list ResourceList, send func(Applied
 	hctx := context.WithoutCancel(ctx)
 	for _, h := range handlers {
 		res := Applied{ID: h.ID(), Handler: true, Status: StatusChanged}
+		starting(h.ID(), true)
 		if err := h.Apply(hctx, e.sys); err != nil {
 			res.Status, res.Error = StatusFailed, err.Error()
 			failed = true
@@ -111,7 +121,12 @@ func (e *engine) apply(ctx context.Context, list ResourceList, send func(Applied
 	return failed, sendErr
 }
 
-func (e *engine) applyOne(ctx context.Context, st *runState, r Resource) Applied {
+func (e *engine) applyOne(
+	ctx context.Context,
+	st *runState,
+	r Resource,
+	starting func(id string, handler bool),
+) Applied {
 	res := Applied{ID: r.ID()}
 	change, err := r.Check(ctx, e.sys)
 	switch {
@@ -121,6 +136,7 @@ func (e *engine) applyOne(ctx context.Context, st *runState, r Resource) Applied
 		res.Status = StatusInSync
 	default:
 		res.Diff = change.Diff
+		starting(r.ID(), false)
 		if err := r.Apply(ctx, e.sys); err != nil {
 			res.Status, res.Error = StatusFailed, err.Error()
 		} else {

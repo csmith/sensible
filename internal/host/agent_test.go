@@ -132,8 +132,10 @@ func TestServe_HelloFactsCheckApplyBye(t *testing.T) {
 	assert.Equal(t, Done{}, ta.receive(t))
 
 	require.NoError(t, ta.ctrl.Send(Apply{}))
+	assert.Equal(t, Applying{ID: "scripted:a"}, ta.receive(t))
 	assert.Equal(t, Applied{ID: "scripted:a", Status: StatusChanged, Diff: "+ a"}, ta.receive(t))
 	assert.Equal(t, Applied{ID: "scripted:b", Status: StatusInSync}, ta.receive(t))
+	assert.Equal(t, Applying{ID: "scripted:h", Handler: true}, ta.receive(t))
 	assert.Equal(t, Applied{ID: "scripted:h", Status: StatusChanged, Handler: true}, ta.receive(t))
 	assert.Equal(t, Done{}, ta.receive(t))
 

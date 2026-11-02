@@ -118,7 +118,7 @@ func (s *session) apply(ctx context.Context) error {
 	if s.resources == nil {
 		return s.conn.Send(Error{Message: "apply without a check"})
 	}
-	failed, err := s.engine.apply(ctx, s.resources, func(a Applied) error { return s.conn.Send(a) })
+	failed, err := s.engine.apply(ctx, s.resources, s.conn.Send)
 	s.resources = nil
 	if err == nil {
 		err = s.conn.Send(Done{Failed: failed})

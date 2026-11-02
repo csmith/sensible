@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"testing"
 
@@ -70,8 +71,10 @@ func collectApplied(t *testing.T, list ResourceList) ([]Applied, bool) {
 	failed, err := newTestEngine().apply(
 		context.Background(),
 		list,
-		func(a Applied) error {
-			got = append(got, a)
+		func(msg any) error {
+			if a, ok := msg.(Applied); ok {
+				got = append(got, a)
+			}
 			return nil
 		},
 	)
@@ -160,7 +163,7 @@ func TestEngine_ComposeStackSeesItsFilesChange(t *testing.T) {
 	_, err := e.apply(
 		context.Background(),
 		ResourceList{&fakeResource{id: "conf", inSync: true, log: &log}, &fakeResource{id: "env", log: &log}, stack},
-		func(Applied) error { return nil },
+		func(any) error { return nil },
 	)
 	require.NoError(t, err)
 	assert.Equal(
@@ -191,6 +194,40 @@ func TestEngineApply_AppliesDeferredAndRunsHandlersOnce(t *testing.T) {
 	assert.True(t, got[3].Handler)
 	assert.Equal(t, "change pkg", got[2].Diff)
 	assert.Equal(t, []string{"repo", "pkg", "reload"}, log)
+}
+
+func TestEngineApply_AnnouncesEachChangeBeforeMakingIt(t *testing.T) {
+	var log, sent []string
+	reload := &fakeResource{id: "reload", log: &log}
+	_, err := newTestEngine().apply(
+		context.Background(),
+		ResourceList{
+			&fakeResource{id: "quiet", inSync: true, log: &log},
+			&fakeResource{id: "config", log: &log, notify: ResourceList{reload}},
+		},
+		func(msg any) error {
+			switch m := msg.(type) {
+			case Applying:
+				sent = append(sent, fmt.Sprintf("applying %s handler=%t after %v", m.ID, m.Handler, log))
+			case Applied:
+				sent = append(sent, "applied "+m.ID)
+			}
+			return nil
+		},
+	)
+
+	require.NoError(t, err)
+	assert.Equal(
+		t,
+		[]string{
+			"applied quiet",
+			"applying config handler=false after []",
+			"applied config",
+			"applying reload handler=true after [config]",
+			"applied reload",
+		},
+		sent,
+	)
 }
 
 func TestEngineApply_FailureSkipsRestButRunsDueHandlers(t *testing.T) {
@@ -250,7 +287,7 @@ func TestEngineApply_LostConnectionStopsAfterCurrentResource(t *testing.T) {
 			&fakeResource{id: "config", log: &log, notify: ResourceList{reload}},
 			&fakeResource{id: "next", log: &log},
 		},
-		func(Applied) error { return lost },
+		func(any) error { return lost },
 	)
 
 	require.ErrorIs(t, err, lost)
@@ -280,7 +317,7 @@ func TestEngine_OwnedDirKeepsAptRepoFiles(t *testing.T) {
 			OwnedDir{Path: AptSourcesDir},
 			OwnedDir{Path: AptKeyringsDir},
 		},
-		func(Applied) error { return nil },
+		func(any) error { return nil },
 	)
 
 	require.NoError(t, err)
@@ -307,8 +344,10 @@ func TestEngine_OwnedDirSeesFilesDeclaredEarlier(t *testing.T) {
 			File{Path: "/etc/sudoers.d/keep", Content: "x\n"},
 			OwnedDir{Path: "/etc/sudoers.d"},
 		},
-		func(a Applied) error {
-			got = append(got, a)
+		func(msg any) error {
+			if a, ok := msg.(Applied); ok {
+				got = append(got, a)
+			}
 			return nil
 		},
 	)

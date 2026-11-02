@@ -10,7 +10,7 @@ import (
 // ProtocolVersion is bumped whenever a message or resource changes, so a
 // controller can refuse an agent built from older code. Hello and Upgrade
 // must never change shape, so any controller can upgrade any agent.
-const ProtocolVersion = 4
+const ProtocolVersion = 5
 
 // Hello is the first message an agent sends, and the first after it re-execs
 // following an Upgrade.
@@ -49,8 +49,14 @@ type Checked struct {
 }
 
 // Apply applies the resources from the preceding Check, replying with one
-// Applied per resource and handler followed by Done.
+// Applied per resource and handler followed by Done. Each resource or
+// handler that's changed is announced with Applying first.
 type Apply struct{}
+
+type Applying struct {
+	ID      string `json:"id"`
+	Handler bool   `json:"handler,omitempty"`
+}
 
 type Applied struct {
 	ID      string `json:"id"`
@@ -92,6 +98,7 @@ var messageTypes = registry(
 	Check{},
 	Checked{},
 	Apply{},
+	Applying{},
 	Applied{},
 	Done{},
 	Bye{},
