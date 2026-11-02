@@ -366,16 +366,18 @@ func indentItems(lines []string) []string {
 func (r *renderer) dnsLines(dns dnsPlan) []string {
 	lines := make([]string, 0, len(dns.changes)+len(dns.warnings)+len(dns.errs)+1)
 	for _, c := range dns.changes {
-		mark, rest, _ := strings.Cut(c.String(), " ")
-		switch mark {
-		case "+":
-			mark = r.p.ok(mark)
-		case "-":
-			mark = r.p.fail(mark)
-		default:
-			mark = r.p.change(mark)
+		for _, l := range c.lines() {
+			mark, rest, _ := strings.Cut(l, " ")
+			switch mark {
+			case "+":
+				mark = r.p.ok(mark)
+			case "-":
+				mark = r.p.fail(mark)
+			default:
+				mark = r.p.change(mark)
+			}
+			lines = append(lines, mark+" "+rest)
 		}
-		lines = append(lines, mark+" "+rest)
 	}
 	for _, w := range dns.warnings {
 		lines = append(lines, r.p.change("! "+w))
@@ -525,10 +527,10 @@ func (r *renderer) applyDone(h *hostRun) {
 
 func (r *renderer) dnsResult(c *dnsChange, err error) {
 	if err != nil {
-		r.item(r.p.fail(fmt.Sprintf("✗ %s %s: %v", c.rtype, c.fqdn, err)))
+		r.item(r.p.fail(fmt.Sprintf("✗ %s %s: %v", c.types(), c.fqdn, err)))
 		return
 	}
-	r.item(r.p.ok("✓") + fmt.Sprintf(" %s %s", c.rtype, c.fqdn))
+	r.item(r.p.ok("✓") + fmt.Sprintf(" %s %s", c.types(), c.fqdn))
 }
 
 // displayID turns "file:/etc/x" into "file /etc/x".

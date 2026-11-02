@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"chameth.com/sensible/internal/config"
+
 	api "github.com/mydnshost/mydnshost-go-api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -180,10 +182,15 @@ func TestZonesPlan(t *testing.T) {
 	}
 	z := &dnsZones{client: client, records: map[string][]api.ExistingRecord{}}
 
-	change, err := z.plan(t.Context(), "host.example.com", "A", []string{"192.0.2.2"})
+	change, unchanged, err := z.plan(
+		t.Context(),
+		"host.example.com",
+		map[string][]string{"A": {"192.0.2.2"}, "AAAA": {"2001:db8::1"}},
+	)
 	require.NoError(t, err)
+	assert.Equal(t, 1, unchanged)
 	require.NotNil(t, change)
-	assert.Equal(t, "~ A host.example.com  192.0.2.1 → 192.0.2.2", change.String())
+	assert.Equal(t, []string{"~ A host.example.com  192.0.2.1 → 192.0.2.2"}, change.lines())
 	require.NoError(t, change.apply(t.Context()))
 	assert.Equal(
 		t,
@@ -197,14 +204,143 @@ func TestZonesPlan(t *testing.T) {
 		client.modified,
 	)
 
-	unchanged, err := z.plan(t.Context(), "host.example.com", "AAAA", []string{"2001:db8::1"})
+	none, _, err := z.plan(t.Context(), "host.example.com", map[string][]string{"AAAA": {"2001:db8::1"}})
 	require.NoError(t, err)
-	assert.Nil(t, unchanged)
+	assert.Nil(t, none)
 
-	added, err := z.plan(t.Context(), "new.example.com", "A", []string{"192.0.2.3"})
+	added, _, err := z.plan(t.Context(), "new.example.com", map[string][]string{"A": {"192.0.2.3"}})
 	require.NoError(t, err)
-	assert.Equal(t, "+ A new.example.com  192.0.2.3", added.String())
+	assert.Equal(t, []string{"+ A new.example.com  192.0.2.3"}, added.lines())
 
-	_, err = z.plan(t.Context(), "host.example.net", "A", []string{"192.0.2.3"})
-	assert.ErrorContains(t, err, "no domain")
+	_, _, err = z.plan(t.Context(), "host.example.net", map[string][]string{"A": {"192.0.2.3"}})
+	assert.ErrorIs(t, err, errNoDomain)
+}
+
+func TestZonesPlan_replacesOtherTypesInOneChange(t *testing.T) {
+	client := &fakeDNS{
+		domains: []string{"example.com"},
+		records: []api.ExistingRecord{
+			{Id: 1, Name: "", Type: "A", Content: "192.0.2.1"},
+			{Id: 2, Name: "", Type: "MX", Content: "mail.example.com"},
+			{Id: 3, Name: "", Type: "RRCLONE", Content: "(A,AAAA)  Old.example.net."},
+		},
+	}
+	z := &dnsZones{client: client, records: map[string][]api.ExistingRecord{}}
+
+	change, _, err := z.plan(
+		t.Context(),
+		"example.com",
+		map[string][]string{"A": nil, "CNAME": nil, "RRCLONE": {"(A,AAAA) new.example.net", "(A,AAAA) old.example.net"}},
+	)
+	require.NoError(t, err)
+	assert.Equal(
+		t,
+		[]string{
+			"- A example.com  192.0.2.1",
+			"~ RRCLONE example.com  (A,AAAA)  Old.example.net. → (A,AAAA)  Old.example.net., (A,AAAA) new.example.net",
+		},
+		change.lines(),
+	)
+	assert.Equal(t, "A, RRCLONE", change.types())
+	require.NoError(t, change.apply(t.Context()))
+	assert.Equal(
+		t,
+		[]map[string]any{
+			{"id": float64(1), "delete": true},
+			{"name": "@", "type": "RRCLONE", "content": "(A,AAAA) new.example.net"},
+		},
+		client.modified[0].ops,
+	)
+}
+
+func TestZonesPlan_onlyWritableDomains(t *testing.T) {
+	client := &levelDNS{
+		levels: map[string]api.AccessLevel{"example.com": api.LevelRead, "sub.example.com": api.LevelWrite},
+	}
+	z := &dnsZones{client: client, records: map[string][]api.ExistingRecord{}}
+
+	_, _, err := z.plan(t.Context(), "www.example.com", map[string][]string{"A": {"192.0.2.1"}})
+	require.ErrorIs(t, err, errReadOnly)
+	change, _, err := z.plan(t.Context(), "www.sub.example.com", map[string][]string{"A": {"192.0.2.1"}})
+	require.NoError(t, err)
+	assert.Equal(t, "sub.example.com", change.domain)
+
+	// A writable parent doesn't stand in for a read-only zone within it.
+	client.levels = map[string]api.AccessLevel{"example.com": api.LevelWrite, "sub.example.com": api.LevelRead}
+	z = &dnsZones{client: client, records: map[string][]api.ExistingRecord{}}
+	_, _, err = z.plan(t.Context(), "www.sub.example.com", map[string][]string{"A": {"192.0.2.1"}})
+	assert.ErrorIs(t, err, errReadOnly)
+}
+
+type levelDNS struct {
+	fakeDNS
+	levels map[string]api.AccessLevel
+}
+
+func (l *levelDNS) Domains(context.Context) (map[string]api.AccessLevel, error) {
+	return l.levels, nil
+}
+
+func TestManagedNames_vhosts(t *testing.T) {
+	r := &Runner{
+		DNSSettings: config.DNSSettings{Vhosts: []config.VhostRecord{{Type: "RRCLONE", Content: "(A,AAAA) {host}"}}},
+		Vhosts: map[string][]string{
+			"shared.example.com":  {"acidburn", "hetzner1", "smarts"},
+			"mine.example.com":    {"acidburn"},
+			"theirs.example.com":  {"hetzner1"},
+			"unnamed.example.com": {"smarts"},
+		},
+		DNSNames: map[string]string{"acidburn": "acidburn.example.net", "hetzner1": "hetzner1.example.net"},
+	}
+	runs := []*hostRun{
+		{name: "acidburn", agent: &agent{}},
+		{name: "smarts", agent: &agent{}},
+		{name: "unreachable"},
+	}
+
+	names, warnings := r.managedNames(runs)
+
+	owned := func(rrclone ...string) map[string][]string {
+		return map[string][]string{"A": nil, "AAAA": nil, "CNAME": nil, "RRCLONE": rrclone}
+	}
+	assert.Equal(
+		t,
+		[]managedName{
+			{fqdn: "mine.example.com", types: owned("(A,AAAA) acidburn.example.net"), vhost: true},
+			{
+				fqdn:  "shared.example.com",
+				types: owned("(A,AAAA) acidburn.example.net", "(A,AAAA) hetzner1.example.net"),
+				vhost: true,
+			},
+		},
+		names,
+	)
+	assert.Equal(t, []string{"smarts serves vhosts but has no dns_name"}, warnings)
+
+	r.DNSSettings.Vhosts = nil
+	names, warnings = r.managedNames(runs)
+	assert.Empty(t, names)
+	assert.Empty(t, warnings)
+}
+
+func TestPlanNames_vhostOutsideAccountWarns(t *testing.T) {
+	z := &dnsZones{client: &fakeDNS{domains: []string{"example.com"}}, records: map[string][]api.ExistingRecord{}}
+	var p dnsPlan
+
+	z.planNames(
+		t.Context(),
+		[]managedName{
+			{fqdn: "www.example.org", types: map[string][]string{"CNAME": {"x.example.com"}}, vhost: true},
+			{fqdn: "host.example.org", types: map[string][]string{"A": {"192.0.2.1"}}},
+		},
+		&p,
+	)
+
+	assert.Equal(
+		t,
+		[]string{"leaving vhost www.example.org alone: no domain on this account contains it"},
+		p.warnings,
+	)
+	require.Len(t, p.errs, 1)
+	assert.ErrorIs(t, p.errs[0], errNoDomain)
 }

@@ -2,8 +2,11 @@ package run
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"net/netip"
+	"slices"
 	"strings"
 
 	api "github.com/mydnshost/mydnshost-go-api"
@@ -19,8 +22,8 @@ func newDNSClient(user, key string) dnsClient {
 	return &api.Client{Authenticator: &api.ApiKeyAuthenticator{User: user, Key: key}}
 }
 
-// dnsPlan is the DNS changes for a run, with how many records are already
-// as they should be.
+// dnsPlan is the DNS changes for a run, with how many sets of records are
+// already as they should be.
 type dnsPlan struct {
 	changes   []*dnsChange
 	unchanged int
@@ -28,60 +31,139 @@ type dnsPlan struct {
 	errs      []error
 }
 
-// planDNS works out the A and AAAA records for every host with a DNS name
-// whose facts came back. Addresses from facts are only used if they're
-// valid, as a compromised host could report anything.
-func (r *Runner) planDNS(ctx context.Context, runs []*hostRun) dnsPlan {
-	var p dnsPlan
-	var z *dnsZones
+// managedName is a name whose records of the given types sensible sets. A type
+// with no values has its records removed.
+type managedName struct {
+	fqdn  string
+	types map[string][]string
+	// vhost names are left alone, with a warning, if the account can't
+	// change their domain.
+	vhost bool
+}
+
+// vhostTypes are the types a vhost's records replace, besides those the
+// records have.
+var vhostTypes = []string{"A", "AAAA", "CNAME"}
+
+// managedNames are the names to manage for the hosts whose facts came back:
+// each host's own name with its A and AAAA records, and the vhosts it
+// serves, with the records for every host serving them. Addresses from facts
+// are only used if they're valid, as a compromised host could report
+// anything.
+func (r *Runner) managedNames(runs []*hostRun) ([]managedName, []string) {
+	var names []managedName
+	var warnings []string
+	running := map[string]bool{}
 	for _, h := range runs {
-		if h.agent == nil || h.dnsName == "" {
+		if h.agent == nil {
 			continue
 		}
-		if z == nil {
-			client, err := r.dnsClient()
-			if err != nil {
-				p.errs = append(p.errs, err)
-				return p
-			}
-			z = &dnsZones{client: client, records: map[string][]api.ExistingRecord{}}
+		running[h.name] = true
+		if h.dnsName == "" {
+			continue
 		}
-
+		types := map[string][]string{}
 		for _, want := range []struct{ rtype, fact string }{
 			{"A", h.facts.DefaultIPv4},
 			{"AAAA", h.facts.DefaultIPv6},
 		} {
 			addr, ok := dnsAddress(want.rtype, want.fact)
-			if !ok {
-				if want.fact != "" {
-					p.warnings = append(
-						p.warnings,
-						fmt.Sprintf("ignoring invalid %s address %q from %s", want.rtype, want.fact, h.name),
-					)
+			if ok {
+				types[want.rtype] = []string{addr}
+			} else if want.fact != "" {
+				warnings = append(
+					warnings,
+					fmt.Sprintf("ignoring invalid %s address %q from %s", want.rtype, want.fact, h.name),
+				)
+			}
+		}
+		if len(types) > 0 {
+			names = append(names, managedName{fqdn: h.dnsName, types: types})
+		}
+	}
+
+	vhosts, vhostWarnings := r.vhostNames(running)
+	return append(names, vhosts...), append(warnings, vhostWarnings...)
+}
+
+// vhostNames are the vhosts the running hosts serve, each with the records
+// for every host serving it.
+func (r *Runner) vhostNames(running map[string]bool) ([]managedName, []string) {
+	if len(r.DNSSettings.Vhosts) == 0 {
+		return nil, nil
+	}
+	var names []managedName
+	var warnings []string
+	unnamed := map[string]bool{}
+	for _, vhost := range slices.Sorted(maps.Keys(r.Vhosts)) {
+		hosts := r.Vhosts[vhost]
+		if !slices.ContainsFunc(hosts, func(h string) bool { return running[h] }) {
+			continue
+		}
+		types := map[string][]string{}
+		for _, t := range vhostTypes {
+			types[t] = nil
+		}
+		wanted := false
+		for _, h := range hosts {
+			target := r.DNSNames[h]
+			if target == "" {
+				if !unnamed[h] {
+					unnamed[h] = true
+					warnings = append(warnings, h+" serves vhosts but has no dns_name")
 				}
 				continue
 			}
-			change, err := z.plan(ctx, h.dnsName, want.rtype, []string{addr})
-			if err != nil {
-				p.errs = append(p.errs, fmt.Errorf("%s %s: %w", want.rtype, h.dnsName, err))
-				continue
-			}
-			if change != nil {
-				p.changes = append(p.changes, change)
-			} else {
-				p.unchanged++
+			for _, rec := range r.DNSSettings.Vhosts {
+				types[rec.Type] = append(types[rec.Type], strings.ReplaceAll(rec.Content, "{host}", target))
+				wanted = true
 			}
 		}
+		if wanted {
+			names = append(names, managedName{fqdn: vhost, types: types, vhost: true})
+		}
 	}
+	return names, warnings
+}
+
+// planDNS works out the changes the names need.
+func (r *Runner) planDNS(ctx context.Context, names []managedName, warnings []string) dnsPlan {
+	p := dnsPlan{warnings: warnings}
+	if len(names) == 0 {
+		return p
+	}
+	client, err := r.dnsClient()
+	if err != nil {
+		p.errs = append(p.errs, err)
+		return p
+	}
+	z := &dnsZones{client: client, records: map[string][]api.ExistingRecord{}}
+	z.planNames(ctx, names, &p)
 	return p
 }
 
+func (z *dnsZones) planNames(ctx context.Context, names []managedName, p *dnsPlan) {
+	for _, n := range names {
+		change, unchanged, err := z.plan(ctx, n.fqdn, n.types)
+		p.unchanged += unchanged
+		switch {
+		case (errors.Is(err, errNoDomain) || errors.Is(err, errReadOnly)) && n.vhost:
+			p.warnings = append(p.warnings, fmt.Sprintf("leaving vhost %s alone: %v", n.fqdn, err))
+		case err != nil:
+			p.errs = append(p.errs, fmt.Errorf("%s: %w", n.fqdn, err))
+		case change != nil:
+			p.changes = append(p.changes, change)
+		default:
+		}
+	}
+}
+
 func (r *Runner) dnsClient() (dnsClient, error) {
-	user, err := r.DNSCredentials.AuthUser.Reveal()
+	user, err := r.DNSSettings.AuthUser.Reveal()
 	if err != nil {
 		return nil, fmt.Errorf("sensible.yml: dns.auth_user: %w", err)
 	}
-	key, err := r.DNSCredentials.AuthKey.Reveal()
+	key, err := r.DNSSettings.AuthKey.Reveal()
 	if err != nil {
 		return nil, fmt.Errorf("sensible.yml: dns.auth_key: %w", err)
 	}
@@ -99,87 +181,126 @@ func dnsAddress(rtype, fact string) (string, bool) {
 	return addr.String(), true
 }
 
-// dnsZones caches one account's domains and their records.
+// dnsZones caches an account's domains, with its access to each, and their
+// records.
 type dnsZones struct {
 	client  dnsClient
-	domains []string
+	domains map[string]api.AccessLevel
 	records map[string][]api.ExistingRecord
 }
 
-// dnsChange is a planned change to one name and type.
+var (
+	errNoDomain = errors.New("no domain on this account contains it")
+	errReadOnly = errors.New("this account can't change its domain")
+)
+
+// dnsChange is a planned change to one name's records.
 type dnsChange struct {
 	client dnsClient
 	domain string
 	fqdn   string
-	rtype  string
-	before []string
-	after  []string
+	diffs  []dnsDiff
 	ops    []api.RecordOperation
 }
 
-// plan makes the records for fqdn and rtype exactly values, leaving TTLs
-// alone.
-func (z *dnsZones) plan(ctx context.Context, fqdn, rtype string, values []string) (*dnsChange, error) {
+// dnsDiff is a change to the records of one type.
+type dnsDiff struct {
+	rtype  string
+	before []string
+	after  []string
+}
+
+// plan makes fqdn's records of each type in types exactly its values,
+// leaving TTLs alone. It also returns how many types with values need no
+// change.
+func (z *dnsZones) plan(ctx context.Context, fqdn string, types map[string][]string) (*dnsChange, int, error) {
 	if z.domains == nil {
 		domains, err := z.client.Domains(ctx)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
-		z.domains = make([]string, 0, len(domains))
-		for d := range domains {
-			z.domains = append(z.domains, d)
+		z.domains = map[string]api.AccessLevel{}
+		for d, level := range domains {
+			z.domains[normaliseDomain(d)] = level
 		}
 	}
-	domain := findDomain(z.domains, fqdn)
+	// The most specific domain is the zone the name is served from, even if
+	// the account can't change it.
+	domain := findDomain(slices.Collect(maps.Keys(z.domains)), fqdn)
 	if domain == "" {
-		return nil, fmt.Errorf("no domain on this account contains %s", fqdn)
+		return nil, 0, errNoDomain
+	}
+	if level := z.domains[domain]; level != api.LevelOwner && level != api.LevelAdmin && level != api.LevelWrite {
+		return nil, 0, fmt.Errorf("%w %s", errReadOnly, domain)
 	}
 	name, err := relativeName(fqdn, domain)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	records, ok := z.records[domain]
 	if !ok {
 		res, err := z.client.Records(ctx, domain)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		records = res.Records
 		z.records[domain] = records
 	}
-	var existing []api.ExistingRecord
-	for _, rec := range records {
-		if n, err := relativeName(rec.Name, domain); err == nil && n == name && strings.EqualFold(rec.Type, rtype) {
-			existing = append(existing, rec)
-		}
-	}
 
-	p := planRecords(rtype, existing, values, nil, true)
-	if p.empty() {
-		return nil, nil
+	c := &dnsChange{client: z.client, domain: domain, fqdn: normaliseDomain(fqdn)}
+	var removes, adds []api.RecordOperation
+	unchanged := 0
+	for _, rtype := range slices.Sorted(maps.Keys(types)) {
+		var existing []api.ExistingRecord
+		for _, rec := range records {
+			if n, err := relativeName(rec.Name, domain); err == nil && n == name && strings.EqualFold(rec.Type, rtype) {
+				existing = append(existing, rec)
+			}
+		}
+		p := planRecords(rtype, existing, types[rtype], nil, true)
+		if p.empty() {
+			if len(types[rtype]) > 0 {
+				unchanged++
+			}
+			continue
+		}
+		c.diffs = append(c.diffs, dnsDiff{rtype: rtype, before: contents(existing), after: p.predict(existing)})
+		// Removals go first, so a CNAME can replace other records.
+		ops := p.operations(name, rtype, nil)
+		removes = append(removes, ops[:len(p.remove)]...)
+		adds = append(adds, ops[len(p.remove):]...)
 	}
-	return &dnsChange{
-		client: z.client,
-		domain: domain,
-		fqdn:   normaliseDomain(fqdn),
-		rtype:  rtype,
-		before: contents(existing),
-		after:  p.predict(existing),
-		ops:    p.operations(name, rtype, nil),
-	}, nil
+	if len(c.diffs) == 0 {
+		return nil, unchanged, nil
+	}
+	c.ops = append(removes, adds...)
+	return c, unchanged, nil
 }
 
-func (c *dnsChange) String() string {
-	before, after := strings.Join(c.before, ", "), strings.Join(c.after, ", ")
-	switch {
-	case before == "":
-		return fmt.Sprintf("+ %s %s  %s", c.rtype, c.fqdn, after)
-	case after == "":
-		return fmt.Sprintf("- %s %s  %s", c.rtype, c.fqdn, before)
-	default:
-		return fmt.Sprintf("~ %s %s  %s → %s", c.rtype, c.fqdn, before, after)
+func (c *dnsChange) lines() []string {
+	lines := make([]string, len(c.diffs))
+	for i, d := range c.diffs {
+		before, after := strings.Join(d.before, ", "), strings.Join(d.after, ", ")
+		switch {
+		case before == "":
+			lines[i] = fmt.Sprintf("+ %s %s  %s", d.rtype, c.fqdn, after)
+		case after == "":
+			lines[i] = fmt.Sprintf("- %s %s  %s", d.rtype, c.fqdn, before)
+		default:
+			lines[i] = fmt.Sprintf("~ %s %s  %s → %s", d.rtype, c.fqdn, before, after)
+		}
 	}
+	return lines
+}
+
+// types names the record types the change touches, e.g. "A, AAAA".
+func (c *dnsChange) types() string {
+	types := make([]string, len(c.diffs))
+	for i, d := range c.diffs {
+		types[i] = d.rtype
+	}
+	return strings.Join(types, ", ")
 }
 
 func (c *dnsChange) apply(ctx context.Context) error {
@@ -256,6 +377,10 @@ func (p recordPlan) operations(name, rtype string, ttl *int) []api.RecordOperati
 	for _, rec := range p.update {
 		ops = append(ops, api.ModifyRecord(rec.Id, api.Record{TTL: *ttl}))
 	}
+	if name == "" {
+		// An empty name would be left out, and the API reads "@" as the apex.
+		name = "@"
+	}
 	for _, v := range p.add {
 		rec := api.Record{Name: name, Type: rtype, Content: v}
 		if ttl != nil {
@@ -290,10 +415,14 @@ func contents(records []api.ExistingRecord) []string {
 
 func normaliseContent(rtype, content string) string {
 	content = strings.TrimSpace(content)
-	if rtype == "A" || rtype == "AAAA" {
+	switch strings.ToUpper(rtype) {
+	case "A", "AAAA":
 		if addr, err := netip.ParseAddr(content); err == nil {
 			return addr.String()
 		}
+	case "CNAME", "RRCLONE":
+		return strings.TrimSuffix(strings.ToLower(strings.Join(strings.Fields(content), " ")), ".")
+	default:
 	}
 	return content
 }

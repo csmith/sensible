@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/goccy/go-yaml/ast"
+	"github.com/goccy/go-yaml/parser"
 
 	"chameth.com/sensible/internal/host"
 )
@@ -26,14 +29,7 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 		return Config{}, fmt.Errorf("invalid OS family %q", osFamily)
 	}
 
-	// Children of a host's roles come in without parameters.
-	roles := maps.Clone(r.inventory.Hosts[name].Roles)
-	for role := range r.inventory.Hosts[name].Roles {
-		for _, child := range r.roles[role] {
-			roles[child] = RoleParams{}
-		}
-	}
-
+	roles := r.hostRoles(name)
 	var merged ast.Node
 	var stacks []Stack
 	set := map[string]setBy{}
@@ -78,6 +74,18 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 		}
 	}
 	return c, nil
+}
+
+// hostRoles are the host's roles and the children of those roles, which come
+// in without parameters.
+func (r *Repo) hostRoles(name string) map[string]RoleParams {
+	roles := maps.Clone(r.inventory.Hosts[name].Roles)
+	for role := range r.inventory.Hosts[name].Roles {
+		for _, child := range r.roles[role] {
+			roles[child] = RoleParams{}
+		}
+	}
+	return roles
 }
 
 // RoleParams are the parameters a host sets for one of its roles.
@@ -140,10 +148,11 @@ func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (ast.N
 		}
 		// Before the host's parameters are merged in, so a !volume always
 		// resolves against the role that wrote it.
-		if err := r.resolveVolumes(role, body); err != nil {
+		volumePath := func(tag *ast.TagNode) (string, error) { return r.volumePath(role, tag) }
+		if err := resolveTags(body, volumeTag, volumePath); err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", r.path(file), err)
 		}
-		if err := r.resolveVolumes(role, p); err != nil {
+		if err := resolveTags(p, volumeTag, volumePath); err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", r.path(file), err)
 		}
 		declared = merge(declared, p)
@@ -163,6 +172,10 @@ func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (ast.N
 		}
 		// Each file is checked alone first, so errors name the file at fault.
 		if err := decode(r.keys.context(), merge(nil, node), &Config{}); err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", r.path(l.file), err)
+		}
+		// After substitution, as a host's parameters may hold a !vhost.
+		if err := resolveTags(node, vhostTag, vhostText); err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", r.path(l.file), err)
 		}
 		merged = merge(merged, node)
@@ -276,33 +289,35 @@ func substitute(node ast.Node, values map[string]ast.Node) (ast.Node, error) {
 	return node, nil
 }
 
-// resolveVolumes replaces each !volume in node with its path. It modifies
-// node, whose root mustn't be a !volume.
-func (r *Repo) resolveVolumes(role string, node ast.Node) error {
-	resolve := func(n ast.Node) (ast.Node, error) {
-		tag, ok := n.(*ast.TagNode)
-		if !ok || tag.Start.Value != volumeTag {
-			return n, r.resolveVolumes(role, n)
+// resolveTags replaces each of node's tags named tag with the string
+// resolve gives for it. It modifies node, whose root mustn't be such a tag.
+func resolveTags(node ast.Node, tag string, resolve func(*ast.TagNode) (string, error)) error {
+	replace := func(n ast.Node) (ast.Node, error) {
+		t, ok := n.(*ast.TagNode)
+		if !ok || t.Start.Value != tag {
+			return n, resolveTags(n, tag, resolve)
 		}
-		path, err := r.volumePath(role, tag)
+		s, err := resolve(t)
 		if err != nil {
 			return nil, err
 		}
-		return flowNode(path)
+		return flowNode(s)
 	}
 	var err error
 	switch n := node.(type) {
 	case *ast.TagNode:
-		n.Value, err = resolve(n.Value)
+		n.Value, err = replace(n.Value)
+	case *ast.AnchorNode:
+		n.Value, err = replace(n.Value)
 	case *ast.MappingNode:
 		for _, mv := range n.Values {
-			if mv.Value, err = resolve(mv.Value); err != nil {
+			if mv.Value, err = replace(mv.Value); err != nil {
 				return err
 			}
 		}
 	case *ast.SequenceNode:
 		for i, item := range n.Values {
-			if n.Values[i], err = resolve(item); err != nil {
+			if n.Values[i], err = replace(item); err != nil {
 				return err
 			}
 		}
@@ -369,4 +384,220 @@ func conflicts(source string, node ast.Node, path []string, set map[string]setBy
 
 func joinPath(elem ...string) string {
 	return strings.Join(slices.DeleteFunc(elem, func(e string) bool { return e == "" }), ".")
+}
+
+// readRoleVhosts records the vhosts named in the role's files and the
+// parameters it declares. A !vhost in a parameter's default only counts for
+// hosts that don't set the parameter, so those are left to mapVhosts. Files
+// that don't parse are skipped, as HostConfig reports them with the host
+// and role.
+func (r *Repo) readRoleVhosts(role string, entries []os.DirEntry) error {
+	var base ast.Node
+	var variants []ast.Node
+	var vhosts []string
+	for _, e := range entries {
+		file := filepath.Join("roles", role, e.Name())
+		nodes, p, err := r.vhostSources(file, e.Name())
+		if err != nil {
+			return err
+		}
+		for _, tag := range findTags(p, vhostTag) {
+			if _, err := vhostNames(tag); err != nil {
+				return fmt.Errorf("%s: %w", r.path(file), err)
+			}
+		}
+		if e.Name() == "role.yml" {
+			base = p
+		} else if p != nil {
+			variants = append(variants, p)
+		}
+		for _, node := range nodes {
+			for _, tag := range findTags(node, vhostTag) {
+				names, err := vhostNames(tag)
+				if err != nil {
+					return fmt.Errorf("%s: %w", r.path(file), err)
+				}
+				vhosts = append(vhosts, names...)
+			}
+		}
+	}
+	if len(vhosts) > 0 {
+		r.roleVhosts[role] = vhosts
+	}
+	// As any variant may apply, like the vhosts outside params.
+	r.params[role] = []ast.Node{merge(nil, base)}
+	for _, v := range variants {
+		r.params[role] = append(r.params[role], merge(base, v))
+	}
+	return nil
+}
+
+// vhostSources returns the parts of a role's file that may hold a !vhost:
+// the file outside its parameters, and its parameters.
+func (r *Repo) vhostSources(file, name string) ([]ast.Node, ast.Node, error) {
+	switch {
+	case name == "role.yml" || isVariantFile(name):
+		node, err := r.readLayer(file, false)
+		if err != nil || node == nil {
+			return nil, nil, nil
+		}
+		body, params, err := splitParams(node, name == "role.yml")
+		if err != nil {
+			return nil, nil, nil
+		}
+		return []ast.Node{body}, params, nil
+	case name == host.ComposeFile:
+		src, err := os.ReadFile(r.path(file))
+		if err != nil {
+			return nil, nil, err
+		}
+		f, err := parser.ParseBytes(src, 0)
+		if err != nil {
+			return nil, nil, nil
+		}
+		var nodes []ast.Node
+		for _, doc := range f.Docs {
+			nodes = append(nodes, doc.Body)
+		}
+		return nodes, nil, nil
+	default:
+		return nil, nil, nil
+	}
+}
+
+// mapVhosts works out which hosts serve each vhost. A vhost can't also be
+// a host's dns_name, as both would set its address records. Parameters
+// that don't resolve are left for HostConfig to report.
+func (r *Repo) mapVhosts() error {
+	r.vhosts = map[string][]string{}
+	dnsNames := map[string]string{}
+	for name, e := range r.inventory.Hosts {
+		if e.DNSName != "" {
+			dnsNames[normaliseName(e.DNSName)] = name
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(r.inventory.Hosts)) {
+		roles := r.hostRoles(name)
+		for _, role := range slices.Sorted(maps.Keys(roles)) {
+			vhosts, err := r.hostRoleVhosts(role, roles[role])
+			if err != nil {
+				return err
+			}
+			for _, vhost := range vhosts {
+				if other, ok := dnsNames[vhost]; ok {
+					return fmt.Errorf("%s: role %s: vhost %s is %s's dns_name", name, role, vhost, other)
+				}
+				if !slices.Contains(r.vhosts[vhost], name) {
+					r.vhosts[vhost] = append(r.vhosts[vhost], name)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// hostRoleVhosts are the vhosts a role serves on a host that sets params
+// for it.
+func (r *Repo) hostRoleVhosts(role string, params RoleParams) ([]string, error) {
+	vhosts := slices.Clone(r.roleVhosts[role])
+	for _, declared := range r.params[role] {
+		values, _ := resolveParams(declared, params)
+		for _, v := range values {
+			for _, tag := range findTags(v, vhostTag) {
+				names, err := vhostNames(tag)
+				if err != nil {
+					return nil, err
+				}
+				vhosts = append(vhosts, names...)
+			}
+		}
+	}
+	return vhosts, nil
+}
+
+// checkHostVhosts allows a !vhost in a hosts.d file only within a role's
+// parameters.
+func checkHostVhosts(node ast.Node) error {
+	allowed := map[*ast.TagNode]bool{}
+	for _, entry := range mappingValues(node) {
+		for _, setting := range mappingValues(entry.Value) {
+			if keyString(setting.Key) != "roles" {
+				continue
+			}
+			for _, role := range mappingValues(setting.Value) {
+				for _, tag := range findTags(role.Value, vhostTag) {
+					if _, err := vhostNames(tag); err != nil {
+						return err
+					}
+					allowed[tag] = true
+				}
+			}
+		}
+	}
+	for _, tag := range findTags(node, vhostTag) {
+		if !allowed[tag] {
+			return nodeError(tag, "!vhost only works in roles and role parameters")
+		}
+	}
+	return nil
+}
+
+// mappingValues returns the values of a mapping, looking through !replace
+// tags and anchors.
+func mappingValues(node ast.Node) []*ast.MappingValueNode {
+	for {
+		switch n := node.(type) {
+		case *ast.TagNode:
+			if n.Start.Value != replaceTag {
+				return nil
+			}
+			node = n.Value
+		case *ast.AnchorNode:
+			node = n.Value
+		case *ast.MappingNode:
+			return n.Values
+		default:
+			return nil
+		}
+	}
+}
+
+var domainLabel = regexp.MustCompile(`^[a-z0-9_]([a-z0-9_-]*[a-z0-9])?$`)
+
+// vhostNames are the domain names in a !vhost, separated by commas or
+// spaces, in lower case without a trailing dot.
+func vhostNames(tag *ast.TagNode) ([]string, error) {
+	text, err := vhostText(tag)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for part := range strings.SplitSeq(text, ",") {
+		fields := strings.Fields(part)
+		if len(fields) == 0 {
+			return nil, nodeError(tag, fmt.Sprintf("%q has an empty domain name", text))
+		}
+		for _, field := range fields {
+			name := normaliseName(field)
+			labels := strings.Split(name, ".")
+			if len(labels) < 2 || slices.ContainsFunc(labels, func(l string) bool { return !domainLabel.MatchString(l) }) {
+				return nil, nodeError(tag, fmt.Sprintf("%q isn't a domain name", field))
+			}
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
+// vhostText is what a !vhost is replaced with: its value as written.
+func vhostText(tag *ast.TagNode) (string, error) {
+	v, ok := tag.Value.(*ast.StringNode)
+	if !ok {
+		return "", nodeError(tag, "!vhost needs a domain name")
+	}
+	return v.Value, nil
+}
+
+func normaliseName(name string) string {
+	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
 }

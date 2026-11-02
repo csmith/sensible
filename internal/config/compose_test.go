@@ -247,3 +247,140 @@ func TestHostConfig_undeclaredVolumeInRoleFile(t *testing.T) {
 	require.ErrorContains(t, err, `volume "db" isn't in role web's compose.volumes`)
 	assert.ErrorContains(t, err, "role.arch.yml")
 }
+
+func TestVhosts(t *testing.T) {
+	r := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml": `
+alpha:
+  roles: {web: , group: }
+beta:
+  roles: {web: {name: other.example.com}}
+gamma:
+  roles: {web: {name: !vhost gamma.example.com www.gamma.example.com}}
+`,
+			"roles/web/role.yml": `
+params:
+  name: !vhost default.example.com
+ntp:
+  servers: [!param name, !vhost Shared.Example.com.]
+`,
+			"roles/web/docker-compose.yml":  "services:\n  a:\n    labels:\n      vhost: !vhost a.example.com,b.example.com\n",
+			"roles/group/role.yml":          "children: [one]\n",
+			"roles/group/one/role.arch.yml": "ntp:\n  servers: [!vhost arch.example.com]\n",
+			"roles/group/one/role.yml":      "",
+		},
+	).open(t)
+
+	assert.Equal(
+		t,
+		map[string][]string{
+			"a.example.com":         {"alpha", "beta", "gamma"},
+			"b.example.com":         {"alpha", "beta", "gamma"},
+			"shared.example.com":    {"alpha", "beta", "gamma"},
+			"default.example.com":   {"alpha"},
+			"gamma.example.com":     {"gamma"},
+			"www.gamma.example.com": {"gamma"},
+			"arch.example.com":      {"alpha"},
+		},
+		r.Vhosts(),
+	)
+
+	c, err := r.HostConfig("gamma", "debian")
+	require.NoError(t, err)
+	assert.Equal(t, Set{"gamma.example.com www.gamma.example.com", "Shared.Example.com."}, c.NTP.Servers)
+	assert.Equal(
+		t,
+		"services:\n  a:\n    labels:\n      vhost: \"a.example.com,b.example.com\"\n",
+		c.Stacks[0].Files[0].Content,
+	)
+}
+
+func TestVhosts_errors(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{
+			"outside role parameters",
+			map[string]string{"hosts.d/hosts.yml": "alpha:\n  address: !vhost a.example.com\n  roles: {web: }\n"},
+			"!vhost only works in roles and role parameters",
+		},
+		{
+			"invalid name in a host",
+			map[string]string{"hosts.d/hosts.yml": "alpha:\n  roles: {web: {name: !vhost 'a.example.com, bad!name'}}\n"},
+			`"bad!name" isn't a domain name`,
+		},
+		{
+			"empty name",
+			map[string]string{
+				"roles/web/docker-compose.yml": "services:\n  a:\n    labels: {v: !vhost 'a.example.com,,b.example.com'}\n",
+			},
+			`"a.example.com,,b.example.com" has an empty domain name`,
+		},
+		{
+			"invalid name in a role",
+			map[string]string{"roles/web/docker-compose.yml": "services:\n  a:\n    labels: {v: !vhost localhost}\n"},
+			`"localhost" isn't a domain name`,
+		},
+		{
+			"not a string",
+			map[string]string{"roles/web/docker-compose.yml": "services:\n  a:\n    labels: {v: !vhost [a.example.com]}\n"},
+			"!vhost needs a domain name",
+		},
+		{
+			"a host's dns_name",
+			map[string]string{
+				"hosts.d/hosts.yml":            "alpha:\n  roles: {web: }\nbeta:\n  dns_name: Beta.example.com\n",
+				"roles/web/docker-compose.yml": "services:\n  a:\n    labels: {v: !vhost beta.example.com}\n",
+			},
+			"alpha: role web: vhost beta.example.com is beta's dns_name",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				files := map[string]string{
+					"hosts.d/hosts.yml":            "alpha:\n  roles: {web: }\n",
+					"roles/web/role.yml":           "params:\n  name: ~\n",
+					"roles/web/docker-compose.yml": "services: {}\n",
+				}
+				maps.Copy(files, tt.files)
+				_, err := newTestRepo(t, files).tryOpen()
+				assert.ErrorContains(t, err, tt.want)
+			},
+		)
+	}
+}
+
+func TestVhosts_variantParamsMergeOverRoleYML(t *testing.T) {
+	r := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml":         "alpha:\n  roles: {web: }\n",
+			"roles/web/role.yml":        "params:\n  name: !vhost base.example.com\nntp:\n  servers: [!param name]\n",
+			"roles/web/role.debian.yml": "params:\n  name: !vhost deb.example.com\n",
+		},
+	).open(t)
+
+	// Either may apply, depending on the host's OS.
+	assert.Equal(t, map[string][]string{"base.example.com": {"alpha"}, "deb.example.com": {"alpha"}}, r.Vhosts())
+	c, err := r.HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	assert.Equal(t, Set{"deb.example.com"}, c.NTP.Servers)
+}
+
+func TestVhosts_anchoredHostEntry(t *testing.T) {
+	r := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml":  "alpha: &a\n  roles: &r\n    web: {name: !vhost x.example.com}\n",
+			"roles/web/role.yml": "params:\n  name: ~\n",
+		},
+	).open(t)
+
+	assert.Equal(t, map[string][]string{"x.example.com": {"alpha"}}, r.Vhosts())
+}

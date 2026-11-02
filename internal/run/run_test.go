@@ -528,7 +528,7 @@ func TestExecute_dnsIsPlannedFromFactsAndAppliedAfterHosts(t *testing.T) {
 	require.NoError(t, err)
 
 	f := newRunnerFixture(t, testResources)
-	f.runner.DNSCredentials = repo.DNS()
+	f.runner.DNSSettings = repo.DNS()
 	client := &fakeDNS{
 		domains: []string{"example.com"},
 		records: []api.ExistingRecord{

@@ -270,10 +270,20 @@ func (c *ResticConfig) reveal() error {
 	return nil
 }
 
-// DNSCredentials are the DNS provider's API credentials.
-type DNSCredentials struct {
+// DNSSettings are the DNS provider's API credentials and the records each
+// vhost gets.
+type DNSSettings struct {
 	AuthUser Secret `yaml:"auth_user"`
 	AuthKey  Secret `yaml:"auth_key"`
+	// Vhosts are the records a vhost gets for each host serving it, with
+	// "{host}" in their content replaced by the host's dns_name. Empty leaves
+	// vhosts' DNS alone.
+	Vhosts []VhostRecord `yaml:"vhosts"`
+}
+
+type VhostRecord struct {
+	Type    string `yaml:"type"`
+	Content string `yaml:"content"`
 }
 
 // Repo is a configuration directory.
@@ -283,7 +293,7 @@ type Repo struct {
 	sources         map[string]setBy
 	recipients      []age.Recipient
 	identityCommand []string
-	dns             DNSCredentials
+	dns             DNSSettings
 	keys            *keyring
 	// roles maps every role, including child roles, to its children.
 	roles map[string][]string
@@ -291,6 +301,13 @@ type Repo struct {
 	stacks map[string]*stackDef
 	// volumes are the compose.volumes of the roles that declare any.
 	volumes map[string]map[string]Perms
+	// roleVhosts are the vhosts written in each role, outside its params.
+	roleVhosts map[string][]string
+	// params are each role's declared parameters: role.yml's, then those
+	// with each OS variant's merged over them.
+	params map[string][]ast.Node
+	// vhosts maps each vhost to the hosts serving it.
+	vhosts map[string][]string
 }
 
 // Open reads hosts.d and sensible.yml from dir and checks the directory's
@@ -328,9 +345,14 @@ func (r *Repo) Inventory() Inventory {
 	return r.inventory
 }
 
-// DNS is the DNS provider credentials from sensible.yml.
-func (r *Repo) DNS() DNSCredentials {
+// DNS is the DNS settings from sensible.yml.
+func (r *Repo) DNS() DNSSettings {
 	return r.dns
+}
+
+// Vhosts maps each vhost, as written with !vhost, to the hosts serving it.
+func (r *Repo) Vhosts() map[string][]string {
+	return r.vhosts
 }
 
 // WriteCredentials encrypts the host's credentials into its state file.
@@ -413,6 +435,9 @@ func (r *Repo) readHosts() error {
 		}
 		if tag := findTag(node, volumeTag); tag != nil {
 			return fmt.Errorf("%s: %w", r.path(file), nodeError(tag, "!volume only works in roles, which own volumes"))
+		}
+		if err := checkHostVhosts(node); err != nil {
+			return fmt.Errorf("%s: %w", r.path(file), err)
 		}
 		if err := decode(r.keys.context(), node, &map[string]HostEntry{}); err != nil {
 			return fmt.Errorf("%s: %w", r.path(file), err)
@@ -527,6 +552,8 @@ func (r *Repo) checkLayout() error {
 	r.roles = map[string][]string{}
 	r.stacks = map[string]*stackDef{}
 	r.volumes = map[string]map[string]Perms{}
+	r.roleVhosts = map[string][]string{}
+	r.params = map[string][]ast.Node{}
 	entries, err := readDir(r.path("roles"))
 	if err != nil {
 		return err
@@ -557,7 +584,7 @@ func (r *Repo) checkLayout() error {
 			}
 		}
 	}
-	return nil
+	return r.mapVhosts()
 }
 
 // checkRole records the role, its child roles and its stack. Only
@@ -628,6 +655,9 @@ func (r *Repo) checkRole(role string, topLevel bool) error {
 	if !hasBase && (hasVariant || !isStack) {
 		return fmt.Errorf("%s: missing role.yml", dir)
 	}
+	if err := r.readRoleVhosts(role, entries); err != nil {
+		return err
+	}
 	slices.Sort(children)
 	r.roles[role] = children
 	return nil
@@ -686,6 +716,32 @@ func (r *Repo) readLayer(file string, optional bool) (ast.Node, error) {
 		return nil, err
 	}
 	return parseLayer(r.path(file), b)
+}
+
+// findTags returns every tag in node, in order, looking through anchors.
+func findTags(node ast.Node, tag string) []*ast.TagNode {
+	var found []*ast.TagNode
+	switch n := node.(type) {
+	case *ast.TagNode:
+		if n.Start.Value == tag {
+			return []*ast.TagNode{n}
+		}
+		return findTags(n.Value, tag)
+	case *ast.AnchorNode:
+		return findTags(n.Value, tag)
+	case *ast.MappingNode:
+		for _, mv := range n.Values {
+			found = append(found, findTags(mv.Value, tag)...)
+		}
+	case *ast.MappingValueNode:
+		return findTags(n.Value, tag)
+	case *ast.SequenceNode:
+		for _, item := range n.Values {
+			found = append(found, findTags(item, tag)...)
+		}
+	default:
+	}
+	return found
 }
 
 func findTag(node ast.Node, tag string) ast.Node {

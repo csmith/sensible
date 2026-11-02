@@ -32,6 +32,7 @@ const (
 
 const (
 	volumeTag = "!volume"
+	vhostTag  = "!vhost"
 	ageSuffix = ".age"
 )
 
@@ -389,7 +390,7 @@ func (c *composeRenderer) replace(node ast.Node) (ast.Node, bool, error) {
 		switch n.Start.Value {
 		case paramTag:
 			return c.param(n)
-		case ageTag, volumeTag:
+		case ageTag, volumeTag, vhostTag:
 			s, err := c.scalar(n)
 			if err != nil {
 				return nil, false, err
@@ -464,7 +465,7 @@ func (c *composeRenderer) param(tag *ast.TagNode) (ast.Node, bool, error) {
 func (c *composeRenderer) value(node ast.Node) (any, error) {
 	switch n := node.(type) {
 	case *ast.TagNode:
-		if n.Start.Value == ageTag || n.Start.Value == volumeTag {
+		if n.Start.Value == ageTag || n.Start.Value == volumeTag || n.Start.Value == vhostTag {
 			return c.scalar(n)
 		}
 		return c.value(n.Value)
@@ -524,10 +525,15 @@ func (r *Repo) volumePath(role string, tag *ast.TagNode) (string, error) {
 	return path, nil
 }
 
-// scalar resolves an !age or !volume tag to the string that replaces it.
+// scalar resolves an !age, !volume or !vhost tag to the string that
+// replaces it.
 func (c *composeRenderer) scalar(tag *ast.TagNode) (string, error) {
-	if tag.Start.Value == volumeTag {
+	switch tag.Start.Value {
+	case volumeTag:
 		return c.repo.volumePath(c.def.role, tag)
+	case vhostTag:
+		return vhostText(tag)
+	default:
 	}
 
 	var s Secret

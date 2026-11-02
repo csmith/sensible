@@ -916,3 +916,16 @@ func TestHostConfig_resticErrors(t *testing.T) {
 		)
 	}
 }
+
+func TestDNSVhostRecords(t *testing.T) {
+	tr := newTestRepo(
+		t,
+		map[string]string{"sensible.yml": "dns:\n  vhosts:\n    - {type: rrclone, content: '(A,AAAA) {host}'}\n"},
+	)
+
+	assert.Equal(t, []VhostRecord{{Type: "RRCLONE", Content: "(A,AAAA) {host}"}}, tr.open(t).DNS().Vhosts)
+
+	writeFile(t, tr.dir, "sensible.yml", "dns:\n  vhosts:\n    - {type: CNAME}\n")
+	_, err := tr.tryOpen()
+	assert.ErrorContains(t, err, "dns.vhosts[0]: needs a type and content")
+}

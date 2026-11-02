@@ -68,8 +68,10 @@ func Run(ctx context.Context, opts Options) error {
 				},
 			)
 		},
-		DNS:            newDNSClient,
-		DNSCredentials: repo.DNS(),
+		DNS:         newDNSClient,
+		DNSSettings: repo.DNS(),
+		Vhosts:      repo.Vhosts(),
+		DNSNames:    dnsNames(repo.Inventory()),
 	}
 	return r.Execute(ctx, targets, opts.Apply, opts.Yes)
 }
@@ -185,6 +187,16 @@ func newTarget(repo *config.Repo, name, addr string, builds Builds) target {
 	return t
 }
 
+func dnsNames(inv config.Inventory) map[string]string {
+	names := map[string]string{}
+	for name, e := range inv.Hosts {
+		if e.DNSName != "" {
+			names[name] = e.DNSName
+		}
+	}
+	return names
+}
+
 func revealCredentials(creds config.HostEntry) (ssh.Signer, string, error) {
 	key, err := creds.SSHKey.Reveal()
 	if err != nil {
@@ -213,12 +225,16 @@ func isLocal(name string) bool {
 // Runner plans and applies a set of targets. Its fields are the parts that
 // vary between real runs and tests.
 type Runner struct {
-	Out            io.Writer
-	Confirm        func(prompt string) (bool, error)
-	Builds         Builds
-	Compile        func(t target, facts host.Facts) (host.ResourceList, error)
-	DNS            func(user, key string) dnsClient
-	DNSCredentials config.DNSCredentials
+	Out         io.Writer
+	Confirm     func(prompt string) (bool, error)
+	Builds      Builds
+	Compile     func(t target, facts host.Facts) (host.ResourceList, error)
+	DNS         func(user, key string) dnsClient
+	DNSSettings config.DNSSettings
+	// Vhosts maps each vhost to the hosts serving it, and DNSNames each
+	// host to its dns_name, for all hosts, not just those in the run.
+	Vhosts   map[string][]string
+	DNSNames map[string]string
 }
 
 // hostRun is one target's progress through a run.
@@ -254,9 +270,9 @@ func (r *Runner) Execute(ctx context.Context, targets []target, apply, yes bool)
 	r.checkAll(runs)
 	out.plan(runs)
 	var dns dnsPlan
-	if slices.ContainsFunc(runs, func(h *hostRun) bool { return h.agent != nil && h.dnsName != "" }) {
+	if names, warnings := r.managedNames(runs); len(names) > 0 || len(warnings) > 0 {
 		t := out.beginSection("Resolving DNS changes")
-		dns = r.planDNS(ctx, runs)
+		dns = r.planDNS(ctx, names, warnings)
 		out.finish(t, out.dnsLines(dns)...)
 	}
 
@@ -429,7 +445,9 @@ func summarise(runs []*hostRun, dns []*dnsChange) summary {
 	}
 	if len(dns) > 0 {
 		s.targets++
-		s.changes += len(dns)
+		for _, c := range dns {
+			s.changes += len(c.diffs)
+		}
 	}
 	return s
 }

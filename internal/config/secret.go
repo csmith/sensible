@@ -234,7 +234,7 @@ func (r *Repo) readSettings() error {
 			// IdentityCommand prints the age identity, e.g. [op, read, op://...].
 			IdentityCommand []string `yaml:"identity_command"`
 		} `yaml:"secrets"`
-		DNS DNSCredentials `yaml:"dns"`
+		DNS DNSSettings `yaml:"dns"`
 	}
 
 	file := r.path("sensible.yml")
@@ -253,6 +253,12 @@ func (r *Repo) readSettings() error {
 		}
 	}
 	r.identityCommand = s.Secrets.IdentityCommand
+	for i, rec := range s.DNS.Vhosts {
+		if rec.Type == "" || rec.Content == "" {
+			return fmt.Errorf("%s: dns.vhosts[%d]: needs a type and content", file, i)
+		}
+		s.DNS.Vhosts[i].Type = strings.ToUpper(rec.Type)
+	}
 	r.dns = s.DNS
 	return nil
 }
