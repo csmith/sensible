@@ -1,0 +1,16 @@
+params:
+  db_user: web
+partials:
+  - partial: postgres
+    service: db
+    image: postgres:17.6
+    user: !param db_user
+    password: SECRET
+  - {partial: tailscale-proxy, service: app-thp, volume: app-tailscale, hostname: app, upstream: "http://app:8080"}
+  - {partial: tailscale-proxy, upstream: "http://app:9090"}
+compose:
+  volumes:
+    data: {owner: 1000}
+backups:
+  web-data:
+    path: !volume data

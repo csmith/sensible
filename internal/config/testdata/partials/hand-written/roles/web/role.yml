@@ -1,0 +1,17 @@
+params:
+  db_user: web
+compose:
+  volumes:
+    data: {owner: 1000}
+    database: {owner: 999, group: 999, mode: 0700}
+    app-tailscale: {owner: 65532, group: 65532, mode: 0755}
+    tailscale: {owner: 65532, group: 65532, mode: 0755}
+backups:
+  web-data:
+    path: !volume data
+  web-postgres:
+    command: [docker, compose, -p, web, exec, -T, db, pg_dumpall, --clean, -U, alice]
+  web-app-tailscale:
+    path: !volume app-tailscale
+  web-tailscale:
+    path: !volume tailscale

@@ -34,12 +34,13 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 	var stacks []Stack
 	set := map[string]setBy{}
 	for _, role := range slices.Sorted(maps.Keys(roles)) {
-		node, params, err := r.expandRole(name, role, osFamily, roles[role])
+		e, err := r.expandRole(name, role, osFamily, roles[role])
 		if err != nil {
 			return Config{}, fmt.Errorf("%s: role %s: %w", name, role, err)
 		}
+		node := e.node
 		if _, ok := r.stacks[role]; ok {
-			s, err := r.renderStack(role, params)
+			s, err := r.renderStack(role, e)
 			if err != nil {
 				return Config{}, fmt.Errorf("%s: role %s: %w", name, role, err)
 			}
@@ -113,9 +114,17 @@ func (p RoleParams) String() string {
 	return p.node.String()
 }
 
-// expandRole returns the role's settings for the host, and the values of its
-// parameters.
-func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (ast.Node, map[string]ast.Node, error) {
+// expansion is a role as it applies to a host.
+type expansion struct {
+	// node is the role's settings, merged over its partials'.
+	node ast.Node
+	// params are the values of the role's parameters.
+	params map[string]ast.Node
+	// partials are the values of each of the role's partials' placeholders.
+	partials []map[string]ast.Node
+}
+
+func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (expansion, error) {
 	files := []string{filepath.Join("roles", role, "role.yml")}
 	if osFamily != "" {
 		files = append(files, filepath.Join("roles", role, "role."+osFamily+".yml"))
@@ -123,6 +132,7 @@ func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (ast.N
 
 	type layer struct {
 		file string
+		base bool
 		node *ast.MappingNode
 	}
 	var layers []layer
@@ -132,55 +142,60 @@ func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (ast.N
 		// a parent that doesn't need one.
 		node, err := r.readLayer(file, true)
 		if err != nil {
-			return nil, nil, err
+			return expansion{}, err
 		}
 		if node == nil {
 			continue
 		}
-		// The base has nothing beneath it to replace, but its variant does, so
-		// only the base's !replace tags are removed here.
-		if i == 0 {
-			node = merge(nil, node)
-		}
 		body, p, err := splitParams(node, i == 0)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%s: %w", r.path(file), err)
+			return expansion{}, fmt.Errorf("%s: %w", r.path(file), err)
 		}
 		// Before the host's parameters are merged in, so a !volume always
 		// resolves against the role that wrote it.
 		volumePath := func(tag *ast.TagNode) (string, error) { return r.volumePath(role, tag) }
 		if err := resolveTags(body, volumeTag, volumePath); err != nil {
-			return nil, nil, fmt.Errorf("%s: %w", r.path(file), err)
+			return expansion{}, fmt.Errorf("%s: %w", r.path(file), err)
 		}
 		if err := resolveTags(p, volumeTag, volumePath); err != nil {
-			return nil, nil, fmt.Errorf("%s: %w", r.path(file), err)
+			return expansion{}, fmt.Errorf("%s: %w", r.path(file), err)
 		}
 		declared = merge(declared, p)
-		layers = append(layers, layer{file, body})
+		layers = append(layers, layer{file, i == 0, body})
 	}
 
 	values, perr := resolveParams(declared, params)
 	if perr != nil {
-		return nil, nil, fmt.Errorf("%s: %w", r.sources[joinPath(host, "roles", role, perr.key)].source, perr)
+		return expansion{}, fmt.Errorf("%s: %w", r.sources[joinPath(host, "roles", role, perr.key)].source, perr)
 	}
 
-	var merged ast.Node
+	merged, partials, set, err := r.expandPartials(role, values)
+	if err != nil {
+		return expansion{}, err
+	}
 	for _, l := range layers {
 		node, err := substitute(l.node, values)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%s: %w", r.path(l.file), err)
+			return expansion{}, fmt.Errorf("%s: %w", r.path(l.file), err)
 		}
 		// Each file is checked alone first, so errors name the file at fault.
 		if err := decode(r.keys.context(), merge(nil, node), &Config{}); err != nil {
-			return nil, nil, fmt.Errorf("%s: %w", r.path(l.file), err)
+			return expansion{}, fmt.Errorf("%s: %w", r.path(l.file), err)
 		}
 		// After substitution, as a host's parameters may hold a !vhost.
 		if err := resolveTags(node, vhostTag, vhostText); err != nil {
-			return nil, nil, fmt.Errorf("%s: %w", r.path(l.file), err)
+			return expansion{}, fmt.Errorf("%s: %w", r.path(l.file), err)
+		}
+		// The role's partials are beneath role.yml, which can only replace
+		// what they set with !replace. Its variants replace freely.
+		if l.base && set != nil {
+			if err := checkConflicts(r.path(l.file), withoutReplaced(node), set); err != nil {
+				return expansion{}, fmt.Errorf("%s: %w", r.path("roles", role), err)
+			}
 		}
 		merged = merge(merged, node)
 	}
-	return merged, values, nil
+	return expansion{node: merged, params: values, partials: partials}, nil
 }
 
 // splitParams separates a role file's parameters from the settings it
@@ -421,6 +436,11 @@ func (r *Repo) readRoleVhosts(role string, entries []os.DirEntry) error {
 			}
 		}
 	}
+	fromPartials, err := r.partialVhosts(role)
+	if err != nil {
+		return err
+	}
+	vhosts = append(vhosts, fromPartials...)
 	if len(vhosts) > 0 {
 		r.roleVhosts[role] = vhosts
 	}

@@ -1,0 +1,14 @@
+# The app.
+services:
+  app:
+    image: app
+    volumes:
+      - !volume data:/data
+  db:
+    user: "70"
+    restart: !replace unless-stopped
+    tmpfs:
+      - /tmp
+  app-thp:
+    environment:
+      LOG_LEVEL: debug

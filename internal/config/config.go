@@ -307,8 +307,13 @@ type Repo struct {
 	keys            *keyring
 	// roles maps every role, including child roles, to its children.
 	roles map[string][]string
-	// stacks are the roles with a docker-compose.yml.
+	// stacks are the roles with a docker-compose.yml, or whose partials
+	// have one.
 	stacks map[string]*stackDef
+	// partials are the partials in partials/, by name.
+	partials map[string]*partialDef
+	// rolePartials are the partials each role includes, in order.
+	rolePartials map[string][]partialUse
 	// volumes are the compose.volumes of the roles that declare any.
 	volumes map[string]map[string]Perms
 	// roleVhosts are the vhosts written in each role, outside its params.
@@ -564,6 +569,10 @@ func (r *Repo) checkLayout() error {
 	r.volumes = map[string]map[string]Perms{}
 	r.roleVhosts = map[string][]string{}
 	r.params = map[string][]ast.Node{}
+	r.rolePartials = map[string][]partialUse{}
+	if err := r.readPartials(); err != nil {
+		return err
+	}
 	entries, err := readDir(r.path("roles"))
 	if err != nil {
 		return err
@@ -612,8 +621,12 @@ func (r *Repo) checkRole(role string, topLevel bool) error {
 	if len(settings.Children) > 0 && !topLevel {
 		return fmt.Errorf("%s: children: roles nest one level deep", r.path("roles", role, "role.yml"))
 	}
+	if err := r.checkPartials(role, settings.Partials); err != nil {
+		return err
+	}
 
-	isStack := slices.ContainsFunc(entries, func(e os.DirEntry) bool { return e.Name() == host.ComposeFile })
+	isStack := slices.ContainsFunc(entries, func(e os.DirEntry) bool { return e.Name() == host.ComposeFile }) ||
+		slices.ContainsFunc(r.rolePartials[role], func(u partialUse) bool { return u.def.hasCompose })
 	covered, err := r.checkCompose(role, settings, isStack)
 	if err != nil {
 		return err
@@ -676,16 +689,26 @@ func (r *Repo) checkRole(role string, topLevel bool) error {
 // checkCompose records the role's volumes and stack, returning the names of
 // the role directory's entries its stack's files cover.
 func (r *Repo) checkCompose(role string, settings roleSettings, isStack bool) (map[string]bool, error) {
+	var volumes map[string]Perms
 	if settings.Compose != nil {
-		if err := r.checkVolumes(role, settings.Compose.Volumes); err != nil {
-			return nil, err
-		}
+		volumes = settings.Compose.Volumes
+	}
+	volumes, err := r.partialVolumes(role, volumes)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.checkVolumes(role, volumes); err != nil {
+		return nil, err
 	}
 	if isStack {
 		return r.checkStack(role, settings)
 	}
 	if settings.Compose != nil && len(settings.Compose.Files) > 0 {
-		return nil, fmt.Errorf("%s: compose.files needs a %s", r.path("roles", role, "role.yml"), host.ComposeFile)
+		return nil, fmt.Errorf(
+			"%s: compose.files needs a %s, in the role or one of its partials",
+			r.path("roles", role, "role.yml"),
+			host.ComposeFile,
+		)
 	}
 	return map[string]bool{}, nil
 }

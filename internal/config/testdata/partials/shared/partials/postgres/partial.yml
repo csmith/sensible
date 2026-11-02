@@ -1,0 +1,13 @@
+params:
+  service: postgres
+  volume: database
+  image: postgres:17
+  user: ~
+  password: ~
+  data: /var/lib/postgresql/data
+compose:
+  volumes:
+    "{volume}": {owner: 999, group: 999, mode: 0700}
+backups:
+  "{stack}-postgres":
+    command: [docker, compose, -p, "{stack}", exec, -T, "{service}", pg_dumpall, --clean, -U, "{user}"]

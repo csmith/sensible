@@ -1,0 +1,12 @@
+services:
+    "{service}":
+        image: "{image}"
+        read_only: true # Comments in partials are kept.
+        restart: always
+        environment:
+            POSTGRES_USER: "{user}"
+            POSTGRES_PASSWORD: "{password}"
+        volumes:
+            - !volume "{volume}:{data}"
+        tmpfs:
+            - /var/run/postgresql/

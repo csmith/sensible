@@ -141,14 +141,15 @@ type stackDef struct {
 // roleSettings are the keys in a role's role.yml that apply to the role
 // alone, rather than being merged into its hosts' config.
 type roleSettings struct {
-	Children []string `yaml:"children"`
+	Children []string     `yaml:"children"`
+	Partials []partialRef `yaml:"partials"`
 	Compose  *struct {
 		Files   []fileEntry      `yaml:"files"`
 		Volumes map[string]Perms `yaml:"volumes"`
 	} `yaml:"compose"`
 }
 
-var roleSettingKeys = []string{"children", "compose"}
+var roleSettingKeys = []string{"children", "compose", "partials"}
 
 func (r *Repo) readRoleSettings(role string) (roleSettings, error) {
 	file := filepath.Join("roles", role, "role.yml")
@@ -314,14 +315,13 @@ func (r *Repo) hostVolumes(roles []string) []Volume {
 
 // renderStack reads a stack's files, replacing the compose file's tags and
 // decrypting .age files.
-func (r *Repo) renderStack(role string, params map[string]ast.Node) (Stack, error) {
+func (r *Repo) renderStack(role string, e expansion) (Stack, error) {
 	def := r.stacks[role]
 	s := Stack{Name: def.name, Dirs: def.dirs}
 
-	composePath := filepath.Join("roles", role, host.ComposeFile)
-	compose, err := r.renderCompose(composePath, def, params)
+	compose, err := r.renderCompose(def, e)
 	if err != nil {
-		return Stack{}, fmt.Errorf("%s: %w", r.path(composePath), err)
+		return Stack{}, err
 	}
 	s.Files = append(s.Files, compose)
 
@@ -348,31 +348,81 @@ func (r *Repo) renderStack(role string, params map[string]ast.Node) (Stack, erro
 	return s, nil
 }
 
-// renderCompose replaces the tags in a compose file, leaving the rest of it,
-// including comments, as written.
-func (r *Repo) renderCompose(file string, def *stackDef, params map[string]ast.Node) (StackFile, error) {
-	src, err := os.ReadFile(r.path(file))
+// renderCompose merges the role's compose file over its partials' and
+// replaces their tags, leaving the rest of them, including comments, as
+// written.
+func (r *Repo) renderCompose(def *stackDef, e expansion) (StackFile, error) {
+	c := &composeRenderer{repo: r, def: def, params: e.params}
+	f, set, err := c.partialsCompose(e.partials)
 	if err != nil {
 		return StackFile{}, err
 	}
-	f, err := parser.ParseBytes(src, parser.ParseComments)
-	if err != nil {
-		return StackFile{}, err
+	file := filepath.Join("roles", def.role, host.ComposeFile)
+	if _, err := os.Stat(r.path(file)); f == nil || err == nil {
+		if f, err = c.roleCompose(file, f, set); err != nil {
+			return StackFile{}, fmt.Errorf("%s: %w", r.path(file), err)
+		}
 	}
-	if len(f.Docs) != 1 {
-		return StackFile{}, fmt.Errorf("expected a single YAML document, found %d", len(f.Docs))
-	}
-	c := &composeRenderer{repo: r, def: def, params: params}
-	body, _, err := c.replace(f.Docs[0].Body)
-	if err != nil {
-		return StackFile{}, err
-	}
-	f.Docs[0].Body = body
 	content := f.String()
 	if !strings.HasSuffix(content, "\n") {
 		content += "\n"
 	}
 	return StackFile{Path: host.ComposeFile, Content: content, Perms: filePerms(Perms{}), Secrets: c.secrets}, nil
+}
+
+// partialsCompose merges the compose fragments of the role's partials,
+// returning nil if none has one, and what set each value, for the role's
+// compose file to be checked against.
+func (c *composeRenderer) partialsCompose(values []map[string]ast.Node) (*ast.File, map[string]setBy, error) {
+	var f *ast.File
+	set := map[string]setBy{}
+	for i, use := range c.repo.rolePartials[c.def.role] {
+		if !use.def.hasCompose {
+			continue
+		}
+		file := c.repo.path(use.def.file(host.ComposeFile))
+		pf, err := c.partialCompose(use, values[i])
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", file, err)
+		}
+		if err := checkConflicts(use.source(), pf.Docs[0].Body, set); err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", c.repo.path("roles", c.def.role), err)
+		}
+		if f == nil {
+			f = pf
+			continue
+		}
+		body, err := c.overlay(pf.Docs[0].Body, f.Docs[0].Body, 0, false)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", file, err)
+		}
+		f.Docs[0].Body = body
+	}
+	return f, set, nil
+}
+
+// roleCompose reads the role's compose file, merged over partials if
+// they're not nil.
+func (c *composeRenderer) roleCompose(file string, partials *ast.File, set map[string]setBy) (*ast.File, error) {
+	f, err := c.repo.parseCompose(file)
+	if err != nil {
+		return nil, err
+	}
+	body, _, err := c.replace(f.Docs[0].Body)
+	if err != nil {
+		return nil, err
+	}
+	if partials != nil {
+		if err := checkConflicts(c.repo.path(file), withoutReplaced(body), set); err != nil {
+			return nil, err
+		}
+		if body, err = c.overlay(partials.Docs[0].Body, body, 0, false); err != nil {
+			return nil, err
+		}
+		body = withoutReplaceTags(body)
+	}
+	f.Docs[0].Body = body
+	return f, nil
 }
 
 type composeRenderer struct {

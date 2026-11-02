@@ -1,0 +1,8 @@
+services:
+  "{service}":
+    image: thp:dev
+    read_only: true
+    restart: unless-stopped
+    volumes:
+      - !volume "{volume}:/config"
+    environment: {REDIRECT: "true", UPSTREAM: "{upstream}", TAILSCALE_HOSTNAME: "{hostname}", TEMPLATE: "{{hostname}}"}

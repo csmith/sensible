@@ -1,0 +1,11 @@
+params:
+  service: thp
+  volume: tailscale
+  hostname: ~
+  upstream: ~
+compose:
+  volumes:
+    "{volume}": {owner: 65532, group: 65532, mode: 0755}
+backups:
+  "{stack}-{volume}":
+    path: !volume "{volume}"

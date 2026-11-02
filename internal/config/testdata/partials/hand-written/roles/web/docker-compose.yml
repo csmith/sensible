@@ -1,0 +1,40 @@
+services:
+  app:
+    image: app
+    volumes:
+      - !volume data:/data
+  db:
+    image: postgres:17.6
+    read_only: true
+    restart: unless-stopped
+    user: "70"
+    environment:
+      POSTGRES_USER: alice
+      POSTGRES_PASSWORD: SECRET
+    volumes:
+      - !volume database:/var/lib/postgresql/data
+    tmpfs:
+      - /var/run/postgresql/
+      - /tmp
+  app-thp:
+    image: thp:dev
+    read_only: true
+    restart: unless-stopped
+    volumes:
+      - !volume app-tailscale:/config
+    environment:
+      REDIRECT: "true"
+      UPSTREAM: http://app:8080
+      TAILSCALE_HOSTNAME: app
+      TEMPLATE: "{hostname}"
+      LOG_LEVEL: debug
+  thp:
+    image: thp:dev
+    read_only: true
+    restart: unless-stopped
+    volumes:
+      - !volume tailscale:/config
+    environment:
+      REDIRECT: "true"
+      UPSTREAM: http://app:9090
+      TEMPLATE: "{hostname}"
