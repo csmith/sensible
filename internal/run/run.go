@@ -25,28 +25,25 @@ type Options struct {
 	ConfigDir string
 	// Hosts limits the run to these inventory names. Empty means all hosts.
 	Hosts []string
-	// Addrs overrides inventory addresses, keyed by host name.
-	Addrs map[string]string
-	Apply bool
 	// Yes applies without asking for confirmation.
 	Yes bool
 }
 
-// Run plans the selected hosts and, with Options.Apply, applies the plan.
+// Run plans the selected hosts and applies the plan once confirmed.
 func Run(ctx context.Context, opts Options) error {
 	out := os.Stdout
 	repo, err := openRepo(opts.ConfigDir, out)
 	if err != nil {
 		return err
 	}
-	names, err := selectHosts(repo.Inventory(), opts.Hosts, opts.Addrs)
+	names, err := selectHosts(repo.Inventory(), opts.Hosts)
 	if err != nil {
 		return err
 	}
 	builder := NewEmbeddedBuilds()
 	targets := make([]target, len(names))
 	for i, name := range names {
-		targets[i] = newTarget(repo, name, opts.Addrs[name], builder)
+		targets[i] = newTarget(repo, name, builder)
 	}
 
 	r := &Runner{
@@ -81,7 +78,7 @@ func Run(ctx context.Context, opts Options) error {
 		Vhosts:      repo.Vhosts(),
 		DNSNames:    dnsNames(repo.Inventory()),
 	}
-	return r.Execute(ctx, targets, opts.Apply, opts.Yes)
+	return r.Execute(ctx, targets, opts.Yes)
 }
 
 func openRepo(dir string, out io.Writer) (*config.Repo, error) {
@@ -119,15 +116,7 @@ func unknownHost(inv config.Inventory, name string) error {
 	)
 }
 
-func selectHosts(inv config.Inventory, requested []string, addrs map[string]string) ([]string, error) {
-	for name := range addrs {
-		if !slices.Contains(requested, name) && len(requested) > 0 {
-			return nil, fmt.Errorf("--addr given for %s, which isn't selected", name)
-		}
-		if _, ok := inv.Hosts[name]; !ok {
-			return nil, unknownHost(inv, name)
-		}
-	}
+func selectHosts(inv config.Inventory, requested []string) ([]string, error) {
 	if len(requested) == 0 {
 		names := make([]string, 0, len(inv.Hosts))
 		for name := range inv.Hosts {
@@ -159,7 +148,7 @@ type target struct {
 	err         error
 }
 
-func newTarget(repo *config.Repo, name, addr string, builds Builds) target {
+func newTarget(repo *config.Repo, name string, builds Builds) target {
 	entry := repo.Inventory().Hosts[name]
 	t := target{name: name, dnsName: entry.DNSName}
 	if isLocal(name) {
@@ -167,10 +156,7 @@ func newTarget(repo *config.Repo, name, addr string, builds Builds) target {
 		t.transport = &Local{Builds: builds}
 		return t
 	}
-	if addr == "" {
-		addr = entry.Address
-	}
-	if addr == "" {
+	if entry.Address == "" {
 		t.err = errors.New("no address")
 		return t
 	}
@@ -186,7 +172,7 @@ func newTarget(repo *config.Repo, name, addr string, builds Builds) target {
 	t.sensibleKey = authorizedKey(signer.PublicKey(), name)
 	t.transport = &OpenSSH{
 		Name:              name,
-		Address:           addr,
+		Address:           entry.Address,
 		Signer:            signer,
 		Password:          password,
 		HostKey:           checkHostKey(name, entry.HostKeys),
@@ -270,9 +256,9 @@ type hostRun struct {
 
 var errFailed = errors.New("one or more targets failed")
 
-// Execute connects to the targets, shows the combined plan and, if apply is
-// set and confirmed, applies it.
-func (r *Runner) Execute(ctx context.Context, targets []target, apply, yes bool) error {
+// Execute connects to the targets, shows the combined plan and, once
+// confirmed, applies it.
+func (r *Runner) Execute(ctx context.Context, targets []target, yes bool) error {
 	out := newRenderer(r.Out)
 	runs := r.connect(ctx, targets)
 	defer byeAll(runs)
@@ -307,13 +293,9 @@ func (r *Runner) Execute(ctx context.Context, targets []target, apply, yes bool)
 		return failedErr(failed)
 	}
 	out.line("")
-	if !apply || yes {
+	if yes {
 		out.line(out.p.bold(s.String()))
-	}
-	if !apply {
-		return failedErr(failed)
-	}
-	if !yes {
+	} else {
 		ok, err := r.Confirm("Apply " + s.String() + "? [y/N] ")
 		if err != nil || !ok {
 			return errors.Join(err, failedErr(failed))

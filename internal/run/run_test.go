@@ -322,7 +322,8 @@ func TestExecute_planShowsChangesAndReportsUnreachableHosts(t *testing.T) {
 		f.target("penderghast", clean),
 	}
 
-	err := f.runner.Execute(t.Context(), targets, false, false)
+	f.answer = false
+	err := f.runner.Execute(t.Context(), targets, false)
 
 	require.ErrorIs(t, err, errFailed)
 	out := f.out.String()
@@ -337,8 +338,7 @@ func TestExecute_planShowsChangesAndReportsUnreachableHosts(t *testing.T) {
 	)
 	assert.Contains(t, out, "> Resolving changes on penderghast\n  ✓ 3 unchanged\n")
 	assert.NotContains(t, out, "Resolving changes on smarts")
-	assert.Contains(t, out, "\n\n1 change on 1 target; 1 more will be checked during apply\n")
-	assert.Empty(t, f.confirmed)
+	assert.Equal(t, []string{"Apply 1 change on 1 target; 1 more will be checked during apply? [y/N] "}, f.confirmed)
 	assert.Equal(t, []string{"FactsRequest", "Check", "Bye"}, changed.messages())
 }
 
@@ -385,7 +385,7 @@ func TestExecute_headingsAreShownBeforeWaiting(t *testing.T) {
 		},
 	}
 
-	require.NoError(t, f.runner.Execute(t.Context(), []target{f.target("acidburn", agent)}, false, false))
+	require.NoError(t, f.runner.Execute(t.Context(), []target{f.target("acidburn", agent)}, false))
 	assert.Empty(t, timedOut)
 	assert.Contains(t, w.out.String(), "> Resolving changes on acidburn\n  ✓ 3 unchanged\n")
 }
@@ -398,7 +398,6 @@ func TestExecute_appliesAfterConfirmation(t *testing.T) {
 	err := f.runner.Execute(
 		t.Context(),
 		[]target{f.target("acidburn", changed), f.target("penderghast", clean)},
-		true,
 		false,
 	)
 
@@ -419,7 +418,7 @@ func TestExecute_declinedDoesNotApply(t *testing.T) {
 	f.answer = false
 	changed := &fakeAgent{status: deferDocker}
 
-	err := f.runner.Execute(t.Context(), []target{f.target("acidburn", changed)}, true, false)
+	err := f.runner.Execute(t.Context(), []target{f.target("acidburn", changed)}, false)
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"FactsRequest", "Check", "Bye"}, changed.messages())
@@ -429,7 +428,7 @@ func TestExecute_yesSkipsConfirmation(t *testing.T) {
 	f := newRunnerFixture(t, testResources)
 	changed := &fakeAgent{status: deferDocker}
 
-	err := f.runner.Execute(t.Context(), []target{f.target("acidburn", changed)}, true, true)
+	err := f.runner.Execute(t.Context(), []target{f.target("acidburn", changed)}, true)
 
 	require.NoError(t, err)
 	assert.Empty(t, f.confirmed)
@@ -440,7 +439,7 @@ func TestExecute_failureSkipsRestOfHost(t *testing.T) {
 	f := newRunnerFixture(t, testResources)
 	changed := &fakeAgent{status: deferDocker, applyFailure: "file:/etc/ssh/sshd_config.d/10-sensible.conf"}
 
-	err := f.runner.Execute(t.Context(), []target{f.target("acidburn", changed)}, true, true)
+	err := f.runner.Execute(t.Context(), []target{f.target("acidburn", changed)}, true)
 
 	require.ErrorIs(t, err, errFailed)
 	assert.Contains(t, f.out.String(), "  ✗ file /etc/ssh/sshd_config.d/10-sensible.conf: boom\n  - 2 skipped\n")
@@ -450,7 +449,7 @@ func TestExecute_nothingToDo(t *testing.T) {
 	f := newRunnerFixture(t, testResources)
 	clean := &fakeAgent{}
 
-	err := f.runner.Execute(t.Context(), []target{f.target("penderghast", clean)}, true, false)
+	err := f.runner.Execute(t.Context(), []target{f.target("penderghast", clean)}, false)
 
 	require.NoError(t, err)
 	assert.Contains(t, f.out.String(), "No changes\n")
@@ -460,7 +459,7 @@ func TestExecute_nothingToDo(t *testing.T) {
 func TestExecute_failuresDontClaimNoChanges(t *testing.T) {
 	f := newRunnerFixture(t, testResources)
 
-	err := f.runner.Execute(t.Context(), []target{{name: "smarts", err: errors.New("no credentials")}}, false, false)
+	err := f.runner.Execute(t.Context(), []target{{name: "smarts", err: errors.New("no credentials")}}, false)
 
 	require.ErrorIs(t, err, errFailed)
 	assert.NotContains(t, f.out.String(), "No changes")
@@ -480,7 +479,6 @@ func TestExecute_compileErrorIsReportedForThatHost(t *testing.T) {
 	err := f.runner.Execute(
 		t.Context(),
 		[]target{f.target("weird", weird), f.target("acidburn", changed)},
-		true,
 		true,
 	)
 
@@ -523,7 +521,7 @@ func TestExecute_dnsIsPlannedFromFactsAndAppliedAfterHosts(t *testing.T) {
 	)
 	acidburn.dnsName = "acidburn.example.com"
 
-	err := f.runner.Execute(t.Context(), []target{acidburn, f.target("smarts", &fakeAgent{})}, true, true)
+	err := f.runner.Execute(t.Context(), []target{acidburn, f.target("smarts", &fakeAgent{})}, true)
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"me@example.com", "key"}, *account)
@@ -552,7 +550,6 @@ func TestExecute_dnsIsHeldBackWhenAHostFailsToPlan(t *testing.T) {
 	err := f.runner.Execute(
 		t.Context(),
 		[]target{acidburn, {name: "smarts", err: errors.New("no credentials")}},
-		true,
 		true,
 	)
 
@@ -869,18 +866,15 @@ func TestHostPlanLines_showsWarnings(t *testing.T) {
 func TestExecute_savesGeneratedValuesBeforeApplying(t *testing.T) {
 	tests := []struct {
 		name         string
-		apply        bool
 		answer       bool
 		saveErr      error
 		wantSaved    []string
 		wantMessages []string
 		wantOut      string
 	}{
-		{"plan", false, true, nil, nil, []string{"FactsRequest", "Check", "Bye"}, ""},
-		{"declined", true, false, nil, nil, []string{"FactsRequest", "Check", "Bye"}, ""},
+		{"declined", false, nil, nil, []string{"FactsRequest", "Check", "Bye"}, ""},
 		{
 			"applied",
-			true,
 			true,
 			nil,
 			[]string{"acidburn"},
@@ -889,7 +883,6 @@ func TestExecute_savesGeneratedValuesBeforeApplying(t *testing.T) {
 		},
 		{
 			"save fails",
-			true,
 			true,
 			errors.New("disk full"),
 			[]string{"acidburn"},
@@ -916,7 +909,7 @@ func TestExecute_savesGeneratedValuesBeforeApplying(t *testing.T) {
 					}, nil
 				}
 
-				err := f.runner.Execute(t.Context(), []target{f.target("acidburn", changed)}, tt.apply, false)
+				err := f.runner.Execute(t.Context(), []target{f.target("acidburn", changed)}, false)
 
 				if tt.saveErr != nil {
 					require.ErrorIs(t, err, errFailed)

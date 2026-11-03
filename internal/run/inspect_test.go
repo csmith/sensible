@@ -52,17 +52,6 @@ func TestRunnerFacts_succeedsWhenEveryHostIsReached(t *testing.T) {
 	assert.Contains(t, out.String(), `"acidburn"`)
 }
 
-func TestShowConfig(t *testing.T) {
-	_, dir, _ := testRepo(t)
-	writeFile(t, filepath.Join(dir, "hosts.d", "acidburn.roles.yml"), "acidburn:\n  roles: {base: }\n")
-	writeFile(t, filepath.Join(dir, "roles", "base", "role.yml"), "vim: {}\nzsh:\n  plugins: [git]\n")
-	var out bytes.Buffer
-
-	require.NoError(t, ShowConfig(t.Context(), dir, "acidburn", "debian", "", &out))
-
-	assert.Equal(t, "zsh:\n  plugins:\n  - git\nvim: {}\n", out.String())
-}
-
 func TestEncryptSecret_ignoresInvalidRoles(t *testing.T) {
 	_, dir, _ := testRepo(t)
 	writeFile(t, filepath.Join(dir, "roles", "web", "role.yml"), "compose:\n  files: [.env.age]\n")

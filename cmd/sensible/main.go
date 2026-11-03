@@ -23,10 +23,8 @@ const usage = `Usage: sensible [flags] <command> [args]
 
 Commands:
   bootstrap <host> [--user account] [--rotate] [--host-key SHA256:...]
-  plan [hosts...] [--addr host=address]
-  apply [hosts...] [--addr host=address] [--yes]
-  facts [hosts...] [--addr host=address]
-  config <host> [--os family] [--addr host=address]
+  apply [hosts...] [--yes]
+  facts [hosts...]
   secret encrypt [--raw]
   secret show <file> <path>
   agent
@@ -68,24 +66,17 @@ var errUsage = errors.New("usage")
 
 func command(ctx context.Context, name string, args []string) error {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
-	addrs := addrFlag{}
-	user, rotate, yes, osFamily, hostKey, raw := new(string), new(bool), new(bool), new(string), new(string), new(bool)
+	user, rotate, yes, hostKey, raw := new(string), new(bool), new(bool), new(string), new(bool)
 	switch name {
 	case "bootstrap":
 		user = fs.String("user", "", "Account to set the host up through: root, or one with sudo")
 		rotate = fs.Bool("rotate", false, "Replace existing credentials")
 		hostKey = fs.String("host-key", "", "Expected SHA256 fingerprint of a new host's key, instead of asking")
-	case "plan", "facts", "config":
-		fs.Var(addrs, "addr", "Address to use for a host, as host=address (repeatable)")
 	case "apply":
-		fs.Var(addrs, "addr", "Address to use for a host, as host=address (repeatable)")
 		yes = fs.Bool("yes", false, "Apply without asking")
 	case "secret":
 		raw = fs.Bool("raw", false, "Print an armored age file, e.g. for a stack's .age file, and keep piped input exactly")
 	default:
-	}
-	if name == "config" {
-		osFamily = fs.String("os", "", "OS family to merge config for, instead of asking the host")
 	}
 	args = parse(fs, args)
 
@@ -101,21 +92,17 @@ func command(ctx context.Context, name string, args []string) error {
 				HostKey:   *hostKey,
 			},
 		)
-	case name == "plan" || name == "apply":
+	case name == "apply":
 		return run.Run(
 			ctx,
 			run.Options{
 				ConfigDir: *configDir,
 				Hosts:     args,
-				Addrs:     addrs,
-				Apply:     name == "apply",
 				Yes:       *yes,
 			},
 		)
 	case name == "facts":
-		return run.Facts(ctx, *configDir, args, addrs, os.Stdout)
-	case name == "config" && len(args) == 1:
-		return run.ShowConfig(ctx, *configDir, args[0], *osFamily, addrs[args[0]], os.Stdout)
+		return run.Facts(ctx, *configDir, args, os.Stdout)
 	case name == "secret" && len(args) == 1 && args[0] == "encrypt":
 		return run.EncryptSecret(*configDir, *raw, os.Stdin, os.Stdout)
 	case name == "secret" && len(args) == 3 && args[0] == "show":
@@ -164,23 +151,4 @@ func parse(fs *flag.FlagSet, args []string) []string {
 	}
 	envflag.Parse(envflag.WithFlagSet(fs), envflag.WithArguments(flags), envflag.WithPrefix("SENSIBLE_"))
 	return positional
-}
-
-type addrFlag map[string]string
-
-func (a addrFlag) String() string {
-	parts := make([]string, 0, len(a))
-	for name, addr := range a {
-		parts = append(parts, name+"="+addr)
-	}
-	return strings.Join(parts, ",")
-}
-
-func (a addrFlag) Set(value string) error {
-	name, addr, ok := strings.Cut(value, "=")
-	if !ok || name == "" || addr == "" {
-		return errors.New("must be host=address")
-	}
-	a[name] = addr
-	return nil
 }

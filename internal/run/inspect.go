@@ -7,8 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
-	"sort"
 	"strings"
 
 	"filippo.io/age"
@@ -26,19 +24,19 @@ import (
 // JSON object keyed by host name. Empty hosts means all hosts. Progress and
 // unreachable hosts are reported on stderr; the hosts that could be reached
 // are still printed.
-func Facts(ctx context.Context, configDir string, hosts []string, addrs map[string]string, out io.Writer) error {
+func Facts(ctx context.Context, configDir string, hosts []string, out io.Writer) error {
 	repo, err := openRepo(configDir, os.Stderr)
 	if err != nil {
 		return err
 	}
-	names, err := selectHosts(repo.Inventory(), hosts, addrs)
+	names, err := selectHosts(repo.Inventory(), hosts)
 	if err != nil {
 		return err
 	}
 	builder := NewEmbeddedBuilds()
 	targets := make([]target, len(names))
 	for i, name := range names {
-		targets[i] = newTarget(repo, name, addrs[name], builder)
+		targets[i] = newTarget(repo, name, builder)
 	}
 	r := &Runner{Out: os.Stderr, Builds: builder}
 	return r.Facts(ctx, targets, out)
@@ -63,113 +61,6 @@ func (r *Runner) Facts(ctx context.Context, targets []target, out io.Writer) err
 		return err
 	}
 	return failedErr(anyFailed(runs))
-}
-
-func fetchFacts(ctx context.Context, repo *config.Repo, name, addr string) (host.Facts, error) {
-	if _, ok := repo.Inventory().Hosts[name]; !ok {
-		return host.Facts{}, unknownHost(repo.Inventory(), name)
-	}
-	builder := NewEmbeddedBuilds()
-	t := newTarget(repo, name, addr, builder)
-	if t.err != nil {
-		return host.Facts{}, t.err
-	}
-	a, _, err := connect(ctx, t.transport, builder)
-	if err != nil {
-		return host.Facts{}, err
-	}
-	defer a.bye()
-	return a.facts()
-}
-
-// ShowConfig prints a host's merged configuration. The OS family picks each
-// role's OS variant; if it's empty, it's read from the host.
-func ShowConfig(ctx context.Context, configDir, name, osFamily, addr string, out io.Writer) error {
-	repo, err := openRepo(configDir, os.Stderr)
-	if err != nil {
-		return err
-	}
-	if osFamily == "" {
-		facts, err := fetchFacts(ctx, repo, name, addr)
-		if err != nil {
-			return err
-		}
-		osFamily = facts.OSFamily
-	}
-	cfg, err := repo.HostConfig(name, osFamily)
-	if err != nil {
-		return err
-	}
-	text, err := yaml.Marshal(orEmpty(plain(reflect.ValueOf(cfg))))
-	if err != nil {
-		return err
-	}
-	_, err = out.Write(text)
-	return err
-}
-
-// plain converts a config value to YAML-ready data, in field order, leaving
-// out empty values. Modules that are on but have nothing set show as {}.
-func plain(v reflect.Value) any {
-	switch v.Kind() {
-	case reflect.Pointer:
-		if v.IsNil() {
-			return nil
-		}
-		return orEmpty(plain(v.Elem()))
-	case reflect.Struct:
-		var m yaml.MapSlice
-		for i := range v.NumField() {
-			field := v.Type().Field(i)
-			name, _, _ := strings.Cut(field.Tag.Get("yaml"), ",")
-			if !field.IsExported() || name == "-" {
-				continue
-			}
-			if name == "" {
-				name = field.Name
-			}
-			if value := plain(v.Field(i)); value != nil {
-				m = append(m, yaml.MapItem{Key: name, Value: value})
-			}
-		}
-		if len(m) == 0 {
-			return nil
-		}
-		return m
-	case reflect.Map:
-		if v.Len() == 0 {
-			return nil
-		}
-		keys := v.MapKeys()
-		sort.Slice(keys, func(i, j int) bool { return fmt.Sprint(keys[i]) < fmt.Sprint(keys[j]) })
-		var m yaml.MapSlice
-		for _, k := range keys {
-			m = append(m, yaml.MapItem{Key: k.Interface(), Value: orEmpty(plain(v.MapIndex(k)))})
-		}
-		return m
-	case reflect.Slice:
-		if v.Len() == 0 {
-			return nil
-		}
-		items := make([]any, v.Len())
-		for i := range items {
-			items[i] = plain(v.Index(i))
-		}
-		return items
-	default:
-		if v.IsZero() && v.Kind() != reflect.Bool {
-			return nil
-		}
-		return v.Interface()
-	}
-}
-
-// orEmpty keeps map entries whose values are empty, as their keys matter.
-func orEmpty(v any) any {
-	if v == nil {
-		return yaml.MapSlice{}
-	}
-	return v
 }
 
 // EncryptSecret encrypts in to sensible.yml's recipients and prints it as
