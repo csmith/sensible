@@ -49,10 +49,6 @@ func testHost(osFamily string) Host {
 			OSFamily: osFamily,
 			Release:  "trixie",
 			Arch:     "x86_64",
-			Users: map[string]host.PasswdUser{
-				"alice": {UID: 1000, GID: 1000, Home: "/home/alice", Shell: "/usr/bin/zsh"},
-				"bob":   {UID: 1001, GID: 1001, Home: "/home/bob", Shell: "/bin/bash"},
-			},
 		},
 		SensibleKey: "ssh-ed25519 AAAA sensible@testhost",
 	}
@@ -321,12 +317,6 @@ func TestResources_featuresTurnOff(t *testing.T) {
 			name:   "no tailscale",
 			modify: func(h *Host) { h.Config.Tailscale = nil },
 			absent: []string{"package:tailscale", "tailscale-set"},
-		},
-		{
-			name:    "account not created yet",
-			modify:  func(h *Host) { delete(h.Facts.Users, "alice") },
-			absent:  []string{"file:/home/alice/.zshrc", "dir:/home/alice/.ssh", "absent:/home/alice/.oh-my-zsh"},
-			present: []string{"user:alice", "file:/home/bob/.ssh/authorized_keys"},
 		},
 		{
 			name:   "no zsh",
@@ -620,7 +610,6 @@ func TestResources_zshrc(t *testing.T) {
 				f, ok := find[host.File](rs, "file:/home/alice/.zshrc")
 				require.True(t, ok)
 				assert.Equal(t, "alice", f.Owner)
-				assert.Equal(t, "1000", f.Group)
 				for _, w := range tt.want {
 					assert.Contains(t, f.Content, w)
 				}
@@ -659,8 +648,31 @@ func TestResources_zshSetsShells(t *testing.T) {
 		}
 	}
 	assert.Equal(t, []string{"alice /usr/bin/zsh", "carol /usr/bin/zsh"}, shells)
-	_, ok := find[host.File](rs, "file:/home/carol/.zshrc")
-	assert.False(t, ok)
+}
+
+func TestResources_accountFilesInHome(t *testing.T) {
+	h := testHost(debian)
+	h.Config.AUR = nil
+	h.Config.Zsh.Users = []string{"carol", "root"}
+	h.Config.SSHD.AuthorizedKeys = map[string]config.Set{
+		"carol": {"ssh-ed25519 AAAA carol"},
+		"root":  {"ssh-ed25519 AAAA root"},
+	}
+	rs, err := Resources(h)
+	require.NoError(t, err)
+
+	for name, home := range map[string]string{"carol": "/home/carol", "root": "/root"} {
+		for _, id := range []string{"file:" + home + "/.zshrc", "file:" + home + "/.ssh/authorized_keys"} {
+			f, ok := find[host.File](rs, id)
+			require.True(t, ok, id)
+			assert.Equal(t, name, f.Owner, id)
+			assert.Empty(t, f.Group, id)
+		}
+		d, ok := find[host.Dir](rs, "dir:"+home+"/.ssh")
+		require.True(t, ok, home)
+		assert.Equal(t, name, d.Owner)
+		assert.Empty(t, d.Group)
+	}
 }
 
 func TestResources_hostname(t *testing.T) {

@@ -5,7 +5,6 @@ import (
 	"maps"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 
 	"chameth.com/sensible/internal/config"
@@ -218,16 +217,4 @@ func installPackages(names ...string) []host.Resource {
 		rs[i] = host.Package{Name: n}
 	}
 	return rs
-}
-
-// existingAccount reports false for accounts this run will create, whose
-// files are written on the next run.
-func existingAccount(h Host, name string) (host.PasswdUser, bool) {
-	u, ok := h.Facts.Users[name]
-	return u, ok && u.Home != ""
-}
-
-// Groups are given by ID, as facts don't include their names.
-func gid(u host.PasswdUser) string {
-	return strconv.Itoa(u.GID)
 }

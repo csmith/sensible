@@ -19,6 +19,13 @@ func users(h Host) ([]host.Resource, error) {
 	return rs, nil
 }
 
+func home(name string) string {
+	if name == "root" {
+		return "/root"
+	}
+	return "/home/" + name
+}
+
 const ohMyZshVersion = "17a2b4c3a5855524ad4772a17ada0dc474e2fdf3"
 
 const ohMyZshPath = "/usr/share/oh-my-zsh"
@@ -44,10 +51,6 @@ func zsh(h Host) ([]host.Resource, error) {
 		rs = append(rs, host.User{Name: name, Shell: "/usr/bin/zsh"})
 	}
 	for _, name := range c.Users {
-		account, ok := existingAccount(h, name)
-		if !ok {
-			continue
-		}
 		var b strings.Builder
 		err := zshrcTemplate.Execute(
 			&b,
@@ -63,14 +66,13 @@ func zsh(h Host) ([]host.Resource, error) {
 		rs = append(
 			rs,
 			host.File{
-				Path:    account.Home + "/.zshrc",
+				Path:    home(name) + "/.zshrc",
 				Content: b.String(),
 				Owner:   name,
-				Group:   gid(account),
 				Mode:    0o644,
 			},
 			// Per-account copies, from before it was shared.
-			host.Absent{Path: account.Home + "/.oh-my-zsh"},
+			host.Absent{Path: home(name) + "/.oh-my-zsh"},
 		)
 	}
 	return rs, nil
@@ -187,18 +189,13 @@ func sshd(h Host) ([]host.Resource, error) {
 	rs = append(rs, host.Service{Name: svc, Enabled: true, Running: true})
 
 	for _, name := range slices.Sorted(maps.Keys(c.AuthorizedKeys)) {
-		account, ok := existingAccount(h, name)
-		if !ok {
-			continue
-		}
 		rs = append(
 			rs,
-			host.Dir{Path: account.Home + "/.ssh", Owner: name, Group: gid(account), Mode: 0o700},
+			host.Dir{Path: home(name) + "/.ssh", Owner: name, Mode: 0o700},
 			host.File{
-				Path:    account.Home + "/.ssh/authorized_keys",
+				Path:    home(name) + "/.ssh/authorized_keys",
 				Content: managedLines(c.AuthorizedKeys[name]),
 				Owner:   name,
-				Group:   gid(account),
 				Mode:    0o600,
 			},
 		)
