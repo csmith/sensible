@@ -1,0 +1,66 @@
+#compdef sensible
+
+_sensible_hosts() {
+  local dir=${sensible_config/#\~/$HOME}
+  local -a files hosts
+  files=($dir/hosts.d/*.yml(N))
+  (( $#files )) || return 1
+  hosts=(${(u)${(f)"$(sed -n 's/^\([A-Za-z0-9_.-]\{1,\}\):.*/\1/p' $files 2>/dev/null)"}})
+  _wanted hosts expl host compadd -a hosts
+}
+
+_sensible() {
+  local curcontext=$curcontext state line ret=1
+  local -A opt_args
+
+  _arguments -C \
+    '--config=[configuration directory]:directory:_directories' \
+    '--debug[show debugging output]' \
+    '1:command:->command' \
+    '*::arg:->args' && ret=0
+
+  case $state in
+    command)
+      local -a commands=(
+        'bootstrap:set up a host for sensible to manage'
+        'apply:apply the configuration to hosts'
+        'facts:print facts gathered from hosts'
+        'secret:encrypt or show secrets'
+      )
+      _describe -t commands command commands && ret=0
+      ;;
+    args)
+      local sensible_config=${opt_args[--config]:-${SENSIBLE_CONFIG:-.}}
+      curcontext=${curcontext%:*:*}:sensible-$words[1]:
+      case $words[1] in
+        bootstrap)
+          _arguments \
+            '--user=[account to set the host up through]:account:_users' \
+            '--rotate[replace existing credentials]' \
+            '--host-key=[expected SHA256 fingerprint of the host key]:fingerprint:' \
+            '1:host:_sensible_hosts' && ret=0
+          ;;
+        apply)
+          _arguments \
+            '--yes[apply without asking]' \
+            '*:host:_sensible_hosts' && ret=0
+          ;;
+        facts)
+          _arguments '*:host:_sensible_hosts' && ret=0
+          ;;
+        secret)
+          _arguments -C \
+            '--raw[print an armored age file and keep piped input exactly]' \
+            '1:action:((encrypt\:"encrypt a secret from stdin" show\:"decrypt a value from a file"))' \
+            '2: :->file' \
+            '*: :' && ret=0
+          [[ $state == file && $line[1] == show ]] && _files && ret=0
+          ;;
+      esac
+      ;;
+  esac
+
+  return ret
+}
+
+_sensible "$@"
