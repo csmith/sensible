@@ -19,14 +19,16 @@ _sensible() {
     '1:command:->command' \
     '*::arg:->args' && ret=0
 
+  local -a commands=(
+    'bootstrap:set up a host for sensible to manage'
+    'apply:apply the configuration to hosts'
+    'facts:print facts gathered from hosts'
+    'render:print what apply would make hosts have'
+    'secret:encrypt or show secrets'
+  )
+
   case $state in
     command)
-      local -a commands=(
-        'bootstrap:set up a host for sensible to manage'
-        'apply:apply the configuration to hosts'
-        'facts:print facts gathered from hosts'
-        'secret:encrypt or show secrets'
-      )
       _describe -t commands command commands && ret=0
       ;;
     args)
@@ -47,6 +49,12 @@ _sensible() {
           ;;
         facts)
           _arguments '*:host:_sensible_hosts' && ret=0
+          ;;
+        render)
+          _arguments \
+            '--facts=[read facts from a file instead of connecting]:file:_files' \
+            '--json[print JSON]' \
+            '*:host:_sensible_hosts' && ret=0
           ;;
         secret)
           _arguments -C \

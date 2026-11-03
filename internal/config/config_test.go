@@ -737,6 +737,63 @@ func TestSecrets_wrongIdentity(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestPreview_secretsWithoutIdentityArePlaceholders(t *testing.T) {
+	tr := newTestRepo(t, map[string]string{})
+	user, err := tr.open(t).Encrypt("alice")
+	require.NoError(t, err)
+	key, err := tr.open(t).Encrypt("hunter2")
+	require.NoError(t, err)
+	writeFile(t, tr.dir, "sensible.yml", "dns:\n  auth_user: "+nest(user)+"\n  auth_key: "+nest(key)+"\n")
+
+	r, err := Open(tr.dir, func() (age.Identity, error) { return nil, errors.New("locked") })
+	require.NoError(t, err)
+	var warnings []string
+	r.Preview(func(msg string) { warnings = append(warnings, msg) })
+
+	gotUser, err := r.DNS().AuthUser.Reveal()
+	require.NoError(t, err)
+	gotKey, err := r.DNS().AuthKey.Reveal()
+	require.NoError(t, err)
+	assert.Regexp(t, `^<age:[0-9a-f]{8}>$`, gotUser)
+	assert.Equal(t, r.DNS().AuthUser.Placeholder(), gotUser)
+	assert.NotEqual(t, gotUser, gotKey)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "locked")
+
+	// The same ciphertext written elsewhere, differently indented, has the
+	// same placeholder.
+	writeFile(t, tr.dir, "sensible.yml", "dns:\n    auth_user: "+indent(user, "      ")+"\n")
+	again, err := Open(tr.dir, func() (age.Identity, error) { return nil, errors.New("locked") })
+	require.NoError(t, err)
+	assert.Equal(t, gotUser, again.DNS().AuthUser.Placeholder())
+}
+
+func TestPreview_secretsForAnotherIdentityArePlaceholders(t *testing.T) {
+	tr := newTestRepo(t, map[string]string{})
+	other, err := age.GenerateX25519Identity()
+	require.NoError(t, err)
+	r := tr.open(t)
+	r.recipients = []age.Recipient{other.Recipient()}
+	foreign, err := r.Encrypt("theirs")
+	require.NoError(t, err)
+	mine, err := tr.open(t).Encrypt("mine")
+	require.NoError(t, err)
+	writeFile(t, tr.dir, "sensible.yml", "dns:\n  auth_user: "+nest(foreign)+"\n  auth_key: "+nest(mine)+"\n")
+
+	r = tr.open(t)
+	var warnings []string
+	r.Preview(func(msg string) { warnings = append(warnings, msg) })
+
+	got, err := r.DNS().AuthUser.Reveal()
+	require.NoError(t, err)
+	assert.Equal(t, r.DNS().AuthUser.Placeholder(), got)
+	got, err = r.DNS().AuthKey.Reveal()
+	require.NoError(t, err)
+	assert.Equal(t, "mine", got)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], r.DNS().AuthUser.Placeholder())
+}
+
 func TestSecret_zeroReveal(t *testing.T) {
 	_, err := Secret{}.Reveal()
 	assert.Error(t, err)

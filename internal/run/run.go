@@ -47,38 +47,43 @@ func Run(ctx context.Context, opts Options) error {
 	}
 
 	r := &Runner{
-		Out:     out,
-		Confirm: confirmOnTerminal,
-		Builds:  builder,
-		Compile: func(t target, facts host.Facts) (compiled, error) {
-			cfg, err := repo.HostConfig(t.name, facts.OSFamily)
-			if err != nil {
-				return compiled{}, err
-			}
-			resources, err := features.Resources(
-				features.Host{
-					Name:        t.name,
-					Local:       t.local,
-					Config:      cfg,
-					Facts:       facts,
-					SensibleKey: t.sensibleKey,
-				},
-			)
-			if err != nil {
-				return compiled{}, err
-			}
-			c := compiled{resources: resources}
-			if slices.ContainsFunc(cfg.Stacks, func(s config.Stack) bool { return len(s.Generated) > 0 }) {
-				c.save = func() error { return repo.SaveGenerated(t.name, cfg.Stacks) }
-			}
-			return c, nil
-		},
+		Out:         out,
+		Confirm:     confirmOnTerminal,
+		Builds:      builder,
+		Compile:     compiler(repo),
 		DNS:         newDNSClient,
 		DNSSettings: repo.DNS(),
 		Vhosts:      repo.Vhosts(),
 		DNSNames:    dnsNames(repo.Inventory()),
 	}
 	return r.Execute(ctx, targets, opts.Yes)
+}
+
+// compiler builds a host's resources from the repo, as apply makes them.
+func compiler(repo *config.Repo) func(target, host.Facts) (compiled, error) {
+	return func(t target, facts host.Facts) (compiled, error) {
+		cfg, err := repo.HostConfig(t.name, facts.OSFamily)
+		if err != nil {
+			return compiled{}, err
+		}
+		resources, err := features.Resources(
+			features.Host{
+				Name:        t.name,
+				Local:       t.local,
+				Config:      cfg,
+				Facts:       facts,
+				SensibleKey: t.sensibleKey,
+			},
+		)
+		if err != nil {
+			return compiled{}, err
+		}
+		c := compiled{resources: resources}
+		if slices.ContainsFunc(cfg.Stacks, func(s config.Stack) bool { return len(s.Generated) > 0 }) {
+			c.save = func() error { return repo.SaveGenerated(t.name, cfg.Stacks) }
+		}
+		return c, nil
+	}
 }
 
 func openRepo(dir string, out io.Writer) (*config.Repo, error) {
@@ -195,6 +200,9 @@ func revealCredentials(creds config.HostEntry) (ssh.Signer, string, error) {
 	key, err := creds.SSHKey.Reveal()
 	if err != nil {
 		return nil, "", fmt.Errorf("ssh_key: %w", err)
+	}
+	if key == creds.SSHKey.Placeholder() {
+		return nil, "", errors.New("ssh_key can't be decrypted to connect; use --facts")
 	}
 	signer, err := ssh.ParsePrivateKey([]byte(key))
 	if err != nil {

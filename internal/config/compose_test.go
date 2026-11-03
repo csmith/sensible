@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"io/fs"
 	"maps"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"filippo.io/age"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -478,6 +480,38 @@ func TestHostConfig_generatedValues(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotEqual(t, db, beta.Stacks[0].Generated["db"], "each host has its own values")
 	}
+}
+
+func TestHostConfig_previewDoesNotGenerate(t *testing.T) {
+	r := newGeneratedRepo(t).open(t)
+	r.Preview(nil)
+
+	c, err := r.HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	s := c.Stacks[0]
+	assert.Empty(t, s.Generated)
+	assert.Contains(t, stackFile(t, s, "docker-compose.yml").Content, `PASSWORD: "<generated:db>"`)
+	assert.Contains(t, stackFile(t, s, ".env").Content, "DB_PASSWORD='<generated:db>'\n")
+}
+
+func TestHostConfig_previewAgeFileWithoutIdentity(t *testing.T) {
+	tr := newTestRepo(t, map[string]string{"hosts.d/hosts.yml": "alpha:\n  roles: {web: }\n"})
+	settings, err := OpenSettings(tr.dir)
+	require.NoError(t, err)
+	armored, err := settings.EncryptFile("KEY=value\n")
+	require.NoError(t, err)
+	writeFile(t, tr.dir, "roles/web/role.yml", "compose:\n  files: [app.env.age]\n")
+	writeFile(t, tr.dir, "roles/web/docker-compose.yml", "services:\n  web:\n    image: nginx\n")
+	writeFile(t, tr.dir, "roles/web/app.env.age", armored)
+
+	r, err := Open(tr.dir, func() (age.Identity, error) { return nil, errors.New("locked") })
+	require.NoError(t, err)
+	r.Preview(nil)
+	c, err := r.HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	secret, err := parseArmored(armored)
+	require.NoError(t, err)
+	assert.Equal(t, secret.Placeholder(), stackFile(t, c.Stacks[0], "app.env").Content)
 }
 
 func TestSaveGenerated_keepsSavedValues(t *testing.T) {

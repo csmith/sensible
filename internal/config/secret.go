@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -30,7 +31,8 @@ type Secret struct {
 }
 
 // Reveal decrypts the secret, fetching the identity the first time any
-// secret from the same Repo is revealed.
+// secret from the same Repo is revealed. In a Repo set to Preview, a secret
+// that can't be decrypted reveals its Placeholder.
 func (s Secret) Reveal() (string, error) {
 	if s.IsZero() {
 		return "", errors.New("secret is not set")
@@ -40,17 +42,29 @@ func (s Secret) Reveal() (string, error) {
 	}
 	identity, err := s.keys.identity()
 	if err != nil {
+		if s.keys.preview {
+			return s.Placeholder(), nil
+		}
 		return "", err
 	}
-	r, err := age.Decrypt(armor.NewReader(strings.NewReader(s.armored)), identity)
-	if err != nil {
-		return "", fmt.Errorf("decrypting secret: %w", err)
+	plain, err := s.decrypt(identity)
+	if err != nil && s.keys.preview {
+		s.keys.warn(fmt.Sprintf("%s: %v", s.Placeholder(), err))
+		return s.Placeholder(), nil
 	}
-	b, err := io.ReadAll(r)
+	return plain, err
+}
+
+// Placeholder stands in for the secret's value when it can't be decrypted.
+// It's derived from the ciphertext, so it's the same wherever the secret is
+// written and changes only when the secret is re-encrypted.
+func (s Secret) Placeholder() string {
+	ciphertext, err := io.ReadAll(armor.NewReader(strings.NewReader(s.armored)))
 	if err != nil {
-		return "", fmt.Errorf("decrypting secret: %w", err)
+		ciphertext = []byte(s.armored)
 	}
-	return string(b), nil
+	sum := sha256.Sum256(ciphertext)
+	return fmt.Sprintf("<age:%x>", sum[:4])
 }
 
 func (s Secret) IsZero() bool { return s.armored == "" }
@@ -79,6 +93,18 @@ func (s *Secret) UnmarshalYAML(ctx context.Context, node ast.Node) error {
 	keys, _ := ctx.Value(keyringKey{}).(*keyring)
 	*s = Secret{armored: armored + "\n", keys: keys}
 	return nil
+}
+
+func (s Secret) decrypt(identity age.Identity) (string, error) {
+	r, err := age.Decrypt(armor.NewReader(strings.NewReader(s.armored)), identity)
+	if err != nil {
+		return "", fmt.Errorf("decrypting secret: %w", err)
+	}
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return "", fmt.Errorf("decrypting secret: %w", err)
+	}
+	return string(b), nil
 }
 
 // Value is a plain scalar, or a Secret.
@@ -115,6 +141,9 @@ var generatedName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 type generator struct {
 	saved  map[string]Secret
 	values map[string]string
+	// preview gives names that aren't saved a placeholder instead of a new
+	// value.
+	preview bool
 	// created are the new values, which must be saved before they're used.
 	created map[string]string
 }
@@ -138,6 +167,10 @@ func (g *generator) value(tag *ast.TagNode) (string, error) {
 		}
 		g.values[name] = value
 		return value, nil
+	}
+	if g.preview {
+		g.values[name] = "<generated:" + name + ">"
+		return g.values[name], nil
 	}
 	if g.created == nil {
 		g.created = map[string]string{}
@@ -200,14 +233,48 @@ func (s Secret) yaml() string {
 	return out.String()
 }
 
+// LoadIdentity fetches the identity now, rather than when the first secret
+// is revealed.
+func (r *Repo) LoadIdentity() error {
+	_, err := r.keys.identity()
+	return err
+}
+
+// Preview makes secrets that can't be decrypted, and unsaved !generated
+// values, render as placeholders. warn is told why secrets can't be.
+func (r *Repo) Preview(warn func(string)) {
+	r.keys.preview = true
+	r.keys.notify = warn
+}
+
 // keyring fetches a Repo's identity once, when the first secret is revealed.
 type keyring struct {
-	source IdentitySource
+	source  IdentitySource
+	preview bool
+	notify  func(string)
 
 	mu      sync.Mutex
 	fetched bool
 	id      age.Identity
 	err     error
+	warned  map[string]bool
+}
+
+func (k *keyring) warn(msg string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.warnLocked(msg)
+}
+
+func (k *keyring) warnLocked(msg string) {
+	if k.notify == nil || k.warned[msg] {
+		return
+	}
+	if k.warned == nil {
+		k.warned = map[string]bool{}
+	}
+	k.warned[msg] = true
+	k.notify(msg)
 }
 
 type keyringKey struct{}
@@ -224,6 +291,9 @@ func (k *keyring) identity() (age.Identity, error) {
 		k.id, k.err = k.source()
 		if k.err != nil {
 			k.err = fmt.Errorf("fetching age identity: %w", k.err)
+			if k.preview {
+				k.warnLocked(k.err.Error() + "; secrets are shown as placeholders")
+			}
 		}
 	}
 	return k.id, k.err

@@ -1,0 +1,10 @@
+acidburn
+  file /etc/app.conf  root:- 0640
+    validate: app -t %s
+    then reload app
+    | a = 1
+    | b = 2
+    \ No newline at end of file
+  dir /srv/app  app:app 0750
+  package zsh
+  download /usr/local/bin/x  {"mode":"0755","sha256":"abc","url":"https://example.com/x"}

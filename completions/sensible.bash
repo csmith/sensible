@@ -36,7 +36,7 @@ _sensible() {
             esac
         else
             case $w in
-                -user | --user | -host-key | --host-key) ((i++)) ;;
+                -user | --user | -host-key | --host-key | -facts | --facts) ((i++)) ;;
                 -*) ;;
                 *) args+=("$w") ;;
             esac
@@ -53,13 +53,20 @@ _sensible() {
         if [[ $cur == -* ]]; then
             COMPREPLY=($(compgen -W '--config --debug' -- "$cur"))
         else
-            COMPREPLY=($(compgen -W 'bootstrap apply facts secret' -- "$cur"))
+            COMPREPLY=($(compgen -W 'bootstrap apply facts render secret' -- "$cur"))
         fi
         return
     fi
 
     case $prev in
         -user | --user | -host-key | --host-key) [[ $cmd == bootstrap ]] && return ;;
+        -facts | --facts)
+            if [[ $cmd == render ]]; then
+                compopt -o filenames 2>/dev/null
+                COMPREPLY=($(compgen -f -- "$cur"))
+                return
+            fi
+            ;;
     esac
 
     case $cmd in
@@ -70,9 +77,10 @@ _sensible() {
                 COMPREPLY=($(compgen -W "$(_sensible_hosts "$config")" -- "$cur"))
             fi
             ;;
-        apply | facts)
+        apply | facts | render)
             if [[ $cur == -* ]]; then
                 [[ $cmd == apply ]] && COMPREPLY=($(compgen -W '--yes' -- "$cur"))
+                [[ $cmd == render ]] && COMPREPLY=($(compgen -W '--facts --json' -- "$cur"))
             else
                 COMPREPLY=($(compgen -W "$(_sensible_hosts "$config")" -- "$cur"))
             fi

@@ -339,7 +339,12 @@ func (r *Repo) renderStack(role string, e expansion, generated map[string]map[st
 	def := r.stacks[role]
 	s := Stack{Name: def.name, Dirs: def.dirs}
 
-	c := &composeRenderer{repo: r, def: def, params: e.params, gen: &generator{saved: generated[def.name]}}
+	c := &composeRenderer{
+		repo:   r,
+		def:    def,
+		params: e.params,
+		gen:    &generator{saved: generated[def.name], preview: r.keys.preview},
+	}
 	compose, err := c.renderCompose(e)
 	if err != nil {
 		return Stack{}, err

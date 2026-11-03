@@ -25,6 +25,7 @@ Commands:
   bootstrap <host> [--user account] [--rotate] [--host-key SHA256:...]
   apply [hosts...] [--yes]
   facts [hosts...]
+  render [hosts...] [--facts file] [--json]
   secret encrypt [--raw]
   secret show <file> <path>
   agent
@@ -67,6 +68,7 @@ var errUsage = errors.New("usage")
 func command(ctx context.Context, name string, args []string) error {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	user, rotate, yes, hostKey, raw := new(string), new(bool), new(bool), new(string), new(bool)
+	facts, asJSON := new(string), new(bool)
 	switch name {
 	case "bootstrap":
 		user = fs.String("user", "", "Account to set the host up through: root, or one with sudo")
@@ -74,6 +76,9 @@ func command(ctx context.Context, name string, args []string) error {
 		hostKey = fs.String("host-key", "", "Expected SHA256 fingerprint of a new host's key, instead of asking")
 	case "apply":
 		yes = fs.Bool("yes", false, "Apply without asking")
+	case "render":
+		facts = fs.String("facts", "", "Read facts from this `file`, as the facts command prints them")
+		asJSON = fs.Bool("json", false, "Print JSON")
 	case "secret":
 		raw = fs.Bool("raw", false, "Print an armored age file, e.g. for a stack's .age file, and keep piped input exactly")
 	default:
@@ -103,6 +108,17 @@ func command(ctx context.Context, name string, args []string) error {
 		)
 	case name == "facts":
 		return run.Facts(ctx, *configDir, args, os.Stdout)
+	case name == "render":
+		return run.Render(
+			ctx,
+			run.RenderOptions{
+				ConfigDir: *configDir,
+				Hosts:     args,
+				FactsFile: *facts,
+				JSON:      *asJSON,
+			},
+			os.Stdout,
+		)
 	case name == "secret" && len(args) == 1 && args[0] == "encrypt":
 		return run.EncryptSecret(*configDir, *raw, os.Stdin, os.Stdout)
 	case name == "secret" && len(args) == 3 && args[0] == "show":
