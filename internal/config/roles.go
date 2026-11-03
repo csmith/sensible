@@ -69,6 +69,11 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 		return Config{}, fmt.Errorf("merging configuration for %s: %w", name, err)
 	}
 	c.Stacks, c.Volumes = stacks, volumes
+	if c.Docker != nil {
+		if err := c.Docker.reveal(); err != nil {
+			return Config{}, fmt.Errorf("%s: %w", name, err)
+		}
+	}
 	if c.Restic != nil {
 		if err := c.Restic.reveal(); err != nil {
 			return Config{}, fmt.Errorf("%s: %w", name, err)

@@ -1,6 +1,7 @@
 package features
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 	"net/netip"
@@ -328,7 +329,45 @@ func docker(h Host) ([]host.Resource, error) {
 		}
 		rs = append(rs, host.DockerNetwork{Name: name, Subnets: n.Subnets, IPv6: n.IPv6})
 	}
+	if len(c.Auths) > 0 {
+		cc, err := dockerClientConfig(c.Auths)
+		if err != nil {
+			return nil, fmt.Errorf("host %s: docker client config: %w", h.Name, err)
+		}
+		rs = append(rs, cc...)
+	}
 	return rs, nil
+}
+
+// dockerClientConfig gives root's Docker client the registries' credentials,
+// as the agent runs compose as root. The whole file is credentials, so it's
+// left out of diffs.
+func dockerClientConfig(auths map[string]string) ([]host.Resource, error) {
+	type auth struct {
+		Auth string `json:"auth"`
+	}
+	type clientConfig struct {
+		Auths map[string]auth `json:"auths"`
+	}
+	cc := clientConfig{Auths: map[string]auth{}}
+	for name, a := range auths {
+		cc.Auths[name] = auth{Auth: a}
+	}
+	content, err := json.MarshalIndent(cc, "", "\t")
+	if err != nil {
+		return nil, err
+	}
+	return []host.Resource{
+		host.Dir{Path: "/root/.docker", Owner: "root", Group: "root", Mode: 0o700},
+		host.File{
+			Path:    "/root/.docker/config.json",
+			Content: string(content) + "\n",
+			Owner:   "root",
+			Group:   "root",
+			Mode:    0o600,
+			Hidden:  true,
+		},
+	}, nil
 }
 
 // stacks deploys the host's compose stacks, after the volumes they mount.

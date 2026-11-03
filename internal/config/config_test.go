@@ -986,3 +986,49 @@ func TestDNSVhostRecords(t *testing.T) {
 	_, err := tr.tryOpen()
 	assert.ErrorContains(t, err, "dns.vhosts[0]: needs a type and content")
 }
+
+func TestHostConfig_dockerRegistries(t *testing.T) {
+	tr := newTestRepo(t, map[string]string{"hosts.d/hosts.yml": "alpha:\n  roles: {a: }\n", "roles/a/role.yml": ""})
+	password, err := tr.open(t).Encrypt("hunter2")
+	require.NoError(t, err)
+	writeFile(
+		t,
+		tr.dir,
+		"roles/a/role.yml",
+		"docker:\n  registries:\n    registry.example.com:\n"+
+			"      username: alice\n      password: "+nest(nest(nest(password)))+"\n",
+	)
+
+	c, err := tr.open(t).HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"registry.example.com": "YWxpY2U6aHVudGVyMg=="}, c.Docker.Auths)
+}
+
+func TestHostConfig_dockerRegistryErrors(t *testing.T) {
+	tests := []struct {
+		name, registry, want string
+	}{
+		{"no username", "password: PASSWORD\n", "docker.registries.r.example.com needs a username"},
+		{"no password", "username: alice\n", "docker.registries.r.example.com.password: secret is not set"},
+		{"plain password", "username: alice\npassword: hunter2\n", "secrets must be encrypted"},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				tr := newTestRepo(t, map[string]string{"hosts.d/hosts.yml": "alpha:\n  roles: {a: }\n", "roles/a/role.yml": ""})
+				password, err := tr.open(t).Encrypt("hunter2")
+				require.NoError(t, err)
+				writeFile(
+					t,
+					tr.dir,
+					"roles/a/role.yml",
+					"docker:\n  registries:\n    r.example.com:\n      "+
+						nest(nest(nest(strings.ReplaceAll(tt.registry, "PASSWORD", nest(password))))),
+				)
+				_, err = tr.open(t).HostConfig("alpha", "debian")
+				assert.ErrorContains(t, err, tt.want)
+			},
+		)
+	}
+}

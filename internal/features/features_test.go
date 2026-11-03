@@ -824,3 +824,35 @@ func TestResources_noJobsStillCleansUp(t *testing.T) {
 	assert.NotContains(t, ids(rs), "systemd-reload")
 	assert.Contains(t, ids(rs), "systemd-units:sensible-")
 }
+
+func TestResources_dockerRegistries(t *testing.T) {
+	h := testHost(archLinux)
+	rs, err := Resources(h)
+	require.NoError(t, err)
+	_, ok := find[host.File](rs, "file:/root/.docker/config.json")
+	assert.False(t, ok, "root's client config is left alone without registries")
+
+	h.Config.Docker.Auths = map[string]string{"b.example.com": "Yjpi", "a.example.com": "YTph"}
+	rs, err = Resources(h)
+	require.NoError(t, err)
+	got := ids(rs)
+	f, ok := find[host.File](rs, "file:/root/.docker/config.json")
+	require.True(t, ok)
+	assert.Equal(
+		t,
+		host.File{
+			Path: "/root/.docker/config.json",
+			Content: "{\n\t\"auths\": {\n" +
+				"\t\t\"a.example.com\": {\n\t\t\t\"auth\": \"YTph\"\n\t\t},\n" +
+				"\t\t\"b.example.com\": {\n\t\t\t\"auth\": \"Yjpi\"\n\t\t}\n" +
+				"\t}\n}\n",
+			Owner:  "root",
+			Group:  "root",
+			Mode:   0o600,
+			Hidden: true,
+		},
+		f,
+	)
+	assert.Less(t, indexAfter(got, "dir:/root/.docker", -1), indexAfter(got, "file:/root/.docker/config.json", -1))
+	assert.Less(t, indexAfter(got, "file:/root/.docker/config.json", -1), indexAfter(got, "compose:/srv/compose/web", -1))
+}

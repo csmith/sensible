@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"maps"
@@ -186,6 +187,36 @@ type DockerConfig struct {
 	// Networks are created before any stack, so stacks can share them as
 	// external networks.
 	Networks map[string]DockerNetworkConfig `yaml:"networks"`
+	// Registries are the credentials root's Docker client pulls with, by
+	// registry host, e.g. "ghcr.io".
+	Registries map[string]RegistryConfig `yaml:"registries"`
+
+	// Auths are each registry's base64 "username:password", as Docker's
+	// client config holds them. HostConfig sets it.
+	Auths map[string]string `yaml:"-"`
+}
+
+type RegistryConfig struct {
+	Username string `yaml:"username"`
+	Password Secret `yaml:"password"`
+}
+
+func (c *DockerConfig) reveal() error {
+	if len(c.Registries) == 0 {
+		return nil
+	}
+	c.Auths = map[string]string{}
+	for name, r := range c.Registries {
+		if r.Username == "" {
+			return fmt.Errorf("docker.registries.%s needs a username", name)
+		}
+		password, err := r.Password.Reveal()
+		if err != nil {
+			return fmt.Errorf("docker.registries.%s.password: %w", name, err)
+		}
+		c.Auths[name] = base64.StdEncoding.EncodeToString([]byte(r.Username + ":" + password))
+	}
+	return nil
 }
 
 type DockerNetworkConfig struct {
