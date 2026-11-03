@@ -39,6 +39,24 @@ func TestComposeStack_InSyncWhenEveryServiceRuns(t *testing.T) {
 	assert.True(t, change.InSync, change.Diff)
 }
 
+func TestComposeStack_InSyncWhenCompletedServicesArePruned(t *testing.T) {
+	sys := newTestSys(t)
+	sys.on(composeArgs+"config --format json", webConfig(t), 0)
+	sys.on(
+		"docker ps *",
+		"web\tapp\tFalse\trunning\tUp 2 hours\n"+
+			"web\tworker\tFalse\trunning\tUp 2 hours\n"+
+			"web\tworker\tFalse\trunning\tUp 2 hours\n"+
+			"web\tmanual\tFalse\trunning\tUp 2 hours\n",
+		0,
+	)
+
+	change, err := ComposeStack{Dir: "/srv/compose/web"}.Check(context.Background(), sys)
+
+	require.NoError(t, err)
+	assert.True(t, change.InSync, change.Diff)
+}
+
 func TestComposeStack_StartsWhatIsDown(t *testing.T) {
 	sys := newTestSys(t)
 	sys.on(composeArgs+"config --format json", webConfig(t), 0)

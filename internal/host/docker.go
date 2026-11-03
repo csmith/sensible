@@ -70,7 +70,9 @@ func (r ComposeStack) containerDiff(ctx context.Context, sys Sys) (string, error
 		return "", err
 	}
 
-	// Services others wait on to complete are satisfied by a clean exit.
+	// Services others wait on to complete are satisfied by a clean exit, or
+	// by having no container, as pruning removes exited containers. If what
+	// waits on them isn't running, it's started and they run first.
 	completes := map[string]bool{}
 	for _, s := range project.Services {
 		for dep, d := range s.DependsOn {
@@ -103,6 +105,7 @@ func (r ComposeStack) containerDiff(ctx context.Context, sys Sys) (string, error
 		switch {
 		case want == 0 && existing[name] > 0:
 			diff.WriteString("remove " + name + ", which has no replicas\n")
+		case completes[name] && existing[name] == 0:
 		case running[name] < want:
 			fmt.Fprintf(&diff, "start %s (%d of %d running)\n", name, running[name], want)
 		}
