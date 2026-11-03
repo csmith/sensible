@@ -22,19 +22,47 @@ import (
 	"chameth.com/sensible/internal/host"
 )
 
-// Facts prints a host's facts as its agent reports them.
-func Facts(ctx context.Context, configDir, name, addr string, out io.Writer) error {
+// Facts prints the selected hosts' facts, as their agents report them, as a
+// JSON object keyed by host name. Empty hosts means all hosts. Progress and
+// unreachable hosts are reported on stderr; the hosts that could be reached
+// are still printed.
+func Facts(ctx context.Context, configDir string, hosts []string, addrs map[string]string, out io.Writer) error {
 	repo, err := openRepo(configDir, os.Stderr)
 	if err != nil {
 		return err
 	}
-	facts, err := fetchFacts(ctx, repo, name, addr)
+	names, err := selectHosts(repo.Inventory(), hosts, addrs)
 	if err != nil {
 		return err
 	}
+	builder := NewEmbeddedBuilds()
+	targets := make([]target, len(names))
+	for i, name := range names {
+		targets[i] = newTarget(repo, name, addrs[name], builder)
+	}
+	r := &Runner{Out: os.Stderr, Builds: builder}
+	return r.Facts(ctx, targets, out)
+}
+
+// Facts connects to the targets and writes the facts of those it reached
+// to out.
+func (r *Runner) Facts(ctx context.Context, targets []target, out io.Writer) error {
+	runs := r.connect(ctx, targets)
+	defer byeAll(runs)
+	newRenderer(r.Out).agents(runs)
+
+	facts := map[string]host.Facts{}
+	for _, h := range runs {
+		if h.err == nil {
+			facts[h.name] = h.facts
+		}
+	}
 	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")
-	return enc.Encode(facts)
+	if err := enc.Encode(facts); err != nil {
+		return err
+	}
+	return failedErr(anyFailed(runs))
 }
 
 func fetchFacts(ctx context.Context, repo *config.Repo, name, addr string) (host.Facts, error) {

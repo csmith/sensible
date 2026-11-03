@@ -25,7 +25,7 @@ Commands:
   bootstrap <host> [--user account] [--rotate] [--host-key SHA256:...]
   plan [hosts...] [--addr host=address]
   apply [hosts...] [--addr host=address] [--yes]
-  facts <host> [--addr host=address]
+  facts [hosts...] [--addr host=address]
   config <host> [--os family] [--addr host=address]
   secret encrypt [--raw]
   secret show <file> <path>
@@ -112,8 +112,8 @@ func command(ctx context.Context, name string, args []string) error {
 				Yes:       *yes,
 			},
 		)
-	case name == "facts" && len(args) == 1:
-		return run.Facts(ctx, *configDir, args[0], addrs[args[0]], os.Stdout)
+	case name == "facts":
+		return run.Facts(ctx, *configDir, args, addrs, os.Stdout)
 	case name == "config" && len(args) == 1:
 		return run.ShowConfig(ctx, *configDir, args[0], *osFamily, addrs[args[0]], os.Stdout)
 	case name == "secret" && len(args) == 1 && args[0] == "encrypt":

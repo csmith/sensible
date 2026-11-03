@@ -275,13 +275,7 @@ var errFailed = errors.New("one or more targets failed")
 func (r *Runner) Execute(ctx context.Context, targets []target, apply, yes bool) error {
 	out := newRenderer(r.Out)
 	runs := r.connect(ctx, targets)
-	defer func() {
-		for _, h := range runs {
-			if h.agent != nil {
-				h.agent.bye()
-			}
-		}
-	}()
+	defer byeAll(runs)
 	out.agents(runs)
 
 	r.checkAll(runs)
@@ -377,6 +371,14 @@ func (r *Runner) connect(ctx context.Context, targets []target) []*hostRun {
 		}()
 	}
 	return runs
+}
+
+func byeAll(runs []*hostRun) {
+	for _, h := range runs {
+		if h.agent != nil {
+			h.agent.bye()
+		}
+	}
 }
 
 func (h *hostRun) connect(ctx context.Context, builds Builds) {
