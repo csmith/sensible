@@ -354,12 +354,28 @@ func stacks(h Host) ([]host.Resource, error) {
 		rs = append(rs, stack(s)...)
 	}
 	// Networks are removed after the stacks that might use them.
-	return append(rs, host.ComposeProjects{Path: config.StacksDir}, host.DockerNetworks{}), nil
+	return append(rs, host.ComposeProjects{Path: config.StacksDir}, host.DockerNetworks{}, host.Migrations{}), nil
 }
 
 func stack(s config.Stack) []host.Resource {
 	dir := s.Dir()
-	rs := []host.Resource{host.Dir{Path: dir, Owner: "root", Group: "docker", Mode: 0o750}}
+	migration := func(m config.Migration, phase string) host.Migration {
+		return host.Migration{
+			Stack:  dir,
+			Name:   m.Name,
+			Phase:  phase,
+			On:     m.On,
+			Secret: m.Secret,
+			Before: m.Before,
+			After:  m.After,
+		}
+	}
+	// Ahead of the stack's files, so a failure leaves the stack as it was.
+	rs := make([]host.Resource, 0, 2*len(s.Migrations)+2*len(s.Files)+3)
+	for _, m := range s.Migrations {
+		rs = append(rs, migration(m, host.PhaseBefore))
+	}
+	rs = append(rs, host.Dir{Path: dir, Owner: "root", Group: "docker", Mode: 0o750})
 	watch := make([]string, 0, len(s.Files)+1)
 	dirs := map[string]bool{dir: true}
 	for _, f := range s.Files {
@@ -392,5 +408,9 @@ func stack(s config.Stack) []host.Resource {
 	owned := host.OwnedDir{Path: dir, Recursive: true}
 	rs = append(rs, owned)
 	watch = append(watch, owned.ID())
-	return append(rs, host.ComposeStack{Dir: dir, Watch: watch})
+	rs = append(rs, host.ComposeStack{Dir: dir, Watch: watch})
+	for _, m := range s.Migrations {
+		rs = append(rs, migration(m, host.PhaseAfter))
+	}
+	return rs
 }

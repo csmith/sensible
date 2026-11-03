@@ -54,6 +54,20 @@ type Stack struct {
 	// this stack rather than saved for the host, by name. Repo.SaveGenerated
 	// must save them before the stack is deployed with them.
 	Generated map[string]string
+	// Migrations are in name order.
+	Migrations []Migration
+}
+
+// Migration handles a change to a stack, such as a database's major
+// version, that needs commands run around its recreate. A host with no
+// record of it only records its value, so it must be deployed before the
+// change it handles.
+type Migration struct {
+	Name string
+	On   string
+	// Secret is set when On comes from an !age or !generated tag.
+	Secret        bool
+	Before, After Command
 }
 
 func (s Stack) Dir() string {
@@ -360,6 +374,9 @@ func (r *Repo) renderStack(role string, e expansion, generated map[string]map[st
 		}
 		s.Files = append(s.Files, *env)
 	}
+	if s.Migrations, err = c.renderMigrations(e.migrations); err != nil {
+		return Stack{}, fmt.Errorf("%s: %w", migrationsKey, err)
+	}
 	s.Generated = c.gen.created
 
 	for _, rel := range def.files {
@@ -654,6 +671,92 @@ func (c *composeRenderer) secret(tag *ast.TagNode) (string, error) {
 		return "", nodeError(tag, err.Error())
 	}
 	return plain, nil
+}
+
+const migrationsKey = "migrations"
+
+// migrationConfig is a migration as a role or partial writes it.
+type migrationConfig struct {
+	On     rawNode `yaml:"on"`
+	Before Command `yaml:"before"`
+	After  Command `yaml:"after"`
+}
+
+// splitMigrations separates a role or partial file's migrations, which
+// belong to its stack, from the settings merged into the host's config. The
+// migrations are returned as a mapping with only that key, or nil.
+func splitMigrations(node ast.Node) (ast.Node, ast.Node) {
+	m, ok := node.(*ast.MappingNode)
+	if !ok {
+		return node, nil
+	}
+	rest := ast.Mapping(m.Start, m.IsFlowStyle)
+	var migrations ast.Node
+	for _, v := range m.Values {
+		if keyString(v.Key) == migrationsKey {
+			migrations = ast.Mapping(m.Start, false, v)
+			continue
+		}
+		rest.Values = append(rest.Values, v)
+	}
+	return rest, migrations
+}
+
+var migrationName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
+
+func (c *composeRenderer) renderMigrations(section ast.Node) ([]Migration, error) {
+	if section == nil {
+		return nil, nil
+	}
+	if err := checkMigrationCommands(section); err != nil {
+		return nil, err
+	}
+	var s struct {
+		Migrations map[string]migrationConfig `yaml:"migrations"`
+	}
+	if err := decode(c.repo.keys.context(), section, &s); err != nil {
+		return nil, err
+	}
+	var out []Migration
+	for _, name := range slices.Sorted(maps.Keys(s.Migrations)) {
+		mc := s.Migrations[name]
+		if !migrationName.MatchString(name) {
+			return nil, fmt.Errorf("%q can't be a migration's name; use letters, digits, \"-\", \"_\" and \".\"", name)
+		}
+		if isNull(mc.On.node) {
+			return nil, fmt.Errorf("%s needs on, the value that runs it when it changes", name)
+		}
+		if len(mc.Before) == 0 && len(mc.After) == 0 {
+			return nil, fmt.Errorf("%s needs before, after or both", name)
+		}
+		on, secret, err := c.envValue(mc.On.node)
+		if err != nil {
+			return nil, fmt.Errorf("%s: on: %w", name, err)
+		}
+		out = append(out, Migration{Name: name, On: on, Secret: secret, Before: mc.Before, After: mc.After})
+	}
+	return out, nil
+}
+
+// checkMigrationCommands rejects secrets in migrations' commands, which
+// would be shown in plans and process lists. Commands read them from the
+// stack's compose.env variables instead.
+func checkMigrationCommands(section ast.Node) error {
+	for _, m := range mappingValues(section) {
+		for _, mv := range mappingValues(m.Value) {
+			for _, cmd := range mappingValues(mv.Value) {
+				if k := keyString(cmd.Key); k != "before" && k != "after" {
+					continue
+				}
+				for _, tag := range []string{ageTag, generatedTag} {
+					if t := findTag(cmd.Value, tag); t != nil {
+						return nodeError(t, "a migration's commands can't hold secrets; read them from compose.env's variables")
+					}
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // renderEnv writes compose.env as the stack's .env, returning nil if it sets

@@ -89,7 +89,10 @@ func mergeSequence(lower, upper *ast.SequenceNode, replace bool) ast.Node {
 
 // atomicLists are the paths in Config of the lists that are single values,
 // with "*" for any map key.
-var atomicLists = commandPaths(reflect.TypeFor[Config](), nil)
+var atomicLists = append(
+	commandPaths(reflect.TypeFor[Config](), nil),
+	commandPaths(reflect.TypeFor[map[string]migrationConfig](), []string{migrationsKey})...,
+)
 
 func commandPaths(t reflect.Type, path []string) [][]string {
 	if t == reflect.TypeFor[Command]() {

@@ -124,6 +124,9 @@ type expansion struct {
 	partials []map[string]ast.Node
 	// env is the stack's compose.env, merged over its partials'.
 	env ast.Node
+	// migrations are the stack's migrations, merged over its partials', as
+	// a mapping with only the migrations key.
+	migrations ast.Node
 }
 
 func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (expansion, error) {
@@ -180,15 +183,7 @@ func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (expan
 		if err != nil {
 			return expansion{}, fmt.Errorf("%s: %w", r.path(l.file), err)
 		}
-		if err := checkNoGenerated(node); err != nil {
-			return expansion{}, fmt.Errorf("%s: %w", r.path(l.file), err)
-		}
-		// Each file is checked alone first, so errors name the file at fault.
-		if err := decode(r.keys.context(), merge(nil, node), &Config{}); err != nil {
-			return expansion{}, fmt.Errorf("%s: %w", r.path(l.file), err)
-		}
-		// After substitution, as a host's parameters may hold a !vhost.
-		if err := resolveTags(node, vhostTag, vhostText); err != nil {
+		if err := r.checkLayer(node); err != nil {
 			return expansion{}, fmt.Errorf("%s: %w", r.path(l.file), err)
 		}
 		// The role's partials are beneath role.yml, which can only replace
@@ -204,7 +199,25 @@ func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (expan
 	if err != nil {
 		return expansion{}, err
 	}
-	return expansion{node: merged, params: values, partials: partials, env: env}, nil
+	merged, migrations := splitMigrations(merged)
+	if _, ok := r.stacks[role]; !ok && migrations != nil {
+		return expansion{}, fmt.Errorf("%s: migrations only work in a role with a stack", r.path("roles", role))
+	}
+	return expansion{node: merged, params: values, partials: partials, env: env, migrations: migrations}, nil
+}
+
+// checkLayer checks a role file's settings, with its parameters' values,
+// alone, so errors name the file at fault. It resolves its !vhost tags.
+func (r *Repo) checkLayer(node ast.Node) error {
+	settings, _ := splitMigrations(node)
+	if err := checkNoGenerated(settings); err != nil {
+		return err
+	}
+	if err := decode(r.keys.context(), merge(nil, settings), &Config{}); err != nil {
+		return err
+	}
+	// After substitution, as a host's parameters may hold a !vhost.
+	return resolveTags(node, vhostTag, vhostText)
 }
 
 // composeSetting is the named setting under compose in a role or partial
@@ -302,11 +315,10 @@ func checkEnv(env ast.Node) error {
 	return nil
 }
 
-// checkNoGenerated rejects a !generated outside a stack's compose file and
-// compose.env, where it would be taken as the name it's given.
+// checkNoGenerated rejects a !generated where it would be read as its name.
 func checkNoGenerated(node ast.Node) error {
 	if tag := findTag(node, generatedTag); tag != nil {
-		return nodeError(tag, "!generated only works in a stack's compose file and compose.env")
+		return nodeError(tag, "!generated only works in a stack's compose file, compose.env and migrations' on")
 	}
 	return nil
 }

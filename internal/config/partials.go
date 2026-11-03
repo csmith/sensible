@@ -440,14 +440,15 @@ func (r *Repo) partialSettings(role, file string, values map[string]ast.Node) (a
 	if err != nil {
 		return nil, err
 	}
-	if err := checkNoGenerated(filled); err != nil {
+	settings, _ := splitMigrations(filled)
+	if err := checkNoGenerated(settings); err != nil {
 		return nil, err
 	}
 	volumePath := func(tag *ast.TagNode) (string, error) { return r.volumePath(role, tag) }
 	if err := resolveTags(filled, volumeTag, volumePath); err != nil {
 		return nil, err
 	}
-	if err := decode(r.keys.context(), merge(nil, filled), &Config{}); err != nil {
+	if err := decode(r.keys.context(), merge(nil, settings), &Config{}); err != nil {
 		return nil, err
 	}
 	if err := resolveTags(filled, vhostTag, vhostText); err != nil {

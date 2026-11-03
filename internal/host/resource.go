@@ -83,6 +83,8 @@ var resourceTypes = registry(
 	OwnedDir{},
 	ComposeStack{},
 	ComposeProjects{},
+	Migration{},
+	Migrations{},
 	TailscaleSet{},
 	DockerNetwork{},
 	DockerNetworks{},

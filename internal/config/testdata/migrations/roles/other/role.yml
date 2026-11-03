@@ -1,0 +1,1 @@
+partials: [{partial: pg, service: db}]

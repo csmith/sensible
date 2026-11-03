@@ -75,6 +75,8 @@ type Cmd struct {
 	// User runs the command as that account, from its home directory if it
 	// exists. Empty runs it as the agent's user.
 	User string
+	// Dir is where the command runs, in place of / or the user's home.
+	Dir string
 }
 
 type Result struct {
@@ -161,6 +163,9 @@ func (s *localSys) Run(ctx context.Context, cmd Cmd) (Result, error) {
 		if info, err := os.Stat(u.Home); err == nil && info.IsDir() {
 			c.Dir = u.Home
 		}
+	}
+	if cmd.Dir != "" {
+		c.Dir = s.path(cmd.Dir)
 	}
 	maps.Copy(env, cmd.Env)
 	for k, v := range env {

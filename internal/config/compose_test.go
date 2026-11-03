@@ -608,7 +608,7 @@ func TestHostConfig_generatedErrors(t *testing.T) {
 		{
 			"in role settings",
 			map[string]string{"roles/web/role.yml": "jobs:\n  a: {command: [!generated x], schedule: daily}\n"},
-			"!generated only works in a stack's compose file and compose.env",
+			"!generated only works in a stack's compose file, compose.env and migrations' on",
 		},
 		{
 			"in role settings through a param",
@@ -693,6 +693,107 @@ func TestOpen_composeEnvNeedsAStack(t *testing.T) {
 				files["hosts.d/hosts.yml"] = "alpha:\n  roles: {web: }\n"
 				_, err := newTestRepo(t, files).tryOpen()
 				assert.ErrorContains(t, err, "compose.env needs a docker-compose.yml")
+			},
+		)
+	}
+}
+
+func TestHostConfig_migrations(t *testing.T) {
+	c, err := newTestRepo(t, readTestTree(t, "migrations")).open(t).HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	require.Len(t, c.Stacks, 2)
+
+	assert.Equal(
+		t,
+		[]Migration{{
+			Name:   "db-major",
+			On:     "database",
+			Before: Command{"sh", "-c", `pg_dumpall > "$MIGRATION_DIR/dump.sql" # other`},
+			After:  Command{"sh", "-c", `psql < "$MIGRATION_DIR/dump.sql"`},
+		}},
+		c.Stacks[0].Migrations,
+		"each stack has its own migrations, under the same names",
+	)
+
+	web := c.Stacks[1]
+	require.Len(t, web.Migrations, 2)
+	assert.Equal(t, "database-17", web.Migrations[0].On)
+	assert.Equal(
+		t,
+		Migration{
+			Name:   "password",
+			On:     web.Generated["db"],
+			Secret: true,
+			After:  Command{"sh", "-c", `psql -c "ALTER USER app PASSWORD '$DB_PASSWORD'"`},
+		},
+		web.Migrations[1],
+	)
+}
+
+func TestHostConfig_migrationErrors(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{
+			"no stack",
+			map[string]string{
+				"roles/web/role.yml":           "migrations:\n  m: {on: x, after: [true]}\n",
+				"roles/web/docker-compose.yml": "",
+			},
+			"migrations only work in a role with a stack",
+		},
+		{
+			"no on",
+			map[string]string{"roles/web/role.yml": "migrations:\n  m: {after: [true]}\n"},
+			"m needs on",
+		},
+		{
+			"no commands",
+			map[string]string{"roles/web/role.yml": "migrations:\n  m: {on: x}\n"},
+			"m needs before, after or both",
+		},
+		{
+			"bad name",
+			map[string]string{"roles/web/role.yml": "migrations:\n  a/b: {on: x, after: [true]}\n"},
+			`"a/b" can't be a migration's name`,
+		},
+		{
+			"secret in a command",
+			map[string]string{"roles/web/role.yml": "migrations:\n  m: {on: x, after: [echo, !generated db]}\n"},
+			"a migration's commands can't hold secrets",
+		},
+		{
+			"partial and role set a migration differently",
+			map[string]string{
+				"partials/x/partial.yml": "migrations:\n  m: {on: a, after: [true]}\n",
+				"roles/web/role.yml":     "partials: [{partial: x}]\nmigrations:\n  m: {on: b, after: [true]}\n",
+			},
+			"set migrations.m.on differently",
+		},
+		{
+			"!generated elsewhere",
+			map[string]string{
+				"roles/web/role.yml": "migrations:\n  m: {on: x, after: [true]}\nntp: {servers: [!generated a]}\n",
+			},
+			"!generated only works",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				files := map[string]string{
+					"hosts.d/hosts.yml":            "alpha:\n  roles: {web: }\n",
+					"roles/web/docker-compose.yml": "services: {}\n",
+				}
+				maps.Copy(files, tt.files)
+				if files["roles/web/docker-compose.yml"] == "" {
+					delete(files, "roles/web/docker-compose.yml")
+				}
+				_, err := newTestRepo(t, files).open(t).HostConfig("alpha", "debian")
+				require.ErrorContains(t, err, tt.want)
 			},
 		)
 	}

@@ -1,0 +1,8 @@
+params:
+  service: postgres
+  volume: database
+migrations:
+  "{service}-major":
+    on: "{volume}"
+    before: [sh, -c, 'pg_dumpall > "$MIGRATION_DIR/dump.sql" # {stack}']
+    after: [sh, -c, 'psql < "$MIGRATION_DIR/dump.sql"']

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 )
 
 // engine checks and applies a host's resources in order.
@@ -164,7 +165,7 @@ func (e *engine) record(res Applied) {
 // which is only safe if they all succeeded.
 func isCleanUp(r Resource) bool {
 	switch r.(type) {
-	case OwnedDir, ComposeProjects, DockerNetworks, SystemdUnits:
+	case OwnedDir, ComposeProjects, DockerNetworks, SystemdUnits, Migrations:
 		return true
 	default:
 		return false
@@ -173,8 +174,8 @@ func isCleanUp(r Resource) bool {
 
 // runState is shared by the resources in one check or apply.
 type runState struct {
-	// declared holds the paths of every File, Dir, ComposeStack and apt
-	// source and key seen so far, for the clean-up resources.
+	// declared holds the paths of every File, Dir, ComposeStack, Migration
+	// and apt source and key seen so far, for the clean-up resources.
 	declared map[string]bool
 	// modified holds the IDs of resources that changed earlier in an apply,
 	// or that a check found would change.
@@ -212,6 +213,9 @@ func (s *runState) declare(r Resource) {
 		s.declared[r.sourcesPath()] = true
 	case DockerNetwork:
 		s.networks[r.Name] = true
+	case Migration:
+		s.declared[filepath.Dir(r.dir())] = true
+		s.declared[r.dir()] = true
 	default:
 	}
 }

@@ -1,0 +1,11 @@
+params:
+  volume: database-16
+partials:
+  - {partial: pg, service: db, volume: !param volume}
+compose:
+  env:
+    DB_PASSWORD: !generated db
+migrations:
+  password:
+    on: !generated db
+    after: [sh, -c, 'psql -c "ALTER USER app PASSWORD ''$DB_PASSWORD''"']

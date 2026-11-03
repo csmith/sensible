@@ -449,6 +449,53 @@ func TestResources_stack(t *testing.T) {
 	)
 }
 
+func TestResources_stackMigrations(t *testing.T) {
+	h := testHost(archLinux)
+	h.Config.Stacks = []config.Stack{
+		{
+			Name:  "web",
+			Files: []config.StackFile{{Path: "docker-compose.yml", Content: "services: {}\n"}},
+			Migrations: []config.Migration{
+				{Name: "a", On: "x", Before: config.Command{"dump"}},
+				{Name: "b", On: "pw", Secret: true, After: config.Command{"alter"}},
+			},
+		},
+	}
+	rs, err := Resources(h)
+	require.NoError(t, err)
+
+	got := ids(rs)
+	assert.Equal(
+		t,
+		[]string{
+			"migration-before:web/a",
+			"migration-before:web/b",
+			"dir:/srv/compose/web",
+			"file:/srv/compose/web/docker-compose.yml",
+			"owned-dir:/srv/compose/web",
+			"compose:/srv/compose/web",
+			"migration-after:web/a",
+			"migration-after:web/b",
+		},
+		got[slices.Index(got, "migration-before:web/a"):slices.Index(got, "migration-after:web/b")+1],
+	)
+	assert.Equal(t, "migrations", got[slices.Index(got, "docker-networks")+1], "records are cleaned up after the stacks")
+	b, ok := find[host.Migration](rs, "migration-after:web/b")
+	require.True(t, ok)
+	assert.Equal(
+		t,
+		host.Migration{
+			Stack:  "/srv/compose/web",
+			Name:   "b",
+			Phase:  "after",
+			On:     "pw",
+			Secret: true,
+			After:  []string{"alter"},
+		},
+		b,
+	)
+}
+
 func TestResources_dockerNetworks(t *testing.T) {
 	h := testHost(archLinux)
 	h.Config.Docker.Networks = map[string]config.DockerNetworkConfig{
