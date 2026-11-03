@@ -4,7 +4,7 @@ services:
     volumes:
       - !volume data:/data
   db:
-    image: postgres:17.6
+    image: db:test
     read_only: true
     restart: unless-stopped
     user: "70"

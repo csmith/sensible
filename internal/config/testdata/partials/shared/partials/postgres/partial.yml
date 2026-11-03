@@ -1,7 +1,7 @@
 params:
   service: postgres
   volume: database
-  image: postgres:17
+  image: db:default
   user: ~
   password: ~
   data: /var/lib/postgresql/data

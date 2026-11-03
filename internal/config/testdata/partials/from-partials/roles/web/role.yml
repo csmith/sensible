@@ -3,7 +3,7 @@ params:
 partials:
   - partial: postgres
     service: db
-    image: postgres:17.6
+    image: db:test
     user: !param db_user
     password: SECRET
   - {partial: tailscale-proxy, service: app-thp, volume: app-tailscale, hostname: app, upstream: "http://app:8080"}
