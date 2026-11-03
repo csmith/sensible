@@ -170,7 +170,7 @@ func pamRSSH(h Host) ([]host.Resource, error) {
 	if err != nil {
 		return nil, err
 	}
-	return append(
+	rs = append(
 		rs,
 		// The keys that may authenticate sudo.
 		host.File{
@@ -182,13 +182,22 @@ func pamRSSH(h Host) ([]host.Resource, error) {
 		},
 		// Let sudo pass the agent through to pam_rssh.
 		sudoersFile("pam_rssh", []string{`Defaults env_keep += "SSH_AUTH_SOCK"`}),
-		host.LineInFile{
-			Path:         "/etc/pam.d/sudo",
+	)
+
+	services := []string{"sudo"}
+	if h.Facts.OSFamily == debian {
+		// Debian's sudo authenticates `sudo -i` with its own PAM service.
+		services = append(services, "sudo-i")
+	}
+	for _, service := range services {
+		rs = append(rs, host.LineInFile{
+			Path:         "/etc/pam.d/" + service,
 			Regexp:       `^\s*auth\s+\S+\s+\S*pam_rssh\.so`,
 			Line:         "auth sufficient " + module + " auth_key_file=/etc/sudoers.keys",
 			InsertBefore: `^\s*(auth\s|@include\s+common-auth)`,
-		},
-	), nil
+		})
+	}
+	return rs, nil
 }
 
 func installPAMRSSH(h Host) ([]host.Resource, string, error) {

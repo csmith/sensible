@@ -620,9 +620,18 @@ func TestResources_pamRSSHDebianArch(t *testing.T) {
 	d, ok := find[host.Download](rs, "download:/var/cache/debian-trixie-arm64-pam-rssh_1.2.2-1_arm64.deb")
 	require.True(t, ok)
 	assert.NotEmpty(t, d.SHA256)
-	l, ok := find[host.LineInFile](rs, "line:/etc/pam.d/sudo:"+`^\s*auth\s+\S+\s+\S*pam_rssh\.so`)
-	require.True(t, ok)
-	assert.Contains(t, l.Line, "/lib/aarch64-linux-gnu/security/libpam_rssh.so")
+	for _, service := range []string{"sudo", "sudo-i"} {
+		l, ok := find[host.LineInFile](rs, "line:/etc/pam.d/"+service+":"+`^\s*auth\s+\S+\s+\S*pam_rssh\.so`)
+		require.True(t, ok, service)
+		assert.Contains(t, l.Line, "/lib/aarch64-linux-gnu/security/libpam_rssh.so")
+	}
+}
+
+func TestResources_pamRSSHArchHasNoLoginService(t *testing.T) {
+	rs, err := Resources(testHost(archLinux))
+	require.NoError(t, err)
+	_, ok := find[host.LineInFile](rs, "line:/etc/pam.d/sudo-i:"+`^\s*auth\s+\S+\s+\S*pam_rssh\.so`)
+	assert.False(t, ok)
 }
 
 func TestResources_zshrc(t *testing.T) {
