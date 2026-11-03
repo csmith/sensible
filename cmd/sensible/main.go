@@ -22,7 +22,7 @@ var (
 const usage = `Usage: sensible [flags] <command> [args]
 
 Commands:
-  bootstrap <host> [--user root|chris] [--rotate] [--host-key SHA256:...]
+  bootstrap <host> [--user account] [--rotate] [--host-key SHA256:...]
   plan [hosts...] [--addr host=address]
   apply [hosts...] [--addr host=address] [--yes]
   facts <host> [--addr host=address]
@@ -72,7 +72,7 @@ func command(ctx context.Context, name string, args []string) error {
 	user, rotate, yes, osFamily, hostKey, raw := new(string), new(bool), new(bool), new(string), new(string), new(bool)
 	switch name {
 	case "bootstrap":
-		user = fs.String("user", "", "Account to set the host up through: root or chris")
+		user = fs.String("user", "", "Account to set the host up through: root, or one with sudo")
 		rotate = fs.Bool("rotate", false, "Replace existing credentials")
 		hostKey = fs.String("host-key", "", "Expected SHA256 fingerprint of a new host's key, instead of asking")
 	case "plan", "facts", "config":

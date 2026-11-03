@@ -29,8 +29,10 @@ import (
 type BootstrapOptions struct {
 	ConfigDir string
 	Host      string
-	// User is "root" or "chris". With Rotate it may be empty, in which case
-	// the host's existing sensible access is used.
+	// User is the account to log in as with the SSH agent's keys. Root may
+	// also use a password; other accounts install through sudo. With Rotate
+	// it may be empty, in which case the host's existing sensible access is
+	// used.
 	User   string
 	Rotate bool
 	// HostKey is the SHA256 fingerprint the host's key must have when it
@@ -54,8 +56,6 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 		return fmt.Errorf("%s is this machine, which is reached with sudo and needs no bootstrap", opts.Host)
 	case entry.Address == "":
 		return fmt.Errorf("%s has no address", opts.Host)
-	case opts.User != "" && opts.User != "root" && opts.User != "chris":
-		return fmt.Errorf("--user must be root or chris, not %q", opts.User)
 	case opts.User == "" && !opts.Rotate:
 		return errors.New("--user is required")
 	}

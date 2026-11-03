@@ -251,3 +251,18 @@ func TestRotate_setsPasswordAndKeyThroughExistingAgent(t *testing.T) {
 	assert.Equal(t, features.AccessFiles(creds.authorizedKey), files)
 	assert.Contains(t, f.server.agent.messages(), "Apply")
 }
+
+func TestBootstrap_acceptsAnyAccount(t *testing.T) {
+	_, dir, _ := testRepo(t)
+	t.Setenv("SSH_AUTH_SOCK", "")
+
+	err := Bootstrap(t.Context(), BootstrapOptions{ConfigDir: dir, Host: "acidburn", User: "deploy"})
+	assert.ErrorContains(t, err, "no SSH agent")
+}
+
+func TestBootstrap_requiresUserUnlessRotating(t *testing.T) {
+	_, dir, _ := testRepo(t)
+
+	err := Bootstrap(t.Context(), BootstrapOptions{ConfigDir: dir, Host: "acidburn"})
+	assert.EqualError(t, err, "--user is required")
+}
