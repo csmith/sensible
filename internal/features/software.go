@@ -190,12 +190,15 @@ func pamRSSH(h Host) ([]host.Resource, error) {
 		services = append(services, "sudo-i")
 	}
 	for _, service := range services {
-		rs = append(rs, host.LineInFile{
-			Path:         "/etc/pam.d/" + service,
-			Regexp:       `^\s*auth\s+\S+\s+\S*pam_rssh\.so`,
-			Line:         "auth sufficient " + module + " auth_key_file=/etc/sudoers.keys",
-			InsertBefore: `^\s*(auth\s|@include\s+common-auth)`,
-		})
+		rs = append(
+			rs,
+			host.LineInFile{
+				Path:         "/etc/pam.d/" + service,
+				Regexp:       `^\s*auth\s+\S+\s+\S*pam_rssh\.so`,
+				Line:         "auth sufficient " + module + " auth_key_file=/etc/sudoers.keys",
+				InsertBefore: `^\s*(auth\s|@include\s+common-auth)`,
+			},
+		)
 	}
 	return rs, nil
 }
