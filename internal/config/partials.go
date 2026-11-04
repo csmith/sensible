@@ -441,7 +441,7 @@ func (r *Repo) partialSettings(role, file string, values map[string]ast.Node) (a
 		return nil, err
 	}
 	settings, _ := splitMigrations(filled)
-	if err := checkNoGenerated(settings); err != nil {
+	if err := checkStackTags(settings); err != nil {
 		return nil, err
 	}
 	volumePath := func(tag *ast.TagNode) (string, error) { return r.volumePath(role, tag) }

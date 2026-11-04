@@ -44,6 +44,8 @@ type HostEntry struct {
 	// Generated are the values of the host's !generated tags, by stack and
 	// name.
 	Generated map[string]map[string]Secret `yaml:"generated"`
+	// Certs are the certificates issued to the host, by name.
+	Certs map[string]savedCert `yaml:"certs"`
 }
 
 // HostKeys drops duplicate keys, as a key is often in both a hand-written
@@ -129,12 +131,15 @@ type Config struct {
 	Jobs      map[string]JobConfig     `yaml:"jobs"`
 	Backups   map[string]BackupConfig  `yaml:"backups"`
 	Restic    *ResticConfig            `yaml:"restic"`
+	Certs     map[string]CertConfig    `yaml:"certs"`
 	// Stacks come from the host's roles that have a docker-compose.yml,
 	// rather than from a module, and are in name order.
 	Stacks []Stack `yaml:"-"`
 	// Volumes are those of the host's roles and their parents, in path
 	// order.
 	Volumes []Volume `yaml:"-"`
+	// IssuedCerts are the certificates in Certs, ready to be written.
+	IssuedCerts []Cert `yaml:"-"`
 }
 
 // AptRepoConfig is a deb822 apt source, named by its key. "{release}" in
@@ -357,6 +362,13 @@ type Repo struct {
 	params map[string][]ast.Node
 	// vhosts maps each vhost to the hosts serving it.
 	vhosts map[string][]string
+	// caNames are sensible.yml's cas.
+	caNames []string
+	// cas are the CAs in the CA state file.
+	cas map[string]savedCert
+	// authorities are the CAs used so far, including any not yet saved.
+	authorities map[string]*authority
+	now         func() time.Time
 }
 
 // Open reads hosts.d and sensible.yml from dir and checks the directory's
@@ -371,6 +383,9 @@ func Open(dir string, identity IdentitySource) (*Repo, error) {
 	}
 	r.keys.source = identity
 
+	if err := r.readCAs(); err != nil {
+		return nil, err
+	}
 	if err := r.readHosts(); err != nil {
 		return nil, err
 	}
@@ -383,7 +398,7 @@ func Open(dir string, identity IdentitySource) (*Repo, error) {
 // OpenSettings reads only the repo's sensible.yml, which is enough to
 // encrypt secrets, without checking the rest of the repo.
 func OpenSettings(dir string) (*Repo, error) {
-	r := &Repo{dir: dir, keys: &keyring{}}
+	r := &Repo{dir: dir, keys: &keyring{}, now: time.Now}
 	if err := r.readSettings(); err != nil {
 		return nil, err
 	}
@@ -557,6 +572,41 @@ type hostState struct {
 	Rotated      time.Time                    `yaml:"rotated"`
 	HostKeys     []HostKey                    `yaml:"host_keys"`
 	Generated    map[string]map[string]Secret `yaml:"generated"`
+	Certs        map[string]savedCert         `yaml:"certs"`
+}
+
+// write adds the state to a state file, under its host's key.
+func (s hostState) write(out *strings.Builder) {
+	if !s.SSHKey.IsZero() {
+		out.WriteString("  ssh_key: " + indent(s.SSHKey.yaml(), "  ") + "\n")
+	}
+	if !s.SudoPassword.IsZero() {
+		out.WriteString("  sudo_password: " + indent(s.SudoPassword.yaml(), "  ") + "\n")
+	}
+	if !s.Rotated.IsZero() {
+		out.WriteString("  rotated: " + s.Rotated.UTC().Format(time.RFC3339) + "\n")
+	}
+	if len(s.HostKeys) > 0 {
+		out.WriteString("  host_keys:\n")
+		for _, k := range s.HostKeys {
+			out.WriteString("    - " + k.String() + "\n")
+		}
+	}
+	if len(s.Generated) > 0 {
+		out.WriteString("  generated:\n")
+		for _, stack := range slices.Sorted(maps.Keys(s.Generated)) {
+			out.WriteString("    " + stack + ":\n")
+			for _, key := range slices.Sorted(maps.Keys(s.Generated[stack])) {
+				out.WriteString("      " + key + ": " + indent(s.Generated[stack][key].yaml(), "      ") + "\n")
+			}
+		}
+	}
+	if len(s.Certs) > 0 {
+		out.WriteString("  certs:\n")
+		for _, cert := range slices.Sorted(maps.Keys(s.Certs)) {
+			out.WriteString("    " + cert + ":\n" + s.Certs[cert].yaml("      "))
+		}
+	}
 }
 
 func stateFile(host string) string {
@@ -584,32 +634,8 @@ func (r *Repo) updateState(name string, change func(*hostState)) error {
 	var out strings.Builder
 	out.WriteString("# Managed by sensible. Local changes will be overwritten.\n")
 	for _, host := range slices.Sorted(maps.Keys(states)) {
-		s := states[host]
 		out.WriteString(host + ":\n")
-		if !s.SSHKey.IsZero() {
-			out.WriteString("  ssh_key: " + indent(s.SSHKey.yaml(), "  ") + "\n")
-		}
-		if !s.SudoPassword.IsZero() {
-			out.WriteString("  sudo_password: " + indent(s.SudoPassword.yaml(), "  ") + "\n")
-		}
-		if !s.Rotated.IsZero() {
-			out.WriteString("  rotated: " + s.Rotated.UTC().Format(time.RFC3339) + "\n")
-		}
-		if len(s.HostKeys) > 0 {
-			out.WriteString("  host_keys:\n")
-			for _, k := range s.HostKeys {
-				out.WriteString("    - " + k.String() + "\n")
-			}
-		}
-		if len(s.Generated) > 0 {
-			out.WriteString("  generated:\n")
-			for _, stack := range slices.Sorted(maps.Keys(s.Generated)) {
-				out.WriteString("    " + stack + ":\n")
-				for _, key := range slices.Sorted(maps.Keys(s.Generated[stack])) {
-					out.WriteString("      " + key + ": " + indent(s.Generated[stack][key].yaml(), "      ") + "\n")
-				}
-			}
-		}
+		states[host].write(&out)
 	}
 
 	if err := writeAtomic(r.path(file), []byte(out.String()), 0o600); err != nil {

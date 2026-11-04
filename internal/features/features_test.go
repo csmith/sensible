@@ -865,3 +865,41 @@ func TestResources_dockerRegistries(t *testing.T) {
 	assert.Less(t, indexAfter(got, "dir:/root/.docker", -1), indexAfter(got, "file:/root/.docker/config.json", -1))
 	assert.Less(t, indexAfter(got, "file:/root/.docker/config.json", -1), indexAfter(got, "compose:/srv/compose/web", -1))
 }
+
+func TestResources_certs(t *testing.T) {
+	h := testHost(archLinux)
+	dir := "/opt/app/certs"
+	h.Config.IssuedCerts = []config.Cert{
+		{Name: "app", Dir: dir, Owner: "alice", Group: "users", CACert: "ca\n", Cert: "cert\n", Key: "key\n"},
+	}
+	h.Config.Stacks = []config.Stack{{Name: "web", CertPaths: []string{dir + "/tls.key"}}}
+	rs, err := Resources(h)
+	require.NoError(t, err)
+
+	index := func(id string) int {
+		return slices.IndexFunc(rs, func(r host.Resource) bool { return r.ID() == id })
+	}
+	key, ok := find[host.File](rs, "file:"+dir+"/tls.key")
+	require.True(t, ok)
+	assert.Equal(t, "key\n", key.Content)
+	assert.Equal(t, 0o600, int(key.Mode))
+	assert.Equal(t, "alice", key.Owner)
+	assert.True(t, key.Hidden)
+
+	// The record comes first so a failed run can't leave an untracked key,
+	// and clean-up comes after the stacks that may have been mounting it.
+	record := index("cert-record:app")
+	assert.Less(t, record, index("file:"+dir+"/tls.key"))
+	assert.Less(t, index("file:"+dir+"/tls.key"), index("compose:/srv/compose/web"))
+	assert.Less(t, index("compose:/srv/compose/web"), index("cert-records"))
+
+	stack, ok := find[host.ComposeStack](rs, "compose:/srv/compose/web")
+	require.True(t, ok)
+	assert.Contains(t, stack.Watch, "file:"+dir+"/tls.key")
+}
+
+func TestResources_certsCleanUpWithoutCerts(t *testing.T) {
+	rs, err := Resources(Host{Name: "testhost", Facts: host.Facts{OSFamily: archLinux}})
+	require.NoError(t, err)
+	assert.True(t, slices.ContainsFunc(rs, func(r host.Resource) bool { return r.ID() == "cert-records" }))
+}

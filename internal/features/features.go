@@ -57,10 +57,13 @@ func Resources(h Host) (host.ResourceList, error) {
 		access,
 		tailscale,
 		docker,
+		certs,
 		stacks,
 		backups,
 		// After stacks and backups, as jobs may use them.
 		jobs,
+		// After the stacks that may still have been mounting them.
+		certsCleanUp,
 		// After everything that writes sudoers files or adds apt repos.
 		sudoersCleanUp,
 		aptCleanUp,

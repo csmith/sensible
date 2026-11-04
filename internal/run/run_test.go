@@ -5,11 +5,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -926,4 +928,46 @@ func TestExecute_savesGeneratedValuesBeforeApplying(t *testing.T) {
 			},
 		)
 	}
+}
+
+func TestCompiler_savesIssuedCertsOnce(t *testing.T) {
+	id, err := age.GenerateX25519Identity()
+	require.NoError(t, err)
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"sensible.yml":       "secrets:\n  recipients: [" + id.Recipient().String() + "]\ncas: [internal]\n",
+		"hosts.d/hosts.yml":  "alpha:\n  roles: {web: }\n",
+		"roles/web/role.yml": "certs:\n  web: {ca: internal, server: [web.example.com]}\n",
+	} {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	}
+	open := func() *config.Repo {
+		repo, err := config.Open(dir, func() (age.Identity, error) { return id, nil })
+		require.NoError(t, err)
+		return repo
+	}
+	facts := host.Facts{OSFamily: "arch"}
+	keyContent := func(c compiled) string {
+		// As the agent receives them.
+		data, err := json.Marshal(c.resources)
+		require.NoError(t, err)
+		var received host.ResourceList
+		require.NoError(t, json.Unmarshal(data, &received))
+		i := slices.IndexFunc(received, func(r host.Resource) bool { return r.ID() == "file:/srv/certs/web/tls.key" })
+		require.GreaterOrEqual(t, i, 0)
+		assert.True(t, slices.ContainsFunc(received, func(r host.Resource) bool { return r.ID() == "cert-record:web" }))
+		return received[i].(host.File).Content
+	}
+
+	first, err := compiler(open())(target{name: "alpha"}, facts)
+	require.NoError(t, err)
+	require.NotNil(t, first.save)
+	require.NoError(t, first.save())
+
+	second, err := compiler(open())(target{name: "alpha"}, facts)
+	require.NoError(t, err)
+	assert.Nil(t, second.save, "nothing new to save")
+	assert.Equal(t, keyContent(first), keyContent(second))
 }

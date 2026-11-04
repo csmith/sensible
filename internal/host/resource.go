@@ -85,6 +85,8 @@ var resourceTypes = registry(
 	ComposeProjects{},
 	Migration{},
 	Migrations{},
+	CertRecord{},
+	CertRecords{},
 	TailscaleSet{},
 	DockerNetwork{},
 	DockerNetworks{},

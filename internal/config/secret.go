@@ -349,6 +349,8 @@ func (r *Repo) readSettings() error {
 			IdentityCommand []string `yaml:"identity_command"`
 		} `yaml:"secrets"`
 		DNS DNSSettings `yaml:"dns"`
+		// CAs are the certificate authorities that certs may name.
+		CAs []string `yaml:"cas"`
 	}
 
 	file := r.path("sensible.yml")
@@ -374,5 +376,11 @@ func (r *Repo) readSettings() error {
 		s.DNS.Vhosts[i].Type = strings.ToUpper(rec.Type)
 	}
 	r.dns = s.DNS
+	for _, id := range s.CAs {
+		if !generatedName.MatchString(id) {
+			return fmt.Errorf("%s: cas: %q must be letters, digits, \"-\" and \"_\"", file, id)
+		}
+	}
+	r.caNames = s.CAs
 	return nil
 }

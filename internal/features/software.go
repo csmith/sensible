@@ -385,6 +385,34 @@ func dockerClientConfig(auths map[string]string) ([]host.Resource, error) {
 // stacks deploys the host's compose stacks, after the volumes they mount.
 // Each is recreated whenever its files change, and stacks no role declares
 // any more are taken down.
+// certs writes the host's certificates, ahead of the stacks that mount them.
+func certs(h Host) ([]host.Resource, error) {
+	var rs []host.Resource
+	for _, c := range h.Config.IssuedCerts {
+		files := []host.File{
+			{Path: filepath.Join(c.Dir, config.CACertFile), Content: c.CACert, Mode: 0o644},
+			{Path: filepath.Join(c.Dir, config.CertFile), Content: c.Cert, Mode: 0o644},
+			{Path: filepath.Join(c.Dir, config.KeyFile), Content: c.Key, Mode: 0o600},
+		}
+		paths := make([]string, 0, len(files))
+		for _, f := range files {
+			paths = append(paths, f.Path)
+		}
+		rs = append(rs, host.CertRecord{Name: c.Name, Paths: paths}, host.Dir{Path: c.Dir, Owner: c.Owner, Group: c.Group})
+		for _, f := range files {
+			f.Owner, f.Group, f.Hidden = c.Owner, c.Group, true
+			rs = append(rs, f)
+		}
+	}
+	return rs, nil
+}
+
+// certsCleanUp is unconditional, as the host's last certificate may just
+// have gone.
+func certsCleanUp(Host) ([]host.Resource, error) {
+	return []host.Resource{host.CertRecords{}}, nil
+}
+
 func stacks(h Host) ([]host.Resource, error) {
 	var rs []host.Resource
 	if len(h.Config.Volumes) > 0 {
@@ -459,6 +487,9 @@ func stack(s config.Stack) []host.Resource {
 	owned := host.OwnedDir{Path: dir, Recursive: true}
 	rs = append(rs, owned)
 	watch = append(watch, owned.ID())
+	for _, path := range s.CertPaths {
+		watch = append(watch, host.File{Path: path}.ID())
+	}
 	rs = append(rs, host.ComposeStack{Dir: dir, Watch: watch})
 	for _, m := range s.Migrations {
 		rs = append(rs, migration(m, host.PhaseAfter))

@@ -56,6 +56,9 @@ type Stack struct {
 	Generated map[string]string
 	// Migrations are in name order.
 	Migrations []Migration
+	// CertPaths are the certificate files the stack refers to with !cert,
+	// which recreate it when they change.
+	CertPaths []string
 }
 
 // Migration handles a change to a stack, such as a database's major
@@ -349,7 +352,12 @@ func (r *Repo) hostVolumes(roles []string) []Volume {
 // renderStack reads a stack's files, replacing the compose file's tags and
 // decrypting .age files. generated are the host's saved generated values,
 // by stack.
-func (r *Repo) renderStack(role string, e expansion, generated map[string]map[string]Secret) (Stack, error) {
+func (r *Repo) renderStack(
+	role string,
+	e expansion,
+	generated map[string]map[string]Secret,
+	certs []Cert,
+) (Stack, error) {
 	def := r.stacks[role]
 	s := Stack{Name: def.name, Dirs: def.dirs}
 
@@ -358,6 +366,7 @@ func (r *Repo) renderStack(role string, e expansion, generated map[string]map[st
 		def:    def,
 		params: e.params,
 		gen:    &generator{saved: generated[def.name], preview: r.keys.preview},
+		certs:  certs,
 	}
 	compose, err := c.renderCompose(e)
 	if err != nil {
@@ -378,6 +387,7 @@ func (r *Repo) renderStack(role string, e expansion, generated map[string]map[st
 		return Stack{}, fmt.Errorf("%s: %w", migrationsKey, err)
 	}
 	s.Generated = c.gen.created
+	s.CertPaths = c.certPaths
 
 	for _, rel := range def.files {
 		path := r.path("roles", role, rel)
@@ -484,6 +494,9 @@ type composeRenderer struct {
 	params  map[string]ast.Node
 	gen     *generator
 	secrets []string
+	certs   []Cert
+	// certPaths are the certificate files its !cert tags refer to.
+	certPaths []string
 }
 
 // replace returns node with its tags replaced, and whether it was a !param
@@ -494,7 +507,7 @@ func (c *composeRenderer) replace(node ast.Node) (ast.Node, bool, error) {
 		switch n.Start.Value {
 		case paramTag:
 			return c.param(n)
-		case ageTag, generatedTag, volumeTag, vhostTag:
+		case ageTag, generatedTag, volumeTag, vhostTag, certTag:
 			s, err := c.scalar(n)
 			if err != nil {
 				return nil, false, err
@@ -570,7 +583,7 @@ func (c *composeRenderer) value(node ast.Node) (any, error) {
 	switch n := node.(type) {
 	case *ast.TagNode:
 		switch n.Start.Value {
-		case ageTag, generatedTag, volumeTag, vhostTag:
+		case ageTag, generatedTag, volumeTag, vhostTag, certTag:
 			return c.scalar(n)
 		default:
 		}
@@ -631,7 +644,7 @@ func (r *Repo) volumePath(role string, tag *ast.TagNode) (string, error) {
 	return path, nil
 }
 
-// scalar resolves an !age, !generated, !volume or !vhost tag to the string
+// scalar resolves an !age, !generated, !volume, !vhost or !cert tag to the string
 // that replaces it in the compose file.
 func (c *composeRenderer) scalar(tag *ast.TagNode) (string, error) {
 	switch tag.Start.Value {
@@ -639,6 +652,8 @@ func (c *composeRenderer) scalar(tag *ast.TagNode) (string, error) {
 		return c.repo.volumePath(c.def.role, tag)
 	case vhostTag:
 		return vhostText(tag)
+	case certTag:
+		return c.certPath(tag)
 	default:
 	}
 
@@ -807,7 +822,7 @@ func (c *composeRenderer) envValue(node ast.Node) (string, bool, error) {
 		case ageTag, generatedTag:
 			v, err := c.secret(tag)
 			return v, true, err
-		case volumeTag, vhostTag:
+		case volumeTag, vhostTag, certTag:
 			v, err := c.scalar(tag)
 			return v, false, err
 		default:

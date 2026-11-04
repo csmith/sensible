@@ -79,8 +79,14 @@ func compiler(repo *config.Repo) func(target, host.Facts) (compiled, error) {
 			return compiled{}, err
 		}
 		c := compiled{resources: resources}
-		if slices.ContainsFunc(cfg.Stacks, func(s config.Stack) bool { return len(s.Generated) > 0 }) {
-			c.save = func() error { return repo.SaveGenerated(t.name, cfg.Stacks) }
+		generated := slices.ContainsFunc(cfg.Stacks, func(s config.Stack) bool { return len(s.Generated) > 0 })
+		if generated || slices.ContainsFunc(cfg.IssuedCerts, config.Cert.Unsaved) {
+			c.save = func() error {
+				if err := repo.SaveCerts(t.name, cfg.IssuedCerts); err != nil {
+					return err
+				}
+				return repo.SaveGenerated(t.name, cfg.Stacks)
+			}
 		}
 		return c, nil
 	}

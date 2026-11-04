@@ -31,44 +31,35 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 
 	roles := r.hostRoles(name)
 	var merged ast.Node
-	var stacks []Stack
+	expansions := map[string]expansion{}
 	set := map[string]setBy{}
 	for _, role := range slices.Sorted(maps.Keys(roles)) {
 		e, err := r.expandRole(name, role, osFamily, roles[role])
 		if err != nil {
 			return Config{}, fmt.Errorf("%s: role %s: %w", name, role, err)
 		}
-		node := e.node
 		if _, ok := r.stacks[role]; ok {
-			s, err := r.renderStack(role, e, r.inventory.Hosts[name].Generated)
-			if err != nil {
-				return Config{}, fmt.Errorf("%s: role %s: %w", name, role, err)
-			}
-			stacks = append(stacks, s)
+			expansions[role] = e
 		}
-		if err := checkConflicts("role "+role, node, set); err != nil {
+		if err := checkConflicts("role "+role, e.node, set); err != nil {
 			return Config{}, fmt.Errorf("%s: %w", name, err)
 		}
-		merged = merge(merged, node)
+		merged = merge(merged, e.node)
 	}
 
-	slices.SortFunc(stacks, func(a, b Stack) int { return strings.Compare(a.Name, b.Name) })
-	volumes := r.hostVolumes(slices.Collect(maps.Keys(roles)))
-	c := Config{Stacks: stacks, Volumes: volumes}
-	if merged == nil {
-		return c, nil
-	}
-	// A module a role names without settings is still on.
-	m := merged.(*ast.MappingNode)
-	for i, v := range m.Values {
-		if isNull(v.Value) {
-			m.Values[i] = ast.MappingValue(v.Start, v.Key, ast.Mapping(v.Value.GetToken(), true))
+	var c Config
+	if merged != nil {
+		// A module a role names without settings is still on.
+		m := merged.(*ast.MappingNode)
+		for i, v := range m.Values {
+			if isNull(v.Value) {
+				m.Values[i] = ast.MappingValue(v.Start, v.Key, ast.Mapping(v.Value.GetToken(), true))
+			}
+		}
+		if err := decode(r.keys.context(), merged, &c); err != nil {
+			return Config{}, fmt.Errorf("merging configuration for %s: %w", name, err)
 		}
 	}
-	if err := decode(r.keys.context(), merged, &c); err != nil {
-		return Config{}, fmt.Errorf("merging configuration for %s: %w", name, err)
-	}
-	c.Stacks, c.Volumes = stacks, volumes
 	if c.Docker != nil {
 		if err := c.Docker.reveal(); err != nil {
 			return Config{}, fmt.Errorf("%s: %w", name, err)
@@ -79,6 +70,22 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 			return Config{}, fmt.Errorf("%s: %w", name, err)
 		}
 	}
+
+	var err error
+	if c.IssuedCerts, err = r.hostCerts(name, c.Certs); err != nil {
+		return Config{}, fmt.Errorf("%s: %w", name, err)
+	}
+	// After the certificates, as a stack's !cert tags need to know where
+	// they're written.
+	for _, role := range slices.Sorted(maps.Keys(expansions)) {
+		s, err := r.renderStack(role, expansions[role], r.inventory.Hosts[name].Generated, c.IssuedCerts)
+		if err != nil {
+			return Config{}, fmt.Errorf("%s: role %s: %w", name, role, err)
+		}
+		c.Stacks = append(c.Stacks, s)
+	}
+	slices.SortFunc(c.Stacks, func(a, b Stack) int { return strings.Compare(a.Name, b.Name) })
+	c.Volumes = r.hostVolumes(slices.Collect(maps.Keys(roles)))
 	return c, nil
 }
 
@@ -215,7 +222,7 @@ func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (expan
 // alone, so errors name the file at fault. It resolves its !vhost tags.
 func (r *Repo) checkLayer(node ast.Node) error {
 	settings, _ := splitMigrations(node)
-	if err := checkNoGenerated(settings); err != nil {
+	if err := checkStackTags(settings); err != nil {
 		return err
 	}
 	if err := decode(r.keys.context(), merge(nil, settings), &Config{}); err != nil {
@@ -320,10 +327,13 @@ func checkEnv(env ast.Node) error {
 	return nil
 }
 
-// checkNoGenerated rejects a !generated where it would be read as its name.
-func checkNoGenerated(node ast.Node) error {
-	if tag := findTag(node, generatedTag); tag != nil {
-		return nodeError(tag, "!generated only works in a stack's compose file, compose.env and migrations' on")
+// checkStackTags rejects the tags that are only resolved for stacks, where
+// they would be read as their values.
+func checkStackTags(node ast.Node) error {
+	for _, name := range []string{generatedTag, certTag} {
+		if tag := findTag(node, name); tag != nil {
+			return nodeError(tag, name+" only works in a stack's compose file, compose.env and migrations' on")
+		}
 	}
 	return nil
 }
