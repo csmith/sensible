@@ -7,10 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -22,7 +18,7 @@ import (
 
 var errCredentialsRejected = errors.New("credentials rejected, re-run bootstrap")
 
-// OpenSSH starts a remote host's agent through its sensible account, whose
+// OpenSSH starts a host's agent through its sensible account, whose
 // forced command runs the agent under sudo.
 type OpenSSH struct {
 	// Name is the inventory name, which host keys are checked under.
@@ -168,47 +164,4 @@ func (w *agentStderr) Write(p []byte) (int, error) {
 		debugf("%s agent: %s", w.host, line)
 	}
 	return len(p), nil
-}
-
-// Local runs the agent on this machine with sudo, from a copy in the user's
-// cache directory.
-type Local struct {
-	Builds Builds
-}
-
-func (l *Local) Start(ctx context.Context) (*AgentPipe, error) {
-	build, err := l.Builds.Build(ctx, runtime.GOARCH)
-	if err != nil {
-		return nil, err
-	}
-	cache, err := os.UserCacheDir()
-	if err != nil {
-		return nil, err
-	}
-	path, err := extractAgent(filepath.Join(cache, "sensible", "agents"), build)
-	if err != nil {
-		return nil, err
-	}
-	cmd := exec.CommandContext(ctx, "sudo", path, "agent")
-	cmd.Stderr = os.Stderr
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, err
-	}
-	out, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	return &AgentPipe{
-		Reader: out,
-		Writer: stdin,
-		Close: func() error {
-			_ = stdin.Close()
-			return cmd.Wait()
-		},
-		EarlyExit: errors.New("sudo failed"),
-	}, nil
 }

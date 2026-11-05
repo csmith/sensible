@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"os"
 	"slices"
 	"sort"
@@ -43,7 +44,7 @@ func Run(ctx context.Context, opts Options) error {
 	builder := NewEmbeddedBuilds()
 	targets := make([]target, len(names))
 	for i, name := range names {
-		targets[i] = newTarget(repo, name, builder)
+		targets[i] = newTarget(repo, name)
 	}
 
 	r := &Runner{
@@ -69,7 +70,6 @@ func compiler(repo *config.Repo) func(target, host.Facts) (compiled, error) {
 		resources, err := features.Resources(
 			features.Host{
 				Name:        t.name,
-				Local:       t.local,
 				Config:      cfg,
 				Facts:       facts,
 				SensibleKey: t.sensibleKey,
@@ -153,21 +153,16 @@ func selectHosts(inv config.Inventory, requested []string) ([]string, error) {
 type target struct {
 	name        string
 	dnsName     string
-	local       bool
 	sensibleKey string
 	transport   Transport
 	err         error
 }
 
-func newTarget(repo *config.Repo, name string, builds Builds) target {
+func newTarget(repo *config.Repo, name string) target {
 	entry := repo.Inventory().Hosts[name]
 	t := target{name: name, dnsName: entry.DNSName}
-	if isLocal(name) {
-		t.local = true
-		t.transport = &Local{Builds: builds}
-		return t
-	}
-	if entry.Address == "" {
+	address := hostAddress(name, entry)
+	if address == "" {
 		t.err = errors.New("no address")
 		return t
 	}
@@ -183,7 +178,7 @@ func newTarget(repo *config.Repo, name string, builds Builds) target {
 	t.sensibleKey = authorizedKey(signer.PublicKey(), name)
 	t.transport = &OpenSSH{
 		Name:              name,
-		Address:           entry.Address,
+		Address:           address,
 		Signer:            signer,
 		Password:          password,
 		HostKey:           checkHostKey(name, entry.HostKeys),
@@ -219,6 +214,18 @@ func revealCredentials(creds config.HostEntry) (ssh.Signer, string, error) {
 		return nil, "", fmt.Errorf("sudo_password: %w", err)
 	}
 	return signer, password, nil
+}
+
+// hostAddress is where to reach a host. The machine this runs on is reached
+// over loopback, as its configured address may not be reachable from itself.
+func hostAddress(name string, entry config.HostEntry) string {
+	if !isLocal(name) {
+		return entry.Address
+	}
+	if _, port, err := net.SplitHostPort(entry.Address); err == nil {
+		return net.JoinHostPort("127.0.0.1", port)
+	}
+	return "127.0.0.1"
 }
 
 func isLocal(name string) bool {

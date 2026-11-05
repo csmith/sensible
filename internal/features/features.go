@@ -14,11 +14,10 @@ import (
 // Host is everything features may use to decide a host's resources.
 type Host struct {
 	Name   string
-	Local  bool
 	Config config.Config
 	Facts  host.Facts
 	// SensibleKey is the public half of the host's sensible key, as an
-	// authorized_keys line without options. Empty for the local host.
+	// authorized_keys line without options.
 	SensibleKey string
 }
 
@@ -93,7 +92,7 @@ func Resources(h Host) (host.ResourceList, error) {
 	return out, nil
 }
 
-// SensibleUser is the account remote hosts are managed through.
+// SensibleUser is the account hosts are managed through.
 const SensibleUser = "sensible"
 
 // SensibleHome is the sensible account's home. It's owned by root so the
@@ -103,7 +102,7 @@ const SensibleHome = "/var/lib/sensible"
 const sensibleAuthorizedKeysDir = "/etc/ssh/authorized_keys"
 
 // AccessFiles are the root-owned files that let the controller reach a
-// remote host's agent. Bootstrap and the access feature both write them.
+// host's agent. Bootstrap and the access feature both write them.
 // They don't notify anything, as the sshd unit's name depends on the OS.
 func AccessFiles(sensibleKey string) []host.File {
 	return []host.File{
@@ -145,21 +144,21 @@ func AccessFiles(sensibleKey string) []host.File {
 	}
 }
 
-// access keeps bootstrap's files in place on remote hosts, so the sudoers
+// access keeps bootstrap's files in place, so the sudoers
 // clean-up or an sshd change can't lock the tool out.
 func access(h Host) ([]host.Resource, error) {
-	if h.Local {
-		return nil, nil
-	}
 	reload := host.ServiceAction{Name: sshdService(h), Action: "reload"}
-	rs := []host.Resource{
+	files := AccessFiles(h.SensibleKey)
+	rs := make([]host.Resource, 0, 3+len(files))
+	rs = append(
+		rs,
 		// The shell is /bin/sh, which reads no startup files, and the home is
 		// root-owned, so a shell as the account can't capture the sudo password.
 		host.User{Name: SensibleUser, System: true, Home: SensibleHome, Shell: "/bin/sh"},
 		host.Dir{Path: SensibleHome, Owner: "root", Group: "root", Mode: 0o755},
 		host.Dir{Path: sensibleAuthorizedKeysDir, Owner: "root", Group: "root", Mode: 0o755},
-	}
-	for _, f := range AccessFiles(h.SensibleKey) {
+	)
+	for _, f := range files {
 		if strings.HasPrefix(f.Path, "/etc/ssh/sshd_config.d/") {
 			f.Notify = host.ResourceList{reload}
 		}

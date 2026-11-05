@@ -8,8 +8,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"io/fs"
-	"os"
-	"path/filepath"
 	"testing"
 	"testing/fstest"
 
@@ -52,27 +50,4 @@ func TestEmbeddedBuilds_agentsMatchTheirArch(t *testing.T) {
 		assert.Equal(t, machines[arch], f.Machine, arch)
 		assert.Equal(t, elf.ET_EXEC, f.Type, arch)
 	}
-}
-
-func TestExtractAgent(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "agents")
-	build := Build{Binary: []byte("agent"), Hash: "abc123"}
-
-	path, err := extractAgent(dir, build)
-	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(dir, "abc123"), path)
-	content, err := os.ReadFile(path)
-	require.NoError(t, err)
-	assert.Equal(t, build.Binary, content)
-	info, err := os.Stat(path)
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
-
-	require.NoError(t, os.WriteFile(path, []byte("upgraded in place"), 0o700))
-	again, err := extractAgent(dir, build)
-	require.NoError(t, err)
-	assert.Equal(t, path, again)
-	content, err = os.ReadFile(path)
-	require.NoError(t, err)
-	assert.Equal(t, []byte("upgraded in place"), content, "an existing copy is reused")
 }

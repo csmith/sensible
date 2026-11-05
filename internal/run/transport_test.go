@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"io"
 	"net"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -203,4 +204,30 @@ func TestOpenSSH_rejectsChangedHostKey(t *testing.T) {
 	_, _, err = connect(t.Context(), f.transport, f.builds)
 
 	assert.ErrorContains(t, err, ssh.FingerprintSHA256(f.server.hostKey.PublicKey()))
+}
+
+func TestHostAddress(t *testing.T) {
+	hostname, err := os.Hostname()
+	require.NoError(t, err)
+
+	tests := []struct {
+		name    string
+		host    string
+		address string
+		want    string
+	}{
+		{"remote host", "not-" + hostname, "203.0.113.1:2222", "203.0.113.1:2222"},
+		{"remote host with no address", "not-" + hostname, "", ""},
+		{"this machine", hostname, "203.0.113.1", "127.0.0.1"},
+		{"this machine with a port", hostname, "203.0.113.1:2222", "127.0.0.1:2222"},
+		{"this machine with no address", hostname, "", "127.0.0.1"},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				assert.Equal(t, tt.want, hostAddress(tt.host, config.HostEntry{Address: tt.address}))
+			},
+		)
+	}
 }

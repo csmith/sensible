@@ -27,7 +27,9 @@ type Inventory struct {
 }
 
 type HostEntry struct {
-	// Address is the host's public or LAN address. Empty for the local host.
+	// Address is the host's public or LAN address, optionally with a port. The
+	// machine the controller runs on is reached over loopback instead, using
+	// the same port, so it can leave this empty.
 	Address string `yaml:"address"`
 	// DNSName gets A and AAAA records for the host's default addresses.
 	// Empty disables DNS management for the host.

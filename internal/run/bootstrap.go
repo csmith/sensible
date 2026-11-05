@@ -40,7 +40,7 @@ type BootstrapOptions struct {
 	HostKey string
 }
 
-// Bootstrap gives a remote host its sensible account and agent, then saves
+// Bootstrap gives a host its sensible account and agent, then saves
 // its credentials once the normal path is proven to work.
 func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 	out := os.Stdout
@@ -49,12 +49,11 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 		return err
 	}
 	entry, ok := repo.Inventory().Hosts[opts.Host]
+	address := hostAddress(opts.Host, entry)
 	switch {
 	case !ok:
 		return unknownHost(repo.Inventory(), opts.Host)
-	case isLocal(opts.Host):
-		return fmt.Errorf("%s is this machine, which is reached with sudo and needs no bootstrap", opts.Host)
-	case entry.Address == "":
+	case address == "":
 		return fmt.Errorf("%s has no address", opts.Host)
 	case opts.User == "" && !opts.Rotate:
 		return errors.New("--user is required")
@@ -82,7 +81,7 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 	r.section("Bootstrapping " + opts.Host)
 	b := &bootstrapper{
 		name:               opts.Host,
-		address:            entry.Address,
+		address:            address,
 		creds:              creds,
 		builds:             NewEmbeddedBuilds(),
 		known:              entry.HostKeys,

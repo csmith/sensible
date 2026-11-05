@@ -41,7 +41,7 @@ func Facts(ctx context.Context, configDir string, hosts []string, out io.Writer)
 	builder := NewEmbeddedBuilds()
 	targets := make([]target, len(names))
 	for i, name := range names {
-		targets[i] = newTarget(repo, name, builder)
+		targets[i] = newTarget(repo, name)
 	}
 	r := &Runner{Out: os.Stderr, Builds: builder}
 	return r.Facts(ctx, targets, out)
@@ -110,7 +110,7 @@ func Render(ctx context.Context, opts RenderOptions, out io.Writer) error {
 	targets := make([]target, len(names))
 	for i, name := range names {
 		if facts == nil {
-			targets[i] = newTarget(repo, name, builder)
+			targets[i] = newTarget(repo, name)
 		} else {
 			targets[i] = previewTarget(repo, name)
 		}
@@ -136,10 +136,7 @@ func readFacts(file string) (map[string]host.Facts, error) {
 // decrypted.
 func previewTarget(repo *config.Repo, name string) target {
 	entry := repo.Inventory().Hosts[name]
-	t := target{name: name, dnsName: entry.DNSName, local: isLocal(name)}
-	if t.local {
-		return t
-	}
+	t := target{name: name, dnsName: entry.DNSName}
 	if entry.SSHKey.IsZero() {
 		t.err = fmt.Errorf("no credentials; run `sensible bootstrap %s`", name)
 		return t

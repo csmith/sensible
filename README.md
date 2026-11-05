@@ -65,6 +65,9 @@ sensible apply                        # The same, for all hosts
 sensible render web1                  # Show everything a host should have
 ```
 
+The machine sensible runs on is managed like any other host, over SSH to
+loopback, so it needs a running sshd and a bootstrap of its own.
+
 Run `sensible -h` for the other commands and flags.
 
 ## Licence

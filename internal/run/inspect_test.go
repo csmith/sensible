@@ -152,7 +152,7 @@ func TestPreviewTarget_keyWithoutIdentityIsAPlaceholder(t *testing.T) {
 	placeholder := locked.Inventory().Hosts["acidburn"].SSHKey.Placeholder()
 	assert.Equal(t, placeholder+" sensible@acidburn", tg.sensibleKey)
 
-	assert.ErrorContains(t, newTarget(locked, "acidburn", nil).err, "use --facts")
+	assert.ErrorContains(t, newTarget(locked, "acidburn").err, "use --facts")
 }
 
 func TestRender_connectingNeedsTheIdentity(t *testing.T) {

@@ -296,12 +296,6 @@ func TestResources_featuresTurnOff(t *testing.T) {
 			present: []string{"user:alice", "file:/etc/ssh/sshd_config.d/05-sensible.conf"},
 		},
 		{
-			name:    "local host",
-			modify:  func(h *Host) { h.Local = true },
-			absent:  []string{"user:" + SensibleUser, "file:/etc/sudoers.d/" + SensibleUser},
-			present: []string{"owned-dir:/etc/sudoers.d"},
-		},
-		{
 			name:    "no docker",
 			modify:  func(h *Host) { h.Config.Docker = nil },
 			absent:  []string{"package:docker", "command:install and start docker", "docker-network:web"},

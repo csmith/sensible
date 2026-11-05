@@ -6,7 +6,7 @@ import (
 	"io/fs"
 )
 
-// AgentPath is where bootstrap installs the agent on remote hosts.
+// AgentPath is where bootstrap installs the agent.
 const AgentPath = "/usr/local/libexec/sensible-agent"
 
 // Resource is one piece of desired state on a host. Resources are values:

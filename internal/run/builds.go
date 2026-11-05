@@ -9,8 +9,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"os"
-	"path/filepath"
 	"sync"
 )
 
@@ -65,33 +63,4 @@ func (e *EmbeddedBuilds) Build(_ context.Context, goarch string) (Build, error) 
 	build := Build{Binary: binary, Hash: hex.EncodeToString(sum[:])}
 	e.builds[goarch] = build
 	return build, nil
-}
-
-// extractAgent writes the build to dir, named by its hash so an existing
-// copy is reused, and returns its path.
-func extractAgent(dir string, b Build) (string, error) {
-	path := filepath.Join(dir, b.Hash)
-	if _, err := os.Stat(path); err == nil {
-		return path, nil
-	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	tmp, err := os.CreateTemp(dir, ".agent-*")
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = os.Remove(tmp.Name()) }()
-	if _, err := tmp.Write(b.Binary); err != nil {
-		_ = tmp.Close()
-		return "", err
-	}
-	if err := tmp.Chmod(0o700); err != nil {
-		_ = tmp.Close()
-		return "", err
-	}
-	if err := tmp.Close(); err != nil {
-		return "", err
-	}
-	return path, os.Rename(tmp.Name(), path)
 }
