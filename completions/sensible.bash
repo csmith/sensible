@@ -5,6 +5,24 @@ _sensible_hosts() {
     sed -n 's/^\([A-Za-z0-9_.-]\{1,\}\):.*/\1/p' "$dir"/hosts.d/*.yml 2>/dev/null | sort -u
 }
 
+# Files for secret show, which looks for relative paths in the config directory.
+_sensible_config_files() {
+    local f
+    cd "${1/#\~/$HOME}" 2>/dev/null || return
+    while IFS= read -r f; do
+        [[ -d $f ]] && f+=/
+        printf '%s\n' "$f"
+    done < <(compgen -f -- "$2")
+}
+
+_sensible_secrets() {
+    local path quoted
+    while IFS= read -r path; do
+        quoted=$(printf %q "$path")
+        [[ $quoted == "$2"* ]] && printf '%s\n' "$quoted"
+    done < <("${COMP_WORDS[0]/#\~/$HOME}" --config "${1/#\~/$HOME}" secret show "${3/#\~/$HOME}" 2>/dev/null)
+}
+
 _sensible() {
     local cur=${COMP_WORDS[COMP_CWORD]} end=$COMP_CWORD prev i w
     COMPREPLY=()
@@ -92,7 +110,10 @@ _sensible() {
                 [[ $cur == -* ]] && COMPREPLY=($(compgen -W '--raw' -- "$cur"))
             elif [[ ${args[0]} == show && ${#args[@]} == 1 ]]; then
                 compopt -o filenames 2>/dev/null
-                COMPREPLY=($(compgen -f -- "$cur"))
+                mapfile -t COMPREPLY < <(_sensible_config_files "$config" "$cur")
+                [[ ${COMPREPLY[0]} == */ ]] && compopt -o nospace 2>/dev/null
+            elif [[ ${args[0]} == show && ${#args[@]} == 2 ]]; then
+                mapfile -t COMPREPLY < <(_sensible_secrets "$config" "$cur" "${args[1]}")
             fi
             ;;
     esac

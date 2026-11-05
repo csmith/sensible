@@ -78,7 +78,74 @@ func TestSecretAt(t *testing.T) {
 	assert.Contains(t, armored, "BEGIN AGE ENCRYPTED FILE")
 
 	_, err = secretAt(file, "dns.hostname")
-	assert.ErrorContains(t, err, "isn't an !age value")
+	assert.ErrorContains(t, err, "no !age value at dns.hostname")
+}
+
+func TestListSecrets_printsPathsThatShowSecretAccepts(t *testing.T) {
+	repo, dir, source := testRepo(t)
+	id, err := source()
+	require.NoError(t, err)
+	encrypt := func(plain string) string {
+		value, err := repo.Encrypt(plain)
+		require.NoError(t, err)
+		return strings.ReplaceAll(value, "\n", "\n        ")
+	}
+	file := filepath.Join(dir, "secrets.yml")
+	writeFile(
+		t,
+		file,
+		"plain: value\n"+
+			"top: "+encrypt("top")+"\n"+
+			"acidburn.example.com:\n"+
+			"  key: "+encrypt("dotted")+"\n"+
+			"\"quoted\": "+encrypt("quoted")+"\n"+
+			"it's: "+encrypt("apostrophe")+"\n"+
+			"anchored: &a "+encrypt("anchored")+"\n"+
+			"alias: *a\n"+
+			"replaced: !replace\n"+
+			"  key: "+encrypt("replaced")+"\n"+
+			"items:\n"+
+			"  - name: first\n"+
+			"  - name: second\n"+
+			"    key: "+encrypt("item")+"\n",
+	)
+	var out bytes.Buffer
+
+	require.NoError(t, ListSecrets(dir, "secrets.yml", &out))
+
+	paths := strings.Split(strings.TrimSpace(out.String()), "\n")
+	assert.Equal(
+		t,
+		[]string{
+			"top",
+			"'acidburn.example.com'.key",
+			"quoted",
+			`'it\'s'`,
+			"anchored",
+			"replaced.key",
+			"items[1].key",
+		},
+		paths,
+	)
+	values := make([]string, 0, len(paths))
+	for _, path := range paths {
+		armored, err := secretAt(file, path)
+		require.NoError(t, err)
+		value, err := decrypt(armored, id)
+		require.NoError(t, err)
+		values = append(values, value)
+	}
+	assert.Equal(t, []string{"top", "dotted", "quoted", "apostrophe", "anchored", "replaced", "item"}, values)
+}
+
+func TestListSecrets_doesNotNeedAWorkingConfig(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "secrets.yml"), "plain: value\n")
+	var out bytes.Buffer
+
+	require.NoError(t, ListSecrets(dir, "secrets.yml", &out))
+
+	assert.Empty(t, out.String())
 }
 
 func TestRunnerRender_textShowsFilesInFullAndTheRestOnALine(t *testing.T) {

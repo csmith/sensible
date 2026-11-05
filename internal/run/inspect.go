@@ -14,7 +14,6 @@ import (
 
 	"filippo.io/age"
 	"filippo.io/age/armor"
-	"github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/parser"
 	"golang.org/x/crypto/ssh"
@@ -364,6 +363,21 @@ func readSecret(in io.Reader, trim bool) (string, error) {
 	return string(plaintext), err
 }
 
+// ListSecrets prints the path of each !age value in a config file, in the form
+// ShowSecret takes. Nothing is decrypted, so it doesn't need the identity.
+func ListSecrets(configDir, file string, out io.Writer) error {
+	secrets, err := secretsIn(configFile(configDir, file))
+	if err != nil {
+		return err
+	}
+	for _, s := range secrets {
+		if _, err := fmt.Fprintln(out, s.path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ShowSecret decrypts the !age value at a dotted path in a config file,
 // e.g. "dns.auth_key" in "sensible.yml". Relative files are in the
 // config directory.
@@ -372,10 +386,7 @@ func ShowSecret(configDir, file, path string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if !filepath.IsAbs(file) {
-		file = filepath.Join(configDir, file)
-	}
-	armored, err := secretAt(file, path)
+	armored, err := secretAt(configFile(configDir, file), path)
 	if err != nil {
 		return err
 	}
@@ -391,35 +402,88 @@ func ShowSecret(configDir, file, path string, out io.Writer) error {
 	return err
 }
 
+func configFile(configDir, file string) string {
+	if filepath.IsAbs(file) {
+		return file
+	}
+	return filepath.Join(configDir, file)
+}
+
 func secretAt(file, path string) (string, error) {
-	content, err := os.ReadFile(file)
+	secrets, err := secretsIn(file)
 	if err != nil {
 		return "", err
+	}
+	for _, s := range secrets {
+		if s.path == path {
+			return s.armored, nil
+		}
+	}
+	return "", fmt.Errorf("%s: no !age value at %s", file, path)
+}
+
+type fileSecret struct {
+	path    string
+	armored string
+}
+
+func secretsIn(file string) ([]fileSecret, error) {
+	content, err := os.ReadFile(file)
+	if err != nil {
+		return nil, err
 	}
 	parsed, err := parser.ParseBytes(content, 0)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	p, err := yaml.PathString("$." + path)
-	if err != nil {
-		return "", fmt.Errorf("invalid path %q: %w", path, err)
+	var secrets []fileSecret
+	for _, doc := range parsed.Docs {
+		secrets = appendSecrets(secrets, doc.Body, "")
 	}
-	node, err := p.FilterFile(parsed)
-	if err != nil {
-		return "", fmt.Errorf("%s: %s: %w", file, path, err)
-	}
-	tag, ok := node.(*ast.TagNode)
-	if !ok || tag.Start.Value != "!age" {
-		return "", fmt.Errorf("%s: %s isn't an !age value", file, path)
-	}
-	switch v := tag.Value.(type) {
-	case *ast.StringNode:
-		return v.Value, nil
-	case *ast.LiteralNode:
-		return v.Value.Value, nil
+	return secrets, nil
+}
+
+func appendSecrets(secrets []fileSecret, node ast.Node, path string) []fileSecret {
+	switch n := node.(type) {
+	case *ast.TagNode:
+		if n.Start.Value != "!age" {
+			return appendSecrets(secrets, n.Value, path)
+		}
+		switch v := n.Value.(type) {
+		case *ast.StringNode:
+			return append(secrets, fileSecret{path, v.Value})
+		case *ast.LiteralNode:
+			return append(secrets, fileSecret{path, v.Value.Value})
+		default:
+		}
+	case *ast.AnchorNode:
+		return appendSecrets(secrets, n.Value, path)
+	case *ast.MappingNode:
+		for _, mv := range n.Values {
+			secrets = appendSecrets(secrets, mv, path)
+		}
+	case *ast.MappingValueNode:
+		key := pathKey(n.Key.GetToken().Value)
+		if path != "" {
+			key = path + "." + key
+		}
+		return appendSecrets(secrets, n.Value, key)
+	case *ast.SequenceNode:
+		for i, item := range n.Values {
+			secrets = appendSecrets(secrets, item, fmt.Sprintf("%s[%d]", path, i))
+		}
 	default:
-		return "", fmt.Errorf("%s: %s isn't an !age value", file, path)
 	}
+	return secrets
+}
+
+// pathKey quotes a mapping key that a path couldn't otherwise tell apart from
+// nested keys, such as a host named acidburn.example.com.
+func pathKey(key string) string {
+	if !strings.ContainsAny(key, ".[]'\\") {
+		return key
+	}
+	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(key) + "'"
 }
 
 func decrypt(armored string, identity age.Identity) (string, error) {

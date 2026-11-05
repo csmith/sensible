@@ -9,8 +9,18 @@ _sensible_hosts() {
   _wanted hosts expl host compadd -a hosts
 }
 
+_sensible_secrets() {
+  local file=${${(Q)line[2]}/#\~/$HOME}
+  local expl
+  local -a secrets
+  secrets=(${(f)"$($sensible_bin --config ${sensible_config/#\~/$HOME} secret show $file 2>/dev/null)"})
+  (( $#secrets )) || return 1
+  _wanted secrets expl secret compadd -a secrets
+}
+
 _sensible() {
   local curcontext=$curcontext state line ret=1
+  local sensible_bin=${words[1]/#\~/$HOME}
   local -A opt_args
 
   _arguments -C \
@@ -59,10 +69,16 @@ _sensible() {
         secret)
           _arguments -C \
             '--raw[print an armored age file and keep piped input exactly]' \
-            '1:action:((encrypt\:"encrypt a secret from stdin" show\:"decrypt a value from a file"))' \
+            '1:action:((encrypt\:"encrypt a secret from stdin" show\:"list or decrypt secrets in a file"))' \
             '2: :->file' \
+            '3: :->secret' \
             '*: :' && ret=0
-          [[ $state == file && $line[1] == show ]] && _files && ret=0
+          if [[ $line[1] == show ]]; then
+            case $state in
+              file) _files -W ${${sensible_config/#\~/$HOME}:a} && ret=0 ;;
+              secret) _sensible_secrets && ret=0 ;;
+            esac
+          fi
           ;;
       esac
       ;;
