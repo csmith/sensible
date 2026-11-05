@@ -87,14 +87,47 @@ func TestWriteFileScript_validatesBeforeReplacing(t *testing.T) {
 }
 
 func TestBootstrapScript_isValidShell(t *testing.T) {
-	out, err := exec.CommandContext(
-		t.Context(),
-		"sh",
-		"-n",
-		"-c",
-		bootstrapScript("PASSWORD'", "/tmp/tmp.abc", "deadbeef", "ssh-ed25519 AAAA sensible@x"),
-	).CombinedOutput()
-	assert.NoError(t, err, string(out))
+	for _, ensureSSHD := range []bool{false, true} {
+		out, err := exec.CommandContext(
+			t.Context(),
+			"sh",
+			"-n",
+			"-c",
+			bootstrapScript("PASSWORD'", "/tmp/tmp.abc", "deadbeef", "ssh-ed25519 AAAA sensible@x", ensureSSHD),
+		).CombinedOutput()
+		assert.NoError(t, err, string(out))
+	}
+}
+
+func TestBootstrapScript_onlyEnsuresSSHDWhenAsked(t *testing.T) {
+	const enable = `systemctl enable --now "$sshd"`
+	assert.Contains(t, bootstrapScript("p", "/tmp/t", "h", "k", true), enable)
+	assert.NotContains(t, bootstrapScript("p", "/tmp/t", "h", "k", false), enable)
+}
+
+func TestReadLocalHostKey(t *testing.T) {
+	key := testKey(t)
+	path := filepath.Join(t.TempDir(), "host_key.pub")
+	require.NoError(t, os.WriteFile(path, ssh.MarshalAuthorizedKey(key), 0o600))
+
+	b := &bootstrapper{name: "newbox"}
+	require.NoError(t, b.readLocalHostKey(path))
+	assert.Equal(t, key.Marshal(), b.newHostKey.Marshal())
+
+	b = &bootstrapper{name: "newbox", hostKeyFingerprint: ssh.FingerprintSHA256(key)}
+	require.NoError(t, b.readLocalHostKey(path))
+	assert.Equal(t, key.Marshal(), b.newHostKey.Marshal())
+
+	b = &bootstrapper{name: "newbox", hostKeyFingerprint: ssh.FingerprintSHA256(testKey(t))}
+	require.ErrorContains(t, b.readLocalHostKey(path), ssh.FingerprintSHA256(key))
+	assert.Nil(t, b.newHostKey)
+}
+
+func TestReadLocalHostKey_knownKeysAreLeftToTheConnection(t *testing.T) {
+	b := &bootstrapper{name: "acidburn", known: []config.HostKey{{PublicKey: testKey(t)}}}
+
+	require.NoError(t, b.readLocalHostKey(filepath.Join(t.TempDir(), "missing")))
+	assert.Nil(t, b.newHostKey)
 }
 
 func testKey(t *testing.T) ssh.PublicKey {
@@ -258,6 +291,16 @@ func TestBootstrap_acceptsAnyAccount(t *testing.T) {
 
 	err := Bootstrap(t.Context(), BootstrapOptions{ConfigDir: dir, Host: "acidburn", User: "deploy"})
 	assert.ErrorContains(t, err, "no SSH agent")
+}
+
+func TestBootstrap_thisMachineRefusesUser(t *testing.T) {
+	_, dir, _ := testRepo(t)
+	hostname, err := os.Hostname()
+	require.NoError(t, err)
+	writeFile(t, filepath.Join(dir, "hosts.d", "local.yml"), hostname+":\n  address: 192.0.2.2\n")
+
+	err = Bootstrap(t.Context(), BootstrapOptions{ConfigDir: dir, Host: hostname, User: "deploy"})
+	assert.ErrorContains(t, err, "remove --user")
 }
 
 func TestBootstrap_requiresUserUnlessRotating(t *testing.T) {

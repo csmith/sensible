@@ -66,7 +66,8 @@ sensible render web1                  # Show everything a host should have
 ```
 
 The machine sensible runs on is managed like any other host, over SSH to
-loopback, so it needs a running sshd and a bootstrap of its own.
+loopback. Bootstrap it without `--user`: it only needs sudo, and installs sshd
+if it's missing.
 
 Run `sensible -h` for the other commands and flags.
 

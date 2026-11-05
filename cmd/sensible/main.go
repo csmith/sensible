@@ -71,7 +71,7 @@ func command(ctx context.Context, name string, args []string) error {
 	facts, asJSON := new(string), new(bool)
 	switch name {
 	case "bootstrap":
-		user = fs.String("user", "", "Account to set the host up through: root, or one with sudo")
+		user = fs.String("user", "", "Account to set a remote host up through: root, or one with sudo")
 		rotate = fs.Bool("rotate", false, "Replace existing credentials")
 		hostKey = fs.String("host-key", "", "Expected SHA256 fingerprint of a new host's key, instead of asking")
 	case "apply":

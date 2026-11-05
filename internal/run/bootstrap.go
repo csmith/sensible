@@ -12,7 +12,9 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path"
+	"runtime"
 	"strings"
 	"syscall"
 	"text/template"
@@ -32,7 +34,8 @@ type BootstrapOptions struct {
 	// User is the account to log in as with the SSH agent's keys. Root may
 	// also use a password; other accounts install through sudo. With Rotate
 	// it may be empty, in which case the host's existing sensible access is
-	// used.
+	// used. It must be empty for the machine this runs on, which is set up
+	// with sudo directly.
 	User   string
 	Rotate bool
 	// HostKey is the SHA256 fingerprint the host's key must have when it
@@ -50,19 +53,22 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 	}
 	entry, ok := repo.Inventory().Hosts[opts.Host]
 	address := hostAddress(opts.Host, entry)
+	local := isLocal(opts.Host)
 	switch {
 	case !ok:
 		return unknownHost(repo.Inventory(), opts.Host)
 	case address == "":
 		return fmt.Errorf("%s has no address", opts.Host)
-	case opts.User == "" && !opts.Rotate:
+	case local && opts.User != "":
+		return fmt.Errorf("%s is this machine, which is set up with sudo; remove --user", opts.Host)
+	case !local && opts.User == "" && !opts.Rotate:
 		return errors.New("--user is required")
 	}
 	bootstrapped := !entry.SSHKey.IsZero()
 	if bootstrapped && !opts.Rotate {
 		return fmt.Errorf("%s already has credentials; use --rotate to replace them", opts.Host)
 	}
-	if !bootstrapped && opts.User == "" {
+	if !local && !bootstrapped && opts.User == "" {
 		return fmt.Errorf("%s has no credentials to rotate; use --user", opts.Host)
 	}
 
@@ -72,7 +78,7 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 	}
 	var signer ssh.Signer
 	var password string
-	if opts.User == "" {
+	if !local && opts.User == "" {
 		if signer, password, err = revealCredentials(entry); err != nil {
 			return err
 		}
@@ -89,10 +95,13 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 		hostKeyFingerprint: opts.HostKey,
 	}
 	step := "installed credentials and agent"
-	if opts.User == "" {
+	switch {
+	case local:
+		err = b.installLocal(ctx)
+	case opts.User == "":
 		step = "replaced credentials"
 		err = b.rotate(ctx, signer, password)
-	} else {
+	default:
 		err = b.install(ctx, opts.User, sshAgent(ctx))
 	}
 	if err != nil {
@@ -254,7 +263,7 @@ func (b *bootstrapper) install(ctx context.Context, user string, keyring sshagen
 		return fmt.Errorf("uploading agent: %w", err)
 	}
 
-	script := bootstrapScript(b.creds.password, strings.TrimSpace(tmp), build.Hash, b.creds.authorizedKey)
+	script := bootstrapScript(b.creds.password, strings.TrimSpace(tmp), build.Hash, b.creds.authorizedKey, false)
 	command := "sh -s"
 	if sudo {
 		command = "sudo sh -s"
@@ -262,6 +271,57 @@ func (b *bootstrapper) install(ctx context.Context, user string, keyring sshagen
 	if _, err := runRemote(client, command, strings.NewReader(script), sudo); err != nil {
 		return fmt.Errorf("running setup: %w", err)
 	}
+	return nil
+}
+
+// installLocal sets up the machine this runs on with sudo, which prompts on
+// the terminal if it needs to. Unlike a remote host, it may not have sshd yet.
+func (b *bootstrapper) installLocal(ctx context.Context) error {
+	build, err := b.builds.Build(ctx, runtime.GOARCH)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp("", "sensible-agent-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if _, err := tmp.Write(build.Binary); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+
+	cmd := exec.CommandContext(ctx, "sudo", "sh", "-s")
+	cmd.Stdin = strings.NewReader(bootstrapScript(b.creds.password, tmp.Name(), build.Hash, b.creds.authorizedKey, true))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("running setup: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return b.readLocalHostKey(localHostKeyPath)
+}
+
+const localHostKeyPath = "/etc/ssh/ssh_host_ed25519_key.pub"
+
+// readLocalHostKey needs no confirmation of a new key, as it comes from this
+// machine's disk rather than over the network.
+func (b *bootstrapper) readLocalHostKey(path string) error {
+	if len(b.known) > 0 {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var key config.HostKey
+	if err := key.UnmarshalText(data); err != nil {
+		return fmt.Errorf("parsing %s: %w", path, err)
+	}
+	if got := ssh.FingerprintSHA256(key); b.hostKeyFingerprint != "" && got != b.hostKeyFingerprint {
+		return fmt.Errorf("%s host key is %s, not %s", b.name, got, b.hostKeyFingerprint)
+	}
+	b.newHostKey = key.PublicKey
 	return nil
 }
 
@@ -426,8 +486,9 @@ var bootstrapTemplate = template.Must(
 )
 
 // bootstrapScript is run as root with sh. It's idempotent, so re-running
-// bootstrap repairs a host whose access has broken.
-func bootstrapScript(password, agentTmp, agentHash, authorizedKey string) string {
+// bootstrap repairs a host whose access has broken. With ensureSSHD it also
+// installs and starts sshd, for a machine that wasn't reached through it.
+func bootstrapScript(password, agentTmp, agentHash, authorizedKey string, ensureSSHD bool) string {
 	access := features.AccessFiles(authorizedKey)
 	files := make([]string, len(access))
 	for i, f := range access {
@@ -437,14 +498,15 @@ func bootstrapScript(password, agentTmp, agentHash, authorizedKey string) string
 	err := bootstrapTemplate.Execute(
 		&s,
 		map[string]any{
-			"User":      features.SensibleUser,
-			"Home":      features.SensibleHome,
-			"Password":  password,
-			"AgentTmp":  agentTmp,
-			"AgentHash": agentHash,
-			"AgentDir":  path.Dir(host.AgentPath),
-			"AgentPath": host.AgentPath,
-			"Files":     files,
+			"User":       features.SensibleUser,
+			"Home":       features.SensibleHome,
+			"Password":   password,
+			"AgentTmp":   agentTmp,
+			"AgentHash":  agentHash,
+			"AgentDir":   path.Dir(host.AgentPath),
+			"AgentPath":  host.AgentPath,
+			"Files":      files,
+			"EnsureSSHD": ensureSSHD,
 		},
 	)
 	if err != nil {

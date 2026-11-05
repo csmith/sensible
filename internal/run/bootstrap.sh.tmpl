@@ -17,6 +17,18 @@ if ! command -v sudo >/dev/null 2>&1; then
   fi
 fi
 
+{{if .EnsureSSHD -}}
+if ! command -v sshd >/dev/null 2>&1; then
+  if [ "$family" = debian ]; then
+    DEBIAN_FRONTEND=noninteractive apt-get update -q
+    DEBIAN_FRONTEND=noninteractive apt-get install -qy openssh-server
+  else
+    pacman -Syu --noconfirm --needed openssh
+  fi
+fi
+systemctl enable --now "$sshd"
+
+{{end -}}
 if ! id {{q .User}} >/dev/null 2>&1; then
   useradd --system --user-group --shell /bin/sh --home-dir {{q .Home}} --no-create-home {{q .User}}
 fi
