@@ -91,6 +91,7 @@ var resourceTypes = registry(
 	DockerNetwork{},
 	DockerNetworks{},
 	SystemdReload{},
+	ServiceRestart{},
 	SystemdUnits{},
 )
 
@@ -318,6 +319,15 @@ type SystemdReload struct {
 	Watch []string `json:"watch"`
 }
 
+// ServiceRestart restarts a unit where it's listed, rather than as a handler,
+// so what comes later in the run uses the config written earlier in it.
+type ServiceRestart struct {
+	Name string `json:"name"`
+	// Watch are the IDs of the resources that manage the unit's config. It
+	// does nothing unless one of them changed earlier in the run.
+	Watch []string `json:"watch"`
+}
+
 // SystemdUnits stops, disables and removes the unit files in
 // /etc/systemd/system whose names start with Prefix that no File earlier in
 // the same run declared. It's skipped if anything on the host failed.
@@ -379,6 +389,8 @@ func (r DockerNetwork) ID() string { return "docker-network:" + r.Name }
 func (r DockerNetworks) ID() string { return "docker-networks" }
 
 func (r SystemdReload) ID() string { return "systemd-reload" }
+
+func (r ServiceRestart) ID() string { return "service-restart:" + r.Name }
 
 func (r SystemdUnits) ID() string { return "systemd-units:" + r.Prefix }
 

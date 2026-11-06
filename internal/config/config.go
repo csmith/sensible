@@ -197,6 +197,10 @@ type DockerConfig struct {
 	// Registries are the credentials root's Docker client pulls with, by
 	// registry host, e.g. "ghcr.io".
 	Registries map[string]RegistryConfig `yaml:"registries"`
+	// Daemon is the content of /etc/docker/daemon.json, using Docker's own
+	// option names. Without it, the file is left alone. dockerd checks it
+	// before it's replaced, and changing it restarts Docker.
+	Daemon map[string]any `yaml:"daemon"`
 
 	// Auths are each registry's base64 "username:password", as Docker's
 	// client config holds them. HostConfig sets it.

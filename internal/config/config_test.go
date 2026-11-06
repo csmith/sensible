@@ -230,6 +230,80 @@ users: !replace
 	assert.Equal(t, map[string]string{"chris": "green"}, c.Zsh.PromptColours)
 }
 
+func TestHostConfig_dockerDaemon(t *testing.T) {
+	role := `
+params:
+  daemon:
+    log-driver: local
+    log-opts: {max-size: 10m, max-file: "3"}
+    dns: [192.0.2.1, 192.0.2.2]
+    live-restore: true
+docker:
+  daemon: !param daemon
+`
+	tests := []struct {
+		name  string
+		roles string
+		want  map[string]any
+	}{
+		{
+			name:  "defaults",
+			roles: "docker:",
+			want: map[string]any{
+				"log-driver":   "local",
+				"log-opts":     map[string]any{"max-size": "10m", "max-file": "3"},
+				"dns":          []any{"192.0.2.1", "192.0.2.2"},
+				"live-restore": true,
+			},
+		},
+		{
+			name:  "host overrides single settings and replaces lists",
+			roles: "docker: {daemon: {log-opts: {max-size: 50m}, dns: [192.0.2.9], debug: true}}",
+			want: map[string]any{
+				"log-driver":   "local",
+				"log-opts":     map[string]any{"max-size": "50m", "max-file": "3"},
+				"dns":          []any{"192.0.2.9"},
+				"live-restore": true,
+				"debug":        true,
+			},
+		},
+		{
+			name:  "host replaces everything",
+			roles: "docker: {daemon: !replace {debug: true}}",
+			want:  map[string]any{"debug": true},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				c, err := newTestRepo(
+					t,
+					map[string]string{
+						"hosts.d/hosts.yml":     "alpha:\n  roles: {" + tt.roles + "}\n",
+						"roles/docker/role.yml": role,
+					},
+				).open(t).HostConfig("alpha", "debian")
+				require.NoError(t, err)
+				require.NotNil(t, c.Docker)
+				assert.Equal(t, tt.want, c.Docker.Daemon)
+			},
+		)
+	}
+}
+
+func TestHostConfig_dockerDaemonConflict(t *testing.T) {
+	_, err := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml": "alpha:\n  roles: {a:, b:}\n",
+			"roles/a/role.yml":  "docker: {daemon: {log-driver: local}}\n",
+			"roles/b/role.yml":  "docker: {daemon: {log-driver: journald}}\n",
+		},
+	).open(t).HostConfig("alpha", "debian")
+	assert.ErrorContains(t, err, "docker.daemon.log-driver")
+}
+
 func TestHostConfig_conflictingRoles(t *testing.T) {
 	files := func(second string) map[string]string {
 		return map[string]string{

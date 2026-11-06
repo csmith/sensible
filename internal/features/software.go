@@ -315,6 +315,13 @@ func docker(h Host) ([]host.Resource, error) {
 		)
 		rs = append(rs, installPackages("docker", "docker-compose")...)
 	}
+	if c.Daemon != nil {
+		dc, err := dockerDaemonConfig(c.Daemon)
+		if err != nil {
+			return nil, fmt.Errorf("host %s: docker daemon config: %w", h.Name, err)
+		}
+		rs = append(rs, dc...)
+	}
 
 	members := slices.Clone(c.Users)
 	for _, u := range c.Users {
@@ -349,6 +356,29 @@ func docker(h Host) ([]host.Resource, error) {
 		rs = append(rs, cc...)
 	}
 	return rs, nil
+}
+
+// dockerDaemonConfig comes after Docker's installed, as dockerd validates it,
+// and restarts Docker before anything else uses it, as containers and networks
+// keep the defaults they were created with.
+func dockerDaemonConfig(settings map[string]any) ([]host.Resource, error) {
+	content, err := json.MarshalIndent(settings, "", "\t")
+	if err != nil {
+		return nil, err
+	}
+	file := host.File{
+		Path:     "/etc/docker/daemon.json",
+		Content:  string(content) + "\n",
+		Owner:    "root",
+		Group:    "root",
+		Mode:     0o644,
+		Validate: []string{"dockerd", "--validate", "--config-file", "%s"},
+	}
+	return []host.Resource{
+		host.Dir{Path: "/etc/docker", Owner: "root", Group: "root", Mode: 0o755},
+		file,
+		host.ServiceRestart{Name: "docker", Watch: []string{file.ID()}},
+	}, nil
 }
 
 // dockerClientConfig gives root's Docker client the registries' credentials,

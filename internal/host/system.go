@@ -102,6 +102,19 @@ func (r SystemdReload) Apply(ctx context.Context, sys Sys) error {
 	return err
 }
 
+func (r ServiceRestart) Check(ctx context.Context, _ Sys) (Change, error) {
+	modified := state(ctx).modified
+	if slices.ContainsFunc(r.Watch, func(id string) bool { return modified[id] }) {
+		return drift("restart, as its config changes\n"), nil
+	}
+	return Change{InSync: true}, nil
+}
+
+func (r ServiceRestart) Apply(ctx context.Context, sys Sys) error {
+	_, err := runOK(ctx, sys, argv("systemctl", "restart", r.Name))
+	return err
+}
+
 // UnitsDir is where the system's own unit files go.
 const UnitsDir = "/etc/systemd/system"
 

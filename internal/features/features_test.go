@@ -828,6 +828,51 @@ func TestResources_noJobsStillCleansUp(t *testing.T) {
 	assert.Contains(t, ids(rs), "systemd-units:sensible-")
 }
 
+func TestResources_dockerDaemon(t *testing.T) {
+	for _, osFamily := range []string{archLinux, debian} {
+		t.Run(
+			osFamily,
+			func(t *testing.T) {
+				h := testHost(osFamily)
+				h.Config.AUR = nil
+				h.Config.Docker.Daemon = map[string]any{
+					"log-driver": "local",
+					"log-opts":   map[string]any{"max-size": "10m"},
+					"dns":        []any{"192.0.2.1"},
+					"ipv6":       true,
+				}
+				rs, err := Resources(h)
+				require.NoError(t, err)
+
+				file, ok := find[host.File](rs, "file:/etc/docker/daemon.json")
+				require.True(t, ok)
+				assert.JSONEq(
+					t,
+					`{"log-driver": "local", "log-opts": {"max-size": "10m"}, "dns": ["192.0.2.1"], "ipv6": true}`,
+					file.Content,
+				)
+				restart, ok := find[host.ServiceRestart](rs, "service-restart:docker")
+				require.True(t, ok)
+				assert.Equal(t, []string{file.ID()}, restart.Watch)
+
+				got := ids(rs)
+				install := map[string]string{archLinux: "package:docker", debian: "package:docker-ce"}[osFamily]
+				assert.Less(t, slices.Index(got, install), slices.Index(got, file.ID()), "dockerd validates the file")
+				assert.Less(t, slices.Index(got, file.ID()), slices.Index(got, restart.ID()))
+				assert.Less(t, slices.Index(got, restart.ID()), slices.Index(got, "docker-network:web"))
+				assert.Less(t, slices.Index(got, restart.ID()), slices.Index(got, "compose:/srv/compose/web"))
+			},
+		)
+	}
+}
+
+func TestResources_dockerDaemonUnset(t *testing.T) {
+	rs, err := Resources(testHost(archLinux))
+	require.NoError(t, err)
+	assert.NotContains(t, ids(rs), "file:/etc/docker/daemon.json")
+	assert.NotContains(t, ids(rs), "service-restart:docker")
+}
+
 func TestResources_dockerRegistries(t *testing.T) {
 	h := testHost(archLinux)
 	rs, err := Resources(h)
