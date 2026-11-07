@@ -24,6 +24,7 @@ const usage = `Usage: sensible [flags] <command> [args]
 Commands:
   bootstrap <host> [--user account] [--rotate] [--host-key SHA256:...]
   apply [hosts...] [--yes]
+  prune [hosts...]
   facts [hosts...]
   render [hosts...] [--facts file] [--json]
   secret encrypt [--raw]
@@ -106,6 +107,8 @@ func command(ctx context.Context, name string, args []string) error {
 				Yes:       *yes,
 			},
 		)
+	case name == "prune":
+		return run.Prune(ctx, run.PruneOptions{ConfigDir: *configDir, Hosts: args})
 	case name == "facts":
 		return run.Facts(ctx, *configDir, args, os.Stdout)
 	case name == "render":

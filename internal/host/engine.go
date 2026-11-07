@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"slices"
 )
 
 // engine checks and applies a host's resources in order.
@@ -147,6 +148,62 @@ func (e *engine) applyOne(
 		st.changed()
 	}
 	return res
+}
+
+// leftovers lists each Pruner's leftovers. Like check, it doesn't stop at
+// failures.
+func (e *engine) leftovers(ctx context.Context, list ResourceList, send func(Leftovers) error) (bool, error) {
+	st := newRunState()
+	ctx = withRunState(ctx, st)
+	failed := false
+	for _, r := range list {
+		st.declare(r)
+		p, ok := r.(Pruner)
+		if !ok {
+			continue
+		}
+		items, err := p.Leftovers(ctx, e.sys)
+		res := Leftovers{ID: r.ID(), Items: items}
+		if err != nil {
+			res.Error, failed = err.Error(), true
+		}
+		if len(res.Items) == 0 && res.Error == "" {
+			continue
+		}
+		if err := send(res); err != nil {
+			return failed, err
+		}
+	}
+	return failed, nil
+}
+
+// remove prunes one of the leftovers of the Pruner with the given ID, as
+// long as it still lists the item.
+func (e *engine) remove(ctx context.Context, list ResourceList, id, item string) error {
+	st := newRunState()
+	ctx = withRunState(ctx, st)
+	for _, r := range list {
+		st.declare(r)
+		p, ok := r.(Pruner)
+		if !ok || r.ID() != id {
+			continue
+		}
+		items, err := p.Leftovers(ctx, e.sys)
+		if err != nil {
+			return err
+		}
+		if !slices.Contains(items, item) {
+			return fmt.Errorf("%s is no longer a leftover", item)
+		}
+		err = p.Prune(ctx, e.sys, item)
+		res := "removed"
+		if err != nil {
+			res = "failed: " + err.Error()
+		}
+		_, _ = fmt.Fprintf(e.log, "prune %s %s: %s\n", id, item, res)
+		return err
+	}
+	return fmt.Errorf("no resource %s to prune", id)
 }
 
 func (e *engine) record(res Applied) {

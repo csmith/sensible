@@ -32,6 +32,7 @@ _sensible() {
   local -a commands=(
     'bootstrap:set up a host for sensible to manage'
     'apply:apply the configuration to hosts'
+    'prune:remove what hosts have left over, such as old volumes'
     'facts:print facts gathered from hosts'
     'render:print what apply would make hosts have'
     'secret:encrypt or show secrets'
@@ -57,7 +58,7 @@ _sensible() {
             '--yes[apply without asking]' \
             '*:host:_sensible_hosts' && ret=0
           ;;
-        facts)
+        facts|prune)
           _arguments '*:host:_sensible_hosts' && ret=0
           ;;
         render)

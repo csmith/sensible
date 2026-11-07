@@ -82,7 +82,7 @@ type session struct {
 	agent  *agent
 	conn   *Conn
 	engine *engine
-	// resources are from the last Check, ready for Apply.
+	// resources are from the last Check, ready for Apply or Prune.
 	resources ResourceList
 }
 
@@ -109,6 +109,21 @@ func (s *session) handle(ctx context.Context, msg any) error {
 		return s.conn.Send(Done{Failed: failed})
 	case Apply:
 		return s.apply(ctx)
+	case Prune:
+		if s.resources == nil {
+			return s.conn.Send(Error{Message: "prune without a check"})
+		}
+		failed, err := s.engine.leftovers(ctx, s.resources, func(l Leftovers) error { return s.conn.Send(l) })
+		if err != nil {
+			return err
+		}
+		return s.conn.Send(Done{Failed: failed})
+	case Remove:
+		res := Removed{ID: msg.ID, Item: msg.Item}
+		if err := s.engine.remove(ctx, s.resources, msg.ID, msg.Item); err != nil {
+			res.Error = err.Error()
+		}
+		return s.conn.Send(res)
 	default:
 		return s.conn.Send(Error{Message: fmt.Sprintf("unexpected %T", msg)})
 	}

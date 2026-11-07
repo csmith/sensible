@@ -264,7 +264,7 @@ func TestVolumes_WarnsAboutUndeclaredWithoutRemoving(t *testing.T) {
 	assert.Equal(
 		t,
 		"/srv/volumes/old\n/srv/volumes/web/database-16\n"+
-			"no role declares these; remove them by hand once they're not needed\n",
+			"no role declares these; run `sensible prune` to remove them once they're not needed\n",
 		change.Warning,
 	)
 

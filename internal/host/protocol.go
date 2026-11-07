@@ -10,7 +10,7 @@ import (
 // ProtocolVersion is bumped whenever a message or resource changes, so a
 // controller can refuse an agent built from older code. Hello and Upgrade
 // must never change shape, so any controller can upgrade any agent.
-const ProtocolVersion = 9
+const ProtocolVersion = 10
 
 // Hello is the first message an agent sends, and the first after it re-execs
 // following an Upgrade.
@@ -67,6 +67,31 @@ type Applied struct {
 	Error   string `json:"error,omitempty"`
 }
 
+// Prune asks the agent for the leftovers of the resources from the preceding
+// Check, replying with one Leftovers per Pruner that has any or failed to
+// list them, followed by Done.
+type Prune struct{}
+
+type Leftovers struct {
+	ID    string   `json:"id"`
+	Items []string `json:"items,omitempty"`
+	Error string   `json:"error,omitempty"`
+}
+
+// Remove prunes one item that Leftovers listed, replying with Removed. The
+// agent lists the resource's leftovers again first, and refuses an item
+// that's no longer among them.
+type Remove struct {
+	ID   string `json:"id"`
+	Item string `json:"item"`
+}
+
+type Removed struct {
+	ID    string `json:"id"`
+	Item  string `json:"item"`
+	Error string `json:"error,omitempty"`
+}
+
 type Done struct {
 	Failed bool `json:"failed"`
 }
@@ -100,6 +125,10 @@ var messageTypes = registry(
 	Apply{},
 	Applying{},
 	Applied{},
+	Prune{},
+	Leftovers{},
+	Remove{},
+	Removed{},
 	Done{},
 	Bye{},
 	Error{},

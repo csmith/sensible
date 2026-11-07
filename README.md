@@ -62,6 +62,7 @@ zsh:
 sensible bootstrap web1 --user root   # Set up a new host for management
 sensible apply web1                   # Show the changes for a host and apply them
 sensible apply                        # The same, for all hosts
+sensible prune web1                   # Offer to remove what a host has left over
 sensible render web1                  # Show everything a host should have
 ```
 

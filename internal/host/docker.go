@@ -216,18 +216,27 @@ func (r ComposeProjects) Apply(ctx context.Context, sys Sys) error {
 }
 
 func (r Volumes) Check(ctx context.Context, sys Sys) (Change, error) {
-	extra, err := undeclaredInGroups(sys, state(ctx).declared, r.Path)
+	extra, err := r.Leftovers(ctx, sys)
 	if err != nil || len(extra) == 0 {
 		return Change{InSync: true}, err
 	}
 	return Change{
-		InSync:  true,
-		Warning: strings.Join(extra, "\n") + "\nno role declares these; remove them by hand once they're not needed\n",
+		InSync: true,
+		Warning: strings.Join(extra, "\n") +
+			"\nno role declares these; run `sensible prune` to remove them once they're not needed\n",
 	}, nil
 }
 
 func (r Volumes) Apply(context.Context, Sys) error {
 	return nil
+}
+
+func (r Volumes) Leftovers(ctx context.Context, sys Sys) ([]string, error) {
+	return undeclaredInGroups(sys, state(ctx).declared, r.Path)
+}
+
+func (r Volumes) Prune(_ context.Context, sys Sys, item string) error {
+	return sys.RemoveAll(item)
 }
 
 // networkLabel marks the networks sensible created, which it may remove.

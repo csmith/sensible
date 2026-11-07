@@ -45,11 +45,16 @@ type fakeAgent struct {
 	silent bool
 	// gate, if set, is called with each message's type before it's handled.
 	gate func(msg string)
+	// leftovers are reported for Prune, by resource ID.
+	leftovers map[string][]string
+	// removeFailure, if set, fails removing this item.
+	removeFailure string
 
 	mu       sync.Mutex
 	received []string
 	upgrades [][]byte
 	checks   []host.ResourceList
+	removed  []string
 }
 
 func (f *fakeAgent) serve(r io.ReadCloser, w io.WriteCloser) {
@@ -101,6 +106,23 @@ func (f *fakeAgent) serve(r io.ReadCloser, w io.WriteCloser) {
 			checked = f.check(conn, resources)
 		case host.Apply:
 			f.apply(conn, resources, checked)
+		case host.Prune:
+			for _, res := range resources {
+				if items := f.leftovers[res.ID()]; len(items) > 0 {
+					_ = conn.Send(host.Leftovers{ID: res.ID(), Items: items})
+				}
+			}
+			_ = conn.Send(host.Done{})
+		case host.Remove:
+			r := host.Removed{ID: m.ID, Item: m.Item}
+			if m.Item == f.removeFailure {
+				r.Error = "busy"
+			} else {
+				f.mu.Lock()
+				f.removed = append(f.removed, m.Item)
+				f.mu.Unlock()
+			}
+			_ = conn.Send(r)
 		case host.Bye:
 			return
 		}

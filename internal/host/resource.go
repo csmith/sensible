@@ -32,6 +32,17 @@ type Notifier interface {
 	Notifies() ResourceList
 }
 
+// Pruner is implemented by resources that find leftovers they won't remove
+// during an apply, such as data from removed stacks. The prune command
+// offers to remove each one.
+type Pruner interface {
+	// Leftovers lists what could be removed, each item describing itself.
+	// It must not change anything.
+	Leftovers(ctx context.Context, sys Sys) ([]string, error)
+	// Prune removes one of the items Leftovers listed.
+	Prune(ctx context.Context, sys Sys, item string) error
+}
+
 var ErrNotYetCheckable = errors.New("can't be checked until earlier changes are applied")
 
 type Change struct {
@@ -297,7 +308,7 @@ type ComposeProjects struct {
 
 // Volumes warns about the volume directories in Path that no Dir earlier in
 // the same run declared, and about the stacks' directories in Path with none
-// declared. It never removes them.
+// declared. Applying never removes them, but pruning does.
 type Volumes struct {
 	Path string `json:"path"`
 }

@@ -200,3 +200,41 @@ func TestServe_LostConnectionFinishesWithHandlers(t *testing.T) {
 	require.Error(t, <-ta.done)
 	assert.Equal(t, []string{"a", "h"}, scriptedApplied)
 }
+
+func TestServe_PruneListsAndRemovesLeftovers(t *testing.T) {
+	ta := startAgent(t, nil)
+	ta.receive(t)
+	sys := ta.agent.sys.(*testSys)
+	sys.write("/srv/volumes/old/data/file", "")
+	sys.write("/srv/volumes/older/data/file", "")
+
+	require.NoError(t, ta.ctrl.Send(Check{Resources: ResourceList{Volumes{Path: "/srv/volumes"}}}))
+	ta.receive(t)
+	ta.receive(t)
+
+	require.NoError(t, ta.ctrl.Send(Prune{}))
+	assert.Equal(
+		t,
+		Leftovers{ID: "volumes:/srv/volumes", Items: []string{"/srv/volumes/old", "/srv/volumes/older"}},
+		ta.receive(t),
+	)
+	assert.Equal(t, Done{}, ta.receive(t))
+
+	require.NoError(t, ta.ctrl.Send(Remove{ID: "volumes:/srv/volumes", Item: "/srv/volumes/old"}))
+	assert.Equal(t, Removed{ID: "volumes:/srv/volumes", Item: "/srv/volumes/old"}, ta.receive(t))
+	assert.False(t, sys.exists("/srv/volumes/old"))
+	assert.True(t, sys.exists("/srv/volumes/older/data/file"))
+
+	require.NoError(t, ta.ctrl.Send(Remove{ID: "volumes:/srv/volumes", Item: "/etc"}))
+	removed := ta.receive(t).(Removed)
+	assert.Contains(t, removed.Error, "no longer a leftover")
+	assert.True(t, sys.exists("/etc/os-release"))
+}
+
+func TestServe_PruneWithoutCheckIsAnError(t *testing.T) {
+	ta := startAgent(t, nil)
+	ta.receive(t)
+
+	require.NoError(t, ta.ctrl.Send(Prune{}))
+	assert.IsType(t, Error{}, ta.receive(t))
+}

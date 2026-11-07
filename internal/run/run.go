@@ -270,6 +270,10 @@ type hostRun struct {
 	save      func() error
 	checked   []host.Checked
 	failed    bool
+	// leftovers are what prune offers to remove, and unlisted the
+	// resources whose leftovers couldn't be listed.
+	leftovers []leftover
+	unlisted  []host.Leftovers
 	// done is closed when the host's current step, connecting or checking,
 	// has finished.
 	done chan struct{}

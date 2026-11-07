@@ -71,7 +71,7 @@ _sensible() {
         if [[ $cur == -* ]]; then
             COMPREPLY=($(compgen -W '--config --debug' -- "$cur"))
         else
-            COMPREPLY=($(compgen -W 'bootstrap apply facts render secret' -- "$cur"))
+            COMPREPLY=($(compgen -W 'bootstrap apply prune facts render secret' -- "$cur"))
         fi
         return
     fi
@@ -95,7 +95,7 @@ _sensible() {
                 COMPREPLY=($(compgen -W "$(_sensible_hosts "$config")" -- "$cur"))
             fi
             ;;
-        apply | facts | render)
+        apply | prune | facts | render)
             if [[ $cur == -* ]]; then
                 [[ $cmd == apply ]] && COMPREPLY=($(compgen -W '--yes' -- "$cur"))
                 [[ $cmd == render ]] && COMPREPLY=($(compgen -W '--facts --json' -- "$cur"))
