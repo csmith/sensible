@@ -486,6 +486,9 @@ func (c *composeRenderer) partialsCompose(values []map[string]ast.Node) (*ast.Fi
 		}
 		file := c.repo.path(use.def.file(host.ComposeFile))
 		pf, err := c.partialCompose(use, values[i])
+		if err == nil {
+			err = c.checkProjectName(pf.Docs[0].Body)
+		}
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", file, err)
 		}
@@ -520,6 +523,9 @@ func (c *composeRenderer) roleCompose(file string, partials *ast.File, set map[s
 	if body, _, err = c.replace(body); err != nil {
 		return nil, err
 	}
+	if err := c.checkProjectName(body); err != nil {
+		return nil, err
+	}
 	if partials != nil {
 		if err := checkConflicts(c.repo.path(file), withoutReplaced(body), set); err != nil {
 			return nil, err
@@ -531,6 +537,27 @@ func (c *composeRenderer) roleCompose(file string, partials *ast.File, set map[s
 	}
 	f.Docs[0].Body = body
 	return f, nil
+}
+
+// checkProjectName rejects a compose file's top-level name unless it's the
+// stack's, as stacks are taken down by their directory's name.
+func (c *composeRenderer) checkProjectName(body ast.Node) error {
+	for _, mv := range mappingValues(body) {
+		if keyString(mv.Key) != "name" {
+			continue
+		}
+		v := mv.Value
+		if tag, ok := v.(*ast.TagNode); ok && tag.Start.Value == replaceTag {
+			v = tag.Value
+		}
+		if isNull(v) {
+			continue
+		}
+		if s, ok := v.(ast.ScalarNode); !ok || v.Type() == ast.TagType || fmt.Sprint(s.GetValue()) != c.def.name {
+			return nodeError(mv.Value, fmt.Sprintf("name must be %q, the stack's name", c.def.name))
+		}
+	}
+	return nil
 }
 
 type composeRenderer struct {
@@ -829,6 +856,9 @@ func (c *composeRenderer) renderEnv(env ast.Node) (*StackFile, error) {
 		name := keyString(mv.Key)
 		if isNull(mv.Value) {
 			continue
+		}
+		if name == "COMPOSE_PROJECT_NAME" {
+			return nil, nodeError(mv.Key, name+" can't be set, as the project is always named after the stack")
 		}
 		value, secret, err := c.envValue(mv.Value)
 		if err != nil {

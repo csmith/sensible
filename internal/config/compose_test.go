@@ -146,6 +146,28 @@ func TestHostConfig_stackErrors(t *testing.T) {
 			map[string]string{"roles/web/role.yml": "compose:\n  files: [a.age]\n", "roles/web/a.age": "plain"},
 			"roles/web/a.age: expected an ASCII-armored age file",
 		},
+		{
+			"project name",
+			"name: other\nservices: {}\n",
+			nil,
+			`roles/web/docker-compose.yml: [1:7] name must be "web", the stack's name`,
+		},
+		{
+			"project name in a partial",
+			"services: {}\n",
+			map[string]string{
+				"roles/web/role.yml":            "partials: [{partial: x}]\n",
+				"partials/x/partial.yml":        "",
+				"partials/x/docker-compose.yml": "name: other\n",
+			},
+			`partials/x/docker-compose.yml: [1:7] name must be "web", the stack's name`,
+		},
+		{
+			"COMPOSE_PROJECT_NAME",
+			"services: {}\n",
+			map[string]string{"roles/web/role.yml": "compose:\n  env:\n    COMPOSE_PROJECT_NAME: other\n"},
+			"COMPOSE_PROJECT_NAME can't be set",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(
@@ -711,6 +733,22 @@ compose:
 	env := stackFile(t, c.Stacks[0], ".env")
 	assert.Equal(t, "MODE='prod'\nNAME='site'\nPORT='8080'\n", env.Content)
 	assert.Empty(t, env.Secrets)
+}
+
+func TestHostConfig_stackProjectName(t *testing.T) {
+	c, err := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml":                "alpha:\n  roles: {web/app: }\n",
+			"roles/web/role.yml":               "children: [app]\n",
+			"roles/web/app/role.yml":           "partials: [{partial: x}]\n",
+			"roles/web/app/docker-compose.yml": "name: \"{stack}\"\nservices: {}\n",
+			"partials/x/partial.yml":           "",
+			"partials/x/docker-compose.yml":    "name: web-app\n",
+		},
+	).open(t).HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	assert.Equal(t, "name: \"web-app\"\nservices: {}\n", stackFile(t, c.Stacks[0], "docker-compose.yml").Content)
 }
 
 func TestHostConfig_noComposeEnvNoFile(t *testing.T) {
