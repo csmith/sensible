@@ -1,6 +1,7 @@
 package features
 
 import (
+	"cmp"
 	_ "embed"
 	"fmt"
 	"maps"
@@ -50,10 +51,17 @@ const ohMyZshPath = "/usr/share/oh-my-zsh"
 
 const zshPath = "/usr/bin/zsh"
 
+const agnoster = "agnoster"
+
 func zsh(h Host) ([]host.Resource, error) {
 	c := h.Config.Zsh
 	if c == nil {
 		return nil, nil
+	}
+
+	theme := cmp.Or(c.Theme, agnoster)
+	if theme != agnoster && len(c.PromptColours) > 0 {
+		return nil, fmt.Errorf("zsh.prompt_colours needs the %s theme, not %s", agnoster, theme)
 	}
 
 	plugins := c.Plugins
@@ -78,7 +86,8 @@ func zsh(h Host) ([]host.Resource, error) {
 		err := zshrcTemplate.Execute(
 			&b,
 			zshrc{
-				Theme:        "agnoster",
+				Theme:        theme,
+				Editor:       cmp.Or(c.Editor, "vim"),
 				Plugins:      plugins,
 				PromptColour: c.PromptColours[name],
 			},
@@ -103,6 +112,7 @@ func zsh(h Host) ([]host.Resource, error) {
 
 type zshrc struct {
 	Theme   string
+	Editor  string
 	Plugins []string
 	// PromptColour colours the host segment of the prompt.
 	PromptColour string

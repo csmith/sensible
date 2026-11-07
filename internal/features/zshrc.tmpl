@@ -1,7 +1,7 @@
 # Managed by sensible. Local changes will be overwritten; put them in
 # ~/.zshrc.local instead.
 path=(~/.bin(N/) $path)
-export EDITOR=vim
+export EDITOR={{ quote .Editor }}
 
 export ZSH=/usr/share/oh-my-zsh
 # $ZSH isn't writable, and sensible updates it.
@@ -13,6 +13,7 @@ HYPHEN_INSENSITIVE=true
 plugins=({{ join .Plugins " " }})
 
 source $ZSH/oh-my-zsh.sh
+{{- if eq .Theme "agnoster" }}
 
 # Show just the host, coloured by account, in place of user@host.
 prompt_context() {
@@ -28,6 +29,7 @@ prompt_status() {
 
   [[ -n "$symbols" ]] && prompt_segment black default "$symbols"
 }
+{{- end }}
 
 # Not `[[ ]] && source`, which would leave the first prompt showing a failure.
 if [[ -r ~/.zshrc.local ]]; then

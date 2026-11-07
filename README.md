@@ -53,6 +53,7 @@ params:
 
 zsh:
   users: !param users
+  editor: nvim
   prompt_colours: !param prompt_colours
 ```
 

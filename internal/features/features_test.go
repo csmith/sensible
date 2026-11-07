@@ -707,9 +707,33 @@ func TestResources_zshrc(t *testing.T) {
 					assert.Contains(t, f.Content, w)
 				}
 				assert.Contains(t, f.Content, "ZSH_THEME=agnoster\n")
+				assert.Contains(t, f.Content, "export EDITOR=vim\n")
 			},
 		)
 	}
+}
+
+func TestResources_zshrcOtherTheme(t *testing.T) {
+	h := testHost(debian)
+	h.Config.AUR = nil
+	h.Config.Zsh.Theme = "robbyrussell"
+	h.Config.Zsh.Editor = "code --wait"
+	h.Config.Zsh.PromptColours = nil
+	rs, err := Resources(h)
+	require.NoError(t, err)
+	f, ok := find[host.File](rs, "file:/home/alice/.zshrc")
+	require.True(t, ok)
+	assert.Contains(t, f.Content, "ZSH_THEME=robbyrussell\n")
+	assert.Contains(t, f.Content, "export EDITOR='code --wait'\n")
+	assert.NotContains(t, f.Content, "prompt_")
+}
+
+func TestResources_zshPromptColoursNeedAgnoster(t *testing.T) {
+	h := testHost(debian)
+	h.Config.AUR = nil
+	h.Config.Zsh.Theme = "robbyrussell"
+	_, err := Resources(h)
+	assert.ErrorContains(t, err, "zsh.prompt_colours needs the agnoster theme, not robbyrussell")
 }
 
 func TestAccessFiles(t *testing.T) {

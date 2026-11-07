@@ -192,7 +192,12 @@ type ZshConfig struct {
 	// Users get zsh as their shell.
 	Users   Set `yaml:"users"`
 	Plugins Set `yaml:"plugins"`
-	// PromptColours colours the host segment of each user's prompt.
+	// Theme is the oh-my-zsh theme, defaulting to agnoster.
+	Theme string `yaml:"theme"`
+	// Editor is $EDITOR, defaulting to vim.
+	Editor string `yaml:"editor"`
+	// PromptColours colours the host segment of each user's prompt. Only
+	// agnoster has one.
 	PromptColours map[string]string `yaml:"prompt_colours"`
 }
 
