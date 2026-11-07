@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"maps"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"os/exec"
@@ -204,54 +205,68 @@ func environment() map[string]string {
 }
 
 func (s *localSys) ReadFile(path string) ([]byte, error) {
-	return os.ReadFile(s.path(path))
+	return confined(
+		s,
+		path,
+		func(files fileOps, name string) ([]byte, error) {
+			return files.ReadFile(name)
+		},
+	)
 }
 
 func (s *localSys) WriteFile(path string, data []byte, opts WriteOptions) error {
-	dir, name := filepath.Split(s.path(path))
-	f, err := os.CreateTemp(dir, "."+name+".sensible-*")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	committed := false
-	defer func() {
-		if !committed {
-			_ = os.Remove(tmp)
-		}
-	}()
+	return confinedErr(
+		s,
+		path,
+		func(files fileOps, name string) error {
+			tmp := tempName(name)
+			f, err := files.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+			if err != nil {
+				return err
+			}
+			committed := false
+			defer func() {
+				if !committed {
+					_ = files.Remove(tmp)
+				}
+			}()
 
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return err
-	}
-	// Changing the owner can clear the mode's setuid bits, so it goes first.
-	if err := f.Chown(opts.UID, opts.GID); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Chmod(opts.Mode); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if opts.Validate != nil {
-		if err := opts.Validate(filepath.Join(filepath.Dir(path), filepath.Base(tmp))); err != nil {
-			return err
-		}
-	}
-	if err := os.Rename(tmp, s.path(path)); err != nil {
-		return err
-	}
-	committed = true
-	syncDir(dir)
-	return nil
+			if _, err := f.Write(data); err != nil {
+				_ = f.Close()
+				return err
+			}
+			// Changing the owner can clear the mode's setuid bits, so it goes first.
+			if err := f.Chown(opts.UID, opts.GID); err != nil {
+				_ = f.Close()
+				return err
+			}
+			if err := f.Chmod(opts.Mode); err != nil {
+				_ = f.Close()
+				return err
+			}
+			if err := f.Sync(); err != nil {
+				_ = f.Close()
+				return err
+			}
+			if err := f.Close(); err != nil {
+				return err
+			}
+			if opts.Validate != nil {
+				if err := opts.Validate(filepath.Join(filepath.Dir(path), filepath.Base(tmp))); err != nil {
+					return err
+				}
+			}
+			if err := files.Rename(tmp, name); err != nil {
+				return err
+			}
+			committed = true
+			if d, err := files.Open(filepath.Dir(name)); err == nil {
+				_ = d.Sync()
+				_ = d.Close()
+			}
+			return nil
+		},
+	)
 }
 
 func syncDir(dir string) {
@@ -262,11 +277,23 @@ func syncDir(dir string) {
 }
 
 func (s *localSys) Stat(path string) (FileInfo, error) {
-	return fileInfo(os.Stat(s.path(path)))
+	return confined(
+		s,
+		path,
+		func(files fileOps, name string) (FileInfo, error) {
+			return fileInfo(files.Stat(name))
+		},
+	)
 }
 
 func (s *localSys) Lstat(path string) (FileInfo, error) {
-	return fileInfo(os.Lstat(s.path(path)))
+	return confined(
+		s,
+		path,
+		func(files fileOps, name string) (FileInfo, error) {
+			return fileInfo(files.Lstat(name))
+		},
+	)
 }
 
 func fileInfo(info fs.FileInfo, err error) (FileInfo, error) {
@@ -281,15 +308,20 @@ func fileInfo(info fs.FileInfo, err error) (FileInfo, error) {
 }
 
 func (s *localSys) ReadDir(path string) ([]string, error) {
-	entries, err := os.ReadDir(s.path(path))
-	if err != nil {
-		return nil, err
-	}
-	names := make([]string, len(entries))
-	for i, e := range entries {
-		names[i] = e.Name()
-	}
-	return names, nil
+	return confined(
+		s,
+		path,
+		func(files fileOps, name string) ([]string, error) {
+			d, err := files.Open(name)
+			if err != nil {
+				return nil, err
+			}
+			defer func() { _ = d.Close() }()
+			names, err := d.Readdirnames(-1)
+			slices.Sort(names)
+			return names, err
+		},
+	)
 }
 
 func (s *localSys) Glob(pattern string) ([]string, error) {
@@ -304,36 +336,228 @@ func (s *localSys) Glob(pattern string) ([]string, error) {
 }
 
 func (s *localSys) MkdirAll(path string, mode fs.FileMode) error {
-	return os.MkdirAll(s.path(path), mode)
+	return confinedErr(
+		s,
+		path,
+		func(files fileOps, name string) error {
+			return files.MkdirAll(name, mode)
+		},
+	)
 }
 
 func (s *localSys) Chown(path string, uid, gid int) error {
-	return os.Lchown(s.path(path), uid, gid)
+	return confinedErr(
+		s,
+		path,
+		func(files fileOps, name string) error {
+			return files.Lchown(name, uid, gid)
+		},
+	)
 }
 
 func (s *localSys) Chmod(path string, mode fs.FileMode) error {
-	return os.Chmod(s.path(path), mode)
+	return confinedErr(
+		s,
+		path,
+		func(files fileOps, name string) error {
+			return files.Chmod(name, mode)
+		},
+	)
 }
 
 func (s *localSys) Symlink(target, path string) error {
-	full := s.path(path)
-	tmp := filepath.Join(filepath.Dir(full), fmt.Sprintf(".%s.sensible-%d", filepath.Base(full), time.Now().UnixNano()))
-	if err := os.Symlink(target, tmp); err != nil {
-		return err
+	return confinedErr(
+		s,
+		path,
+		func(files fileOps, name string) error {
+			tmp := tempName(name)
+			if err := files.Symlink(target, tmp); err != nil {
+				return err
+			}
+			if err := files.Rename(tmp, name); err != nil {
+				_ = files.Remove(tmp)
+				return err
+			}
+			return nil
+		},
+	)
+}
+
+func tempName(path string) string {
+	return filepath.Join(filepath.Dir(path), fmt.Sprintf(".%s.sensible-%d", filepath.Base(path), rand.Uint64()))
+}
+
+func (s *localSys) Readlink(path string) (string, error) {
+	return confined(
+		s,
+		path,
+		func(files fileOps, name string) (string, error) {
+			return files.Readlink(name)
+		},
+	)
+}
+
+func (s *localSys) RemoveAll(path string) error {
+	return confinedErr(
+		s,
+		path,
+		func(files fileOps, name string) error {
+			return files.RemoveAll(name)
+		},
+	)
+}
+
+// fileOps does what the agent does to files, either directly or, when root
+// is set, through it.
+type fileOps struct {
+	root *os.Root
+}
+
+func (f fileOps) Open(name string) (*os.File, error) {
+	if f.root != nil {
+		return f.root.Open(name)
 	}
-	if err := os.Rename(tmp, full); err != nil {
-		_ = os.Remove(tmp)
-		return err
+	return os.Open(name)
+}
+
+func (f fileOps) OpenFile(name string, flag int, perm fs.FileMode) (*os.File, error) {
+	if f.root != nil {
+		return f.root.OpenFile(name, flag, perm)
+	}
+	return os.OpenFile(name, flag, perm)
+}
+
+func (f fileOps) ReadFile(name string) ([]byte, error) {
+	if f.root != nil {
+		return f.root.ReadFile(name)
+	}
+	return os.ReadFile(name)
+}
+
+func (f fileOps) Stat(name string) (fs.FileInfo, error) {
+	if f.root != nil {
+		return f.root.Stat(name)
+	}
+	return os.Stat(name)
+}
+
+func (f fileOps) Lstat(name string) (fs.FileInfo, error) {
+	if f.root != nil {
+		return f.root.Lstat(name)
+	}
+	return os.Lstat(name)
+}
+
+func (f fileOps) Readlink(name string) (string, error) {
+	if f.root != nil {
+		return f.root.Readlink(name)
+	}
+	return os.Readlink(name)
+}
+
+func (f fileOps) MkdirAll(name string, perm fs.FileMode) error {
+	if f.root != nil {
+		return f.root.MkdirAll(name, perm)
+	}
+	return os.MkdirAll(name, perm)
+}
+
+func (f fileOps) Lchown(name string, uid, gid int) error {
+	if f.root != nil {
+		return f.root.Lchown(name, uid, gid)
+	}
+	return os.Lchown(name, uid, gid)
+}
+
+func (f fileOps) Chmod(name string, mode fs.FileMode) error {
+	if f.root != nil {
+		return f.root.Chmod(name, mode)
+	}
+	return os.Chmod(name, mode)
+}
+
+func (f fileOps) Symlink(target, name string) error {
+	if f.root != nil {
+		return f.root.Symlink(target, name)
+	}
+	return os.Symlink(target, name)
+}
+
+func (f fileOps) Rename(from, to string) error {
+	if f.root != nil {
+		return f.root.Rename(from, to)
+	}
+	return os.Rename(from, to)
+}
+
+func (f fileOps) Remove(name string) error {
+	if f.root != nil {
+		return f.root.Remove(name)
+	}
+	return os.Remove(name)
+}
+
+func (f fileOps) RemoveAll(name string) error {
+	if f.root != nil {
+		return f.root.RemoveAll(name)
+	}
+	return os.RemoveAll(name)
+}
+
+func (f fileOps) Close() error {
+	if f.root != nil {
+		return f.root.Close()
 	}
 	return nil
 }
 
-func (s *localSys) Readlink(path string) (string, error) {
-	return os.Readlink(s.path(path))
+// confined runs op on path. Once the path reaches a directory that someone
+// other than the agent could change, the rest of it is resolved inside that
+// directory, so links there can't lead anywhere else.
+func confined[T any](s *localSys, path string, op func(files fileOps, name string) (T, error)) (T, error) {
+	files, name, err := s.confine(path)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	defer func() { _ = files.Close() }()
+	res, err := op(files, name)
+	if files.root != nil {
+		err = rootedError(files.root.Name(), err)
+	}
+	return res, err
 }
 
-func (s *localSys) RemoveAll(path string) error {
-	return os.RemoveAll(s.path(path))
+func confinedErr(s *localSys, path string, op func(files fileOps, name string) error) error {
+	_, err := confined(
+		s,
+		path,
+		func(files fileOps, name string) (struct{}, error) {
+			return struct{}{}, op(files, name)
+		},
+	)
+	return err
+}
+
+// trustedDir reports whether only root or the agent could change what's in
+// the directory.
+func trustedDir(info fs.FileInfo) bool {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || info.Mode().Perm()&0o022 != 0 {
+		return false
+	}
+	return st.Uid == 0 || int(st.Uid) == os.Geteuid()
+}
+
+// rootedError makes the paths in an os.Root's errors absolute.
+func rootedError(dir string, err error) error {
+	if pe, ok := errors.AsType[*fs.PathError](err); ok && !filepath.IsAbs(pe.Path) {
+		pe.Path = filepath.Join(dir, pe.Path)
+	}
+	if le, ok := errors.AsType[*os.LinkError](err); ok && !filepath.IsAbs(le.New) {
+		le.Old, le.New = filepath.Join(dir, le.Old), filepath.Join(dir, le.New)
+	}
+	return err
 }
 
 func (s *localSys) LookupUser(name string) (UserInfo, error) {
@@ -419,6 +643,24 @@ func (s *localSys) Now() time.Time {
 		return s.clock()
 	}
 	return time.Now()
+}
+
+func (s *localSys) confine(path string) (fileOps, string, error) {
+	parts := strings.Split(strings.Trim(filepath.Clean("/"+path), "/"), "/")
+	dir := s.root
+	for i, part := range parts[:len(parts)-1] {
+		dir = filepath.Join(dir, part)
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() {
+			// Whatever's wrong is reported by the operation itself.
+			break
+		}
+		if !trustedDir(info) {
+			r, err := os.OpenRoot(dir)
+			return fileOps{root: r}, filepath.Join(parts[i+1:]...), err
+		}
+	}
+	return fileOps{}, s.path(path), nil
 }
 
 func (s *localSys) path(p string) string {

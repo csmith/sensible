@@ -155,6 +155,61 @@ func TestDir_FailsOnFile(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// userHome makes /home/alice a directory someone other than the agent can
+// change, with .ssh swapped for a link to target.
+func userHome(t *testing.T, sys *testSys, target string) {
+	t.Helper()
+	sys.write("/home/alice/.profile", "")
+	require.NoError(t, os.Chmod(sys.path("/home/alice"), 0o777))
+	require.NoError(t, os.Symlink(target, sys.path("/home/alice/.ssh")))
+}
+
+func TestDir_DoesNotChmodThroughSwappedLink(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/usr/bin/sh", "")
+	userHome(t, sys, "../../usr")
+
+	err := Dir{Path: "/home/alice/.ssh", Mode: 0o700}.Apply(context.Background(), sys)
+
+	require.Error(t, err)
+	info, err := sys.Stat("/usr")
+	require.NoError(t, err)
+	assert.Equal(t, fs.FileMode(0o755), info.Mode.Perm())
+}
+
+func TestFile_DoesNotWriteThroughSwappedLink(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/etc/sudoers.d/README", "")
+	userHome(t, sys, "../../etc/sudoers.d")
+
+	err := File{Path: "/home/alice/.ssh/authorized_keys", Content: "ALL ALL=(ALL) NOPASSWD: ALL\n"}.
+		Apply(context.Background(), sys)
+
+	require.Error(t, err)
+	assert.False(t, sys.exists("/etc/sudoers.d/authorized_keys"))
+}
+
+func TestFile_FollowsLinksInUserDirsThatStayInside(t *testing.T) {
+	sys := newTestSys(t)
+	userHome(t, sys, "dotfiles/ssh")
+	sys.write("/home/alice/dotfiles/ssh/.keep", "")
+
+	checkApply(t, sys, File{Path: "/home/alice/.ssh/authorized_keys", Content: "key\n"})
+
+	assert.Equal(t, "key\n", sys.read("/home/alice/dotfiles/ssh/authorized_keys"))
+}
+
+func TestFile_FollowsLinksTheAgentControls(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/run/.keep", "")
+	require.NoError(t, os.MkdirAll(sys.path("/var"), 0o755))
+	require.NoError(t, os.Symlink("../run", sys.path("/var/run")))
+
+	checkApply(t, sys, File{Path: "/var/run/app.conf", Content: "x\n"})
+
+	assert.Equal(t, "x\n", sys.read("/run/app.conf"))
+}
+
 func TestAbsent_RemovesTree(t *testing.T) {
 	sys := newTestSys(t)
 	sys.write("/home/alice/.oh-my-zsh/lib/x.zsh", "")
