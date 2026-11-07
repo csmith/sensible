@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net"
 	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
@@ -89,8 +90,33 @@ func compiler(repo *config.Repo) func(target, host.Facts) (compiled, error) {
 				return repo.SaveGenerated(t.name, cfg.Stacks)
 			}
 		}
+		c.unusedSecrets = unusedSecrets(repo, t.name, cfg)
 		return c, nil
 	}
+}
+
+// unusedSecrets are the host's saved generated values for stacks it no
+// longer has. A stack whose volume directory is still declared keeps its
+// values, as the volumes may hold data that uses them.
+func unusedSecrets(repo *config.Repo, name string, cfg config.Config) []savedSecrets {
+	saved := repo.Inventory().Hosts[name].Generated
+	var unused []savedSecrets
+	for _, stack := range slices.Sorted(maps.Keys(saved)) {
+		dir := filepath.Join(config.VolumesDir, stack)
+		if slices.ContainsFunc(cfg.Stacks, func(s config.Stack) bool { return s.Name == stack }) ||
+			slices.ContainsFunc(cfg.Volumes, func(v config.Volume) bool { return filepath.Dir(v.Path) == dir }) {
+			continue
+		}
+		unused = append(
+			unused,
+			savedSecrets{
+				stack: stack,
+				names: slices.Sorted(maps.Keys(saved[stack])),
+				drop:  func() error { return repo.DropGenerated(name, stack) },
+			},
+		)
+	}
+	return unused
 }
 
 func openRepo(dir string, out io.Writer) (*config.Repo, error) {
@@ -244,6 +270,15 @@ type compiled struct {
 	// save keeps values generated for the resources, so later runs use the
 	// same ones. It's nil if nothing was generated.
 	save func() error
+	// unusedSecrets are what prune offers to drop from the host's state.
+	unusedSecrets []savedSecrets
+}
+
+// savedSecrets are the generated values saved for one of a host's stacks.
+type savedSecrets struct {
+	stack string
+	names []string
+	drop  func() error
 }
 
 // Runner plans and applies a set of targets. Its fields are the parts that
@@ -269,11 +304,13 @@ type hostRun struct {
 	facts     host.Facts
 	resources host.ResourceList
 	save      func() error
-	checked   []host.Checked
-	failed    bool
+	// unusedSecrets are kept from compiling for prune.
+	unusedSecrets []savedSecrets
+	checked       []host.Checked
+	failed        bool
 	// leftovers are what prune offers to remove, and unlisted the
 	// resources whose leftovers couldn't be listed.
-	leftovers []leftover
+	leftovers []*leftover
 	unlisted  []host.Leftovers
 	// done is closed when the host's current step, connecting or checking,
 	// has finished.
@@ -416,7 +453,7 @@ func (r *Runner) checkAll(runs []*hostRun) {
 			close(h.done)
 			continue
 		}
-		h.resources, h.save = c.resources, c.save
+		h.resources, h.save, h.unusedSecrets = c.resources, c.save, c.unusedSecrets
 		go func() {
 			defer close(h.done)
 			h.check()

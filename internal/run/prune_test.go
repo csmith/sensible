@@ -73,3 +73,88 @@ func TestPrune_nothingToPrune(t *testing.T) {
 	assert.Empty(t, f.confirmed)
 	assert.Contains(t, f.out.String(), "Nothing to prune\n")
 }
+
+// withUnusedSecrets has the fixture's hosts report saved values for the
+// stacks, returning the stacks whose values were dropped.
+func withUnusedSecrets(f *runnerFixture, stacks ...string) *[]string {
+	var dropped []string
+	f.runner.Compile = func(target, host.Facts) (compiled, error) {
+		c := compiled{resources: pruneResources}
+		for _, s := range stacks {
+			c.unusedSecrets = append(
+				c.unusedSecrets,
+				savedSecrets{
+					stack: s,
+					names: []string{"db", "token"},
+					drop: func() error {
+						dropped = append(dropped, s)
+						return nil
+					},
+				},
+			)
+		}
+		return c, nil
+	}
+	return &dropped
+}
+
+func TestPrune_offersSecretsOnceTheirVolumesAreRemoved(t *testing.T) {
+	f := newRunnerFixture(t, nil)
+	dropped := withUnusedSecrets(f, "app", "kept", "gone")
+	answers := map[string]bool{
+		"Remove /srv/volumes/app from acidburn? [y/N] ":                       true,
+		"Remove /srv/volumes/kept from acidburn? [y/N] ":                      false,
+		"Remove generated secrets for app (db, token) from acidburn? [y/N] ":  true,
+		"Remove generated secrets for gone (db, token) from acidburn? [y/N] ": true,
+	}
+	f.runner.Confirm = func(prompt string) (bool, error) {
+		f.confirmed = append(f.confirmed, prompt)
+		return answers[prompt], nil
+	}
+	agent := &fakeAgent{leftovers: map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/app", "/srv/volumes/kept"}}}
+
+	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", agent)})
+
+	require.NoError(t, err)
+	assert.Equal(
+		t,
+		[]string{
+			"Remove /srv/volumes/app from acidburn? [y/N] ",
+			"Remove /srv/volumes/kept from acidburn? [y/N] ",
+			"Remove generated secrets for app (db, token) from acidburn? [y/N] ",
+			"Remove generated secrets for gone (db, token) from acidburn? [y/N] ",
+		},
+		f.confirmed,
+	)
+	assert.Equal(t, []string{"app", "gone"}, *dropped)
+	assert.Contains(t, f.out.String(), "- generated secrets for kept (db, token)  once /srv/volumes/kept is removed\n")
+	assert.Contains(t, f.out.String(), "- acidburn: generated secrets for kept (db, token)  kept with /srv/volumes/kept\n")
+}
+
+func TestPrune_keepsSecretsWhenTheirVolumeRemovalFails(t *testing.T) {
+	f := newRunnerFixture(t, nil)
+	dropped := withUnusedSecrets(f, "app")
+	agent := &fakeAgent{
+		leftovers:     map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/app"}},
+		removeFailure: "/srv/volumes/app",
+	}
+
+	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", agent)})
+
+	require.ErrorIs(t, err, errFailed)
+	assert.Equal(t, []string{"Remove /srv/volumes/app from acidburn? [y/N] "}, f.confirmed)
+	assert.Empty(t, *dropped)
+}
+
+func TestPrune_offersNoSecretsWhenLeftoversCantBeListed(t *testing.T) {
+	f := newRunnerFixture(t, nil)
+	dropped := withUnusedSecrets(f, "app")
+	agent := &fakeAgent{listFailure: "volumes:/srv/volumes"}
+
+	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", agent)})
+
+	require.ErrorIs(t, err, errFailed)
+	assert.Empty(t, f.confirmed)
+	assert.Empty(t, *dropped)
+	assert.NotContains(t, f.out.String(), "generated secrets")
+}

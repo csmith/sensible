@@ -5,8 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 
+	"chameth.com/sensible/internal/config"
 	"chameth.com/sensible/internal/host"
 )
 
@@ -48,6 +52,9 @@ type leftover struct {
 	// label says what's removed, e.g. a path.
 	label  string
 	remove func() error
+	// after, if set, must be removed first, or this is kept.
+	after   *leftover
+	removed bool
 }
 
 // Prune checks the targets and offers to remove each of their leftovers.
@@ -79,7 +86,7 @@ func (r *Runner) Prune(ctx context.Context, targets []target) error {
 	wg.Wait()
 
 	failed := anyFailed(runs)
-	var items []leftover
+	var items []*leftover
 	for _, h := range runs {
 		items = append(items, h.leftovers...)
 	}
@@ -94,6 +101,10 @@ func (r *Runner) Prune(ctx context.Context, targets []target) error {
 	out.line("")
 	out.section("Pruning")
 	for _, l := range items {
+		if l.after != nil && !l.after.removed {
+			out.item(out.p.dim("- " + l.h.name + ": " + l.label + "  kept with " + l.after.label))
+			continue
+		}
 		ok, err := r.Confirm(fmt.Sprintf("Remove %s from %s? [y/N] ", l.label, l.h.name))
 		if err != nil {
 			return errors.Join(err, failedErr(failed))
@@ -107,6 +118,7 @@ func (r *Runner) Prune(ctx context.Context, targets []target) error {
 			out.item(out.p.fail("✗ " + l.h.name + ": " + l.label + ": " + err.Error()))
 			continue
 		}
+		l.removed = true
 		out.item(out.p.ok("✓") + " " + l.h.name + ": " + l.label)
 	}
 	return failedErr(failed)
@@ -126,9 +138,34 @@ func (h *hostRun) findLeftovers() {
 		for _, item := range f.Items {
 			h.leftovers = append(
 				h.leftovers,
-				leftover{h: h, label: item, remove: func() error { return h.agent.remove(f.ID, item) }},
+				&leftover{h: h, label: item, remove: func() error { return h.agent.remove(f.ID, item) }},
 			)
 		}
+	}
+	h.findUnusedSecrets()
+}
+
+// findUnusedSecrets offers the values saved for stacks the host no longer
+// has. A stack's volume directory may hold data that uses them, so they're
+// only offered once it's gone: they come after the host's other leftovers,
+// and are kept unless the directory is removed first. If the host's
+// leftovers couldn't all be listed, the directory may be there unlisted.
+func (h *hostRun) findUnusedSecrets() {
+	if len(h.unlisted) > 0 {
+		return
+	}
+	volumes := slices.Clone(h.leftovers)
+	for _, s := range h.unusedSecrets {
+		l := &leftover{
+			h:      h,
+			label:  "generated secrets for " + s.stack + " (" + strings.Join(s.names, ", ") + ")",
+			remove: s.drop,
+		}
+		dir := filepath.Join(config.VolumesDir, s.stack)
+		if i := slices.IndexFunc(volumes, func(v *leftover) bool { return v.label == dir }); i >= 0 {
+			l.after = volumes[i]
+		}
+		h.leftovers = append(h.leftovers, l)
 	}
 }
 
@@ -154,7 +191,11 @@ func leftoverLines(h *hostRun, p palette) []string {
 		lines = append(lines, p.fail("✗ "+displayID(f.ID)+": "+f.Error))
 	}
 	for _, l := range h.leftovers {
-		lines = append(lines, p.change("-")+" "+l.label)
+		line := p.change("-") + " " + l.label
+		if l.after != nil {
+			line += p.dim("  once " + l.after.label + " is removed")
+		}
+		lines = append(lines, line)
 	}
 	if len(lines) == 0 {
 		lines = append(lines, p.dim("✓ nothing left over"))

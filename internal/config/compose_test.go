@@ -549,6 +549,42 @@ func TestSaveGenerated_keepsSavedValues(t *testing.T) {
 	assert.Equal(t, "key", key)
 }
 
+func TestDropGenerated_dropsOnlyThatStack(t *testing.T) {
+	tr := newGeneratedRepo(t)
+	r := tr.open(t)
+	stacks := []Stack{
+		{Name: "app", Generated: map[string]string{"db": "app-db"}},
+		{Name: "old", Generated: map[string]string{"db": "old-db", "token": "old-token"}},
+	}
+	require.NoError(t, r.SaveGenerated("alpha", stacks))
+	require.NoError(t, r.SaveGenerated("beta", stacks))
+
+	require.NoError(t, r.DropGenerated("alpha", "old"))
+
+	for _, r := range []*Repo{r, tr.open(t)} {
+		alpha := r.Inventory().Hosts["alpha"].Generated
+		assert.Equal(t, []string{"app"}, slices.Collect(maps.Keys(alpha)))
+		db, err := alpha["app"]["db"].Reveal()
+		require.NoError(t, err)
+		assert.Equal(t, "app-db", db)
+		assert.Contains(t, r.Inventory().Hosts["beta"].Generated, "old")
+	}
+}
+
+func TestDropGenerated_refusesValuesSetElsewhere(t *testing.T) {
+	tr := newGeneratedRepo(t)
+	r := tr.open(t)
+	secret, err := r.Encrypt("by hand")
+	require.NoError(t, err)
+	writeFile(t, tr.dir, "hosts.d/extra.yml", "alpha:\n  generated:\n    old:\n      db: "+indent(secret, "      ")+"\n")
+	r = tr.open(t)
+
+	err = r.DropGenerated("alpha", "old")
+
+	require.ErrorContains(t, err, "extra.yml sets alpha's generated db for old")
+	assert.Contains(t, tr.open(t).Inventory().Hosts["alpha"].Generated, "old")
+}
+
 func TestHostConfig_composeEnv(t *testing.T) {
 	c, err := newTestRepo(
 		t,

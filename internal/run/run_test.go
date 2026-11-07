@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -49,6 +50,9 @@ type fakeAgent struct {
 	leftovers map[string][]string
 	// removeFailure, if set, fails removing this item.
 	removeFailure string
+	// listFailure, if set, fails listing the leftovers of the resource with
+	// this ID.
+	listFailure string
 
 	mu       sync.Mutex
 	received []string
@@ -108,7 +112,9 @@ func (f *fakeAgent) serve(r io.ReadCloser, w io.WriteCloser) {
 			f.apply(conn, resources, checked)
 		case host.Prune:
 			for _, res := range resources {
-				if items := f.leftovers[res.ID()]; len(items) > 0 {
+				if res.ID() == f.listFailure {
+					_ = conn.Send(host.Leftovers{ID: res.ID(), Error: "denied"})
+				} else if items := f.leftovers[res.ID()]; len(items) > 0 {
 					_ = conn.Send(host.Leftovers{ID: res.ID(), Items: items})
 				}
 			}
@@ -1034,4 +1040,47 @@ func TestCompiler_savesIssuedCertsOnce(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, second.save, "nothing new to save")
 	assert.Equal(t, keyContent(first), keyContent(second))
+}
+
+func TestCompiler_findsSecretsOfRemovedStacks(t *testing.T) {
+	id, err := age.GenerateX25519Identity()
+	require.NoError(t, err)
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"sensible.yml":                 "secrets:\n  recipients: [" + id.Recipient().String() + "]\n",
+		"hosts.d/hosts.yml":            "alpha:\n  roles: {app: , data: }\n",
+		"roles/app/docker-compose.yml": "services:\n  app:\n    image: nginx\n",
+		"roles/data/role.yml":          "compose:\n  volumes: {blobs: {}}\n",
+	} {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	}
+	open := func() *config.Repo {
+		repo, err := config.Open(dir, func() (age.Identity, error) { return id, nil })
+		require.NoError(t, err)
+		return repo
+	}
+	saved := map[string]string{"db": "x", "token": "y"}
+	require.NoError(
+		t,
+		open().SaveGenerated(
+			"alpha",
+			[]config.Stack{{Name: "app", Generated: saved}, {Name: "data", Generated: saved}, {Name: "old", Generated: saved}},
+		),
+	)
+	facts := host.Facts{OSFamily: "arch"}
+
+	c, err := compiler(open())(target{name: "alpha"}, facts)
+	require.NoError(t, err)
+	require.Len(t, c.unusedSecrets, 1)
+	assert.Equal(t, "old", c.unusedSecrets[0].stack)
+	assert.Equal(t, []string{"db", "token"}, c.unusedSecrets[0].names)
+
+	require.NoError(t, c.unusedSecrets[0].drop())
+	again, err := compiler(open())(target{name: "alpha"}, facts)
+	require.NoError(t, err)
+	assert.Empty(t, again.unusedSecrets)
+	generated := open().Inventory().Hosts["alpha"].Generated
+	assert.ElementsMatch(t, []string{"app", "data"}, slices.Collect(maps.Keys(generated)))
 }
