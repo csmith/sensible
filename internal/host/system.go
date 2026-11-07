@@ -441,14 +441,7 @@ func marked(gecos string) string {
 
 func (r Users) Check(ctx context.Context, sys Sys) (Change, error) {
 	extra, err := r.Leftovers(ctx, sys)
-	if err != nil || len(extra) == 0 {
-		return Change{InSync: true}, err
-	}
-	return Change{
-		InSync: true,
-		Warning: strings.Join(extra, "\n") +
-			"\nno role declares these; run `sensible prune` to remove them once they're not needed\n",
-	}, nil
+	return leftoverWarning(extra, "no role declares these"), err
 }
 
 func (r Users) Apply(context.Context, Sys) error {

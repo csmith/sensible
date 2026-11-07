@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"strings"
 )
 
 // AgentPath is where bootstrap installs the agent.
@@ -41,6 +42,19 @@ type Pruner interface {
 	Leftovers(ctx context.Context, sys Sys) ([]string, error)
 	// Prune removes one of the items Leftovers listed.
 	Prune(ctx context.Context, sys Sys, item string) error
+}
+
+// leftoverWarning is the Change for a Pruner's Check, warning about its
+// leftovers without changing them.
+func leftoverWarning(leftovers []string, why string) Change {
+	if len(leftovers) == 0 {
+		return Change{InSync: true}
+	}
+	return Change{
+		InSync: true,
+		Warning: strings.Join(leftovers, "\n") + "\n" + why +
+			"; run `sensible prune` to remove them once they're not needed\n",
+	}
 }
 
 var ErrNotYetCheckable = errors.New("can't be checked until earlier changes are applied")
