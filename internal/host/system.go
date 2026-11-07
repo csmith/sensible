@@ -530,19 +530,19 @@ func (r GitCheckout) Check(ctx context.Context, sys Sys) (Change, error) {
 	if err := r.checkOwner(sys); err != nil {
 		return Change{}, err
 	}
-	head, origin, err := r.current(ctx, sys)
+	cur, err := r.current(ctx, sys)
 	if err != nil {
 		return Change{}, err
 	}
-	if head == "" {
+	if cur.head == "" {
 		return drift(fmt.Sprintf("clone %s at %s\n", r.Repo, r.Commit)), nil
 	}
 	var diff strings.Builder
-	if origin != r.Repo {
-		fmt.Fprintf(&diff, "origin: %s → %s\n", origin, r.Repo)
+	if cur.origin != r.Repo {
+		fmt.Fprintf(&diff, "origin: %s → %s\n", cur.origin, r.Repo)
 	}
-	if head != r.Commit {
-		fmt.Fprintf(&diff, "commit: %s → %s\n", head, r.Commit)
+	if cur.head != r.Commit {
+		fmt.Fprintf(&diff, "commit: %s → %s\n", cur.head, r.Commit)
 	}
 	return Change{InSync: diff.Len() == 0, Diff: diff.String()}, nil
 }
@@ -551,18 +551,20 @@ func (r GitCheckout) Apply(ctx context.Context, sys Sys) error {
 	if err := r.checkOwner(sys); err != nil {
 		return err
 	}
-	head, origin, err := r.current(ctx, sys)
+	cur, err := r.current(ctx, sys)
 	if err != nil {
 		return err
 	}
-	if head == "" {
-		if err := r.init(ctx, sys); err != nil {
-			return err
-		}
-	} else if origin != r.Repo {
-		if _, err := runOK(ctx, sys, r.git("remote", "set-url", "origin", r.Repo)); err != nil {
-			return err
-		}
+	switch {
+	case !cur.exists:
+		err = r.init(ctx, sys)
+	case cur.origin == "":
+		_, err = runOK(ctx, sys, r.git("remote", "add", "origin", r.Repo))
+	case cur.origin != r.Repo:
+		_, err = runOK(ctx, sys, r.git("remote", "set-url", "origin", r.Repo))
+	}
+	if err != nil {
+		return err
 	}
 
 	// A shallow fetch of a commit needs it named exactly.
@@ -601,24 +603,34 @@ func (r GitCheckout) checkOwner(sys Sys) error {
 	return err
 }
 
-// current returns HEAD and the origin URL, with an empty HEAD if there's no
-// checkout.
-func (r GitCheckout) current(ctx context.Context, sys Sys) (string, string, error) {
+// gitState is what's at a GitCheckout's path. head is empty if there are no
+// commits, as after a failed first fetch.
+type gitState struct {
+	exists       bool
+	head, origin string
+}
+
+func (r GitCheckout) current(ctx context.Context, sys Sys) (gitState, error) {
 	if _, err := sys.Lstat(filepath.Join(r.Path, ".git")); errors.Is(err, fs.ErrNotExist) {
-		return "", "", nil
+		return gitState{}, nil
 	} else if err != nil {
-		return "", "", err
+		return gitState{}, err
 	}
-	head, err := runOK(ctx, sys, r.git("rev-parse", "HEAD"))
-	if err != nil {
-		return "", "", notYetIfMissing(err)
+	// No commits exits 1 with no output.
+	head, err := runOK(ctx, sys, r.git("rev-parse", "--verify", "--quiet", "HEAD"))
+	if err != nil && head.Code != 1 {
+		return gitState{}, notYetIfMissing(err)
 	}
 	// A missing origin exits 1 with no output.
 	origin, err := sys.Run(ctx, r.git("config", "--get", "remote.origin.url"))
 	if err != nil {
-		return "", "", err
+		return gitState{}, err
 	}
-	return strings.TrimSpace(head.Stdout), strings.TrimSpace(origin.Stdout), nil
+	return gitState{
+		exists: true,
+		head:   strings.TrimSpace(head.Stdout),
+		origin: strings.TrimSpace(origin.Stdout),
+	}, nil
 }
 
 func (r GitCheckout) git(args ...string) Cmd {
