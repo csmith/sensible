@@ -31,6 +31,7 @@ func certRun(t *testing.T, sys Sys, certs map[string]string) string {
 	failed, err := e.apply(
 		context.Background(),
 		list,
+		-1,
 		func(msg any) error {
 			if applied, ok := msg.(Applied); ok && applied.ID == (CertRecords{}).ID() {
 				diff = applied.Diff
@@ -147,6 +148,7 @@ func TestCertRecords_skippedAfterAFailure(t *testing.T) {
 	failed, err := e.apply(
 		context.Background(),
 		ResourceList{Command{Name: "fails", CheckArgv: []string{"false"}, ApplyArgv: []string{"false"}}, CertRecords{}},
+		-1,
 		func(any) error { return nil },
 	)
 	require.NoError(t, err)

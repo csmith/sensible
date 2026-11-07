@@ -53,7 +53,7 @@ func newTestEngine() *engine {
 func collectChecked(t *testing.T, list ResourceList) ([]Checked, bool) {
 	t.Helper()
 	var got []Checked
-	failed, err := newTestEngine().check(
+	failedAt, err := newTestEngine().check(
 		context.Background(),
 		list,
 		func(c Checked) error {
@@ -62,7 +62,7 @@ func collectChecked(t *testing.T, list ResourceList) ([]Checked, bool) {
 		},
 	)
 	require.NoError(t, err)
-	return got, failed
+	return got, failedAt >= 0
 }
 
 func collectApplied(t *testing.T, list ResourceList) ([]Applied, bool) {
@@ -71,6 +71,7 @@ func collectApplied(t *testing.T, list ResourceList) ([]Applied, bool) {
 	failed, err := newTestEngine().apply(
 		context.Background(),
 		list,
+		-1,
 		func(msg any) error {
 			if a, ok := msg.(Applied); ok {
 				got = append(got, a)
@@ -163,6 +164,7 @@ func TestEngine_ComposeStackSeesItsFilesChange(t *testing.T) {
 	_, err := e.apply(
 		context.Background(),
 		ResourceList{&fakeResource{id: "conf", inSync: true, log: &log}, &fakeResource{id: "env", log: &log}, stack},
+		-1,
 		func(any) error { return nil },
 	)
 	require.NoError(t, err)
@@ -205,6 +207,7 @@ func TestEngineApply_AnnouncesEachChangeBeforeMakingIt(t *testing.T) {
 			&fakeResource{id: "quiet", inSync: true, log: &log},
 			&fakeResource{id: "config", log: &log, notify: ResourceList{reload}},
 		},
+		-1,
 		func(msg any) error {
 			switch m := msg.(type) {
 			case Applying:
@@ -287,6 +290,7 @@ func TestEngineApply_LostConnectionStopsAfterCurrentResource(t *testing.T) {
 			&fakeResource{id: "config", log: &log, notify: ResourceList{reload}},
 			&fakeResource{id: "next", log: &log},
 		},
+		-1,
 		func(any) error { return lost },
 	)
 
@@ -317,6 +321,7 @@ func TestEngine_OwnedDirKeepsAptRepoFiles(t *testing.T) {
 			OwnedDir{Path: AptSourcesDir},
 			OwnedDir{Path: AptKeyringsDir},
 		},
+		-1,
 		func(any) error { return nil },
 	)
 
@@ -344,6 +349,7 @@ func TestEngine_OwnedDirSeesFilesDeclaredEarlier(t *testing.T) {
 			File{Path: "/etc/sudoers.d/keep", Content: "x\n"},
 			OwnedDir{Path: "/etc/sudoers.d"},
 		},
+		-1,
 		func(msg any) error {
 			if a, ok := msg.(Applied); ok {
 				got = append(got, a)
@@ -356,4 +362,43 @@ func TestEngine_OwnedDirSeesFilesDeclaredEarlier(t *testing.T) {
 	assert.Equal(t, []string{"file:/etc/sudoers.d/keep in-sync", "owned-dir:/etc/sudoers.d changed"}, statuses(got))
 	assert.True(t, sys.exists("/etc/sudoers.d/keep"))
 	assert.False(t, sys.exists("/etc/sudoers.d/stray"))
+}
+
+func TestEngine_ApplySkipsCleanUpsAfterFailedCheck(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/etc/sudoers.d/stray", "")
+	sys.write("/etc/early.d/stray", "")
+	e := newTestEngine()
+	e.sys = sys
+	var log []string
+	flaky := &fakeResource{id: "flaky", checkErr: errors.New("timed out"), log: &log}
+	list := ResourceList{OwnedDir{Path: "/etc/early.d"}, flaky, OwnedDir{Path: "/etc/sudoers.d"}}
+
+	failedAt, err := e.check(context.Background(), list, func(Checked) error { return nil })
+	require.NoError(t, err)
+	require.Equal(t, 1, failedAt)
+
+	flaky.checkErr = nil
+	var got []Applied
+	failed, err := e.apply(
+		context.Background(),
+		list,
+		failedAt,
+		func(msg any) error {
+			if a, ok := msg.(Applied); ok {
+				got = append(got, a)
+			}
+			return nil
+		},
+	)
+
+	require.NoError(t, err)
+	assert.False(t, failed)
+	assert.Equal(
+		t,
+		[]string{"owned-dir:/etc/early.d changed", "flaky changed", "owned-dir:/etc/sudoers.d skipped"},
+		statuses(got),
+	)
+	assert.False(t, sys.exists("/etc/early.d/stray"), "the check showed this clean-up, so it runs")
+	assert.True(t, sys.exists("/etc/sudoers.d/stray"))
 }

@@ -84,6 +84,9 @@ type session struct {
 	engine *engine
 	// resources are from the last Check, ready for Apply or Prune.
 	resources ResourceList
+	// checkFailedAt is the position of the last Check's first failure, or
+	// -1, so Apply can skip the clean-ups the Check didn't show.
+	checkFailedAt int
 }
 
 func (s *session) handle(ctx context.Context, msg any) error {
@@ -102,11 +105,12 @@ func (s *session) handle(ctx context.Context, msg any) error {
 		return s.conn.Send(FactsReply{Facts: facts})
 	case Check:
 		s.resources = msg.Resources
-		failed, err := s.engine.check(ctx, s.resources, func(c Checked) error { return s.conn.Send(c) })
+		failedAt, err := s.engine.check(ctx, s.resources, func(c Checked) error { return s.conn.Send(c) })
+		s.checkFailedAt = failedAt
 		if err != nil {
 			return err
 		}
-		return s.conn.Send(Done{Failed: failed})
+		return s.conn.Send(Done{Failed: failedAt >= 0})
 	case Apply:
 		return s.apply(ctx)
 	case Prune:
@@ -133,7 +137,7 @@ func (s *session) apply(ctx context.Context) error {
 	if s.resources == nil {
 		return s.conn.Send(Error{Message: "apply without a check"})
 	}
-	failed, err := s.engine.apply(ctx, s.resources, s.conn.Send)
+	failed, err := s.engine.apply(ctx, s.resources, s.checkFailedAt, s.conn.Send)
 	s.resources = nil
 	if err == nil {
 		err = s.conn.Send(Done{Failed: failed})

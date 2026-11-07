@@ -16,15 +16,16 @@ type engine struct {
 }
 
 // check reports each resource's state. Unlike apply, it carries on past
-// failures so the plan shows as much as possible.
-func (e *engine) check(ctx context.Context, list ResourceList, send func(Checked) error) (bool, error) {
+// failures so the plan shows as much as possible, skipping only the
+// clean-ups. It returns the position of the first failure, or -1.
+func (e *engine) check(ctx context.Context, list ResourceList, send func(Checked) error) (int, error) {
 	st := newRunState()
 	ctx = withRunState(ctx, st)
-	failed, pending := false, false
-	for _, r := range list {
+	failedAt, pending := -1, false
+	for i, r := range list {
 		st.declare(r)
 		res := Checked{ID: r.ID()}
-		if isCleanUp(r) && failed {
+		if isCleanUp(r) && failedAt >= 0 {
 			res.Status = StatusSkipped
 		} else {
 			change, err := r.Check(ctx, e.sys)
@@ -46,21 +47,26 @@ func (e *engine) check(ctx context.Context, list ResourceList, send func(Checked
 			pending = true
 			st.modified[r.ID()] = true
 		case StatusFailed:
-			failed = true
+			if failedAt < 0 {
+				failedAt = i
+			}
 		default:
 		}
 		if err := send(res); err != nil {
-			return failed, err
+			return failedAt, err
 		}
 	}
-	return failed, nil
+	return failedAt, nil
 }
 
 // apply re-checks and applies each resource, stopping at the first failure,
 // then runs the handlers that changed resources notified. Each change is
 // sent as Applying before it's made and Applied after. If send fails, it
 // stops after the resource in progress but still runs the due handlers.
-func (e *engine) apply(ctx context.Context, list ResourceList, send func(any) error) (bool, error) {
+// checkFailedAt is the position of the first failure in the check that
+// planned this apply, or -1; the clean-ups after it are skipped, as the
+// check skipped them.
+func (e *engine) apply(ctx context.Context, list ResourceList, checkFailedAt int, send func(any) error) (bool, error) {
 	st := newRunState()
 	ctx = withRunState(ctx, st)
 	var (
@@ -74,10 +80,10 @@ func (e *engine) apply(ctx context.Context, list ResourceList, send func(any) er
 			sendErr = send(Applying{ID: id, Handler: handler})
 		}
 	}
-	for _, r := range list {
+	for i, r := range list {
 		st.declare(r)
 		res := Applied{ID: r.ID(), Status: StatusSkipped}
-		if !failed {
+		if !failed && !skippedByCheck(r, i, checkFailedAt) {
 			res = e.applyOne(ctx, st, r, starting)
 		}
 
@@ -121,6 +127,12 @@ func (e *engine) apply(ctx context.Context, list ResourceList, send func(any) er
 		}
 	}
 	return failed, sendErr
+}
+
+// skippedByCheck reports whether r, at position i, is a clean-up the check
+// skipped because an earlier resource failed at checkFailedAt.
+func skippedByCheck(r Resource, i, checkFailedAt int) bool {
+	return checkFailedAt >= 0 && i >= checkFailedAt && isCleanUp(r)
 }
 
 func (e *engine) applyOne(
