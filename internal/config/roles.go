@@ -139,6 +139,8 @@ type expansion struct {
 	// migrations are the stack's migrations, merged over its partials', as
 	// a mapping with only the migrations key.
 	migrations ast.Node
+	// placeholders fill the stack's compose file.
+	placeholders roleFiller
 }
 
 func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (expansion, error) {
@@ -154,6 +156,7 @@ func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (expan
 	}
 	var layers []layer
 	var declared ast.Node
+	placeholders := roleFiller{host: host, stack: stackName(role)}
 	for i, file := range files {
 		// The layout check has made sure role.yml exists unless the role is
 		// a parent that doesn't need one.
@@ -164,17 +167,8 @@ func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (expan
 		if node == nil {
 			continue
 		}
-		body, p, err := splitParams(node, i == 0)
+		body, p, err := r.prepareLayer(role, node, i == 0, placeholders)
 		if err != nil {
-			return expansion{}, fmt.Errorf("%s: %w", r.path(file), err)
-		}
-		// Before the host's parameters are merged in, so a !volume always
-		// resolves against the role that wrote it.
-		volumePath := func(tag *ast.TagNode) (string, error) { return r.volumePath(role, tag) }
-		if err := resolveTags(body, volumeTag, volumePath); err != nil {
-			return expansion{}, fmt.Errorf("%s: %w", r.path(file), err)
-		}
-		if err := resolveTags(p, volumeTag, volumePath); err != nil {
 			return expansion{}, fmt.Errorf("%s: %w", r.path(file), err)
 		}
 		declared = merge(declared, p)
@@ -207,7 +201,7 @@ func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (expan
 		}
 		merged = merge(merged, node)
 	}
-	env, err := r.stackEnv(role, values, partials)
+	env, err := r.stackEnv(role, placeholders, values, partials)
 	if err != nil {
 		return expansion{}, err
 	}
@@ -215,7 +209,43 @@ func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (expan
 	if _, ok := r.stacks[role]; !ok && migrations != nil {
 		return expansion{}, fmt.Errorf("%s: migrations only work in a role with a stack", r.path("roles", role))
 	}
-	return expansion{node: merged, params: values, partials: partials, env: env, migrations: migrations}, nil
+	return expansion{
+		node:         merged,
+		params:       values,
+		partials:     partials,
+		env:          env,
+		migrations:   migrations,
+		placeholders: placeholders,
+	}, nil
+}
+
+// prepareLayer splits a role file into its settings and parameters, and fills
+// in what doesn't depend on the host's parameters, which are used as written.
+func (r *Repo) prepareLayer(
+	role string,
+	node ast.Node,
+	base bool,
+	placeholders roleFiller,
+) (*ast.MappingNode, ast.Node, error) {
+	body, p, err := splitParams(node, base)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err := placeholders.fill(body); err != nil {
+		return nil, nil, err
+	}
+	if p, err = placeholders.fill(p); err != nil {
+		return nil, nil, err
+	}
+	// So a !volume always resolves against the role that wrote it.
+	volumePath := func(tag *ast.TagNode) (string, error) { return r.volumePath(role, tag) }
+	if err := resolveTags(body, volumeTag, volumePath); err != nil {
+		return nil, nil, err
+	}
+	if err := resolveTags(p, volumeTag, volumePath); err != nil {
+		return nil, nil, err
+	}
+	return body, p, nil
 }
 
 // checkLayer checks a role file's settings, with its parameters' values,
@@ -258,13 +288,21 @@ func composeEnv(node ast.Node) ast.Node {
 // stackEnv merges the role's compose.env, with its parameters' values, over
 // its partials'. As with other settings, the role can only change what a
 // partial sets with !replace.
-func (r *Repo) stackEnv(role string, values map[string]ast.Node, partials []map[string]ast.Node) (ast.Node, error) {
+func (r *Repo) stackEnv(
+	role string,
+	placeholders roleFiller,
+	values map[string]ast.Node,
+	partials []map[string]ast.Node,
+) (ast.Node, error) {
 	roleFile := filepath.Join("roles", role, "role.yml")
 	node, err := r.readLayer(roleFile, true)
 	if err != nil {
 		return nil, err
 	}
-	env, err := substitute(composeEnv(node), values)
+	env, err := placeholders.fill(composeEnv(node))
+	if err == nil {
+		env, err = substitute(env, values)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%s: compose.env: %w", r.path(roleFile), err)
 	}
@@ -361,6 +399,9 @@ func splitParams(node ast.Node, base bool) (*ast.MappingNode, ast.Node, error) {
 		if params != nil && params.Type() != ast.NullType && params.Type() != ast.MappingType {
 			return nil, nil, nodeError(params, "params must be a mapping")
 		}
+		if err := checkParamNames(params); err != nil {
+			return nil, nil, err
+		}
 	}
 	return body, params, nil
 }
@@ -442,6 +483,106 @@ func substitute(node ast.Node, values map[string]ast.Node) (ast.Node, error) {
 		n.Values = kept
 	}
 	return node, nil
+}
+
+// rolePlaceholder matches the placeholders a role's own files can use. Other
+// braces in them are left as written, so a doubled placeholder, such as
+// {{host}}, stands for the placeholder itself.
+var rolePlaceholder = regexp.MustCompile(
+	fmt.Sprintf(`\{\{(%[1]s|%[2]s)\}\}|\{(%[1]s|%[2]s)\}`, hostPlaceholder, stackPlaceholder),
+)
+
+// roleFiller replaces the placeholders in a role's own files.
+type roleFiller struct {
+	host, stack string
+	// fixed is what's being filled if it must be the same on every host,
+	// which rejects {host}.
+	fixed string
+}
+
+// fill returns node with its placeholders replaced. It modifies node.
+func (f roleFiller) fill(node ast.Node) (ast.Node, error) {
+	var err error
+	switch n := node.(type) {
+	case *ast.StringNode:
+		return f.fillString(n, n.Value)
+	case *ast.LiteralNode:
+		return f.fillString(n, n.Value.Value)
+	case *ast.TagNode:
+		n.Value, err = f.fill(n.Value)
+	case *ast.AnchorNode:
+		n.Value, err = f.fill(n.Value)
+	case *ast.MappingNode:
+		if n.IsFlowStyle && len(n.Values) == 1 && isNull(n.Values[0].Value) &&
+			rolePlaceholder.MatchString("{"+keyString(n.Values[0].Key)+"}") {
+			return nil, nodeError(n, "quote placeholders, e.g. \"{host}\", or YAML reads them as mappings")
+		}
+		for _, mv := range n.Values {
+			if err := f.fillValue(mv); err != nil {
+				return nil, err
+			}
+		}
+	case *ast.MappingValueNode:
+		err = f.fillValue(n)
+	case *ast.SequenceNode:
+		for i, item := range n.Values {
+			if n.Values[i], err = f.fill(item); err != nil {
+				return nil, err
+			}
+		}
+	default:
+	}
+	return node, err
+}
+
+func (f roleFiller) fillValue(mv *ast.MappingValueNode) error {
+	if key, ok := mv.Key.(*ast.StringNode); ok {
+		s, err := f.interpolate(key, key.Value)
+		if err != nil {
+			return err
+		}
+		if s != key.Value {
+			setQuoted(key, s)
+		}
+	}
+	v, err := f.fill(mv.Value)
+	mv.Value = v
+	return err
+}
+
+// fillString replaces at, a string whose value is s, with a quoted string
+// if it holds placeholders.
+func (f roleFiller) fillString(at ast.Node, s string) (ast.Node, error) {
+	out, err := f.interpolate(at, s)
+	if err != nil || out == s {
+		return at, err
+	}
+	return quoted(at, out), nil
+}
+
+func (f roleFiller) interpolate(at ast.Node, s string) (string, error) {
+	var err error
+	out := rolePlaceholder.ReplaceAllStringFunc(
+		s,
+		func(m string) string {
+			if strings.HasPrefix(m, "{{") {
+				return m[1 : len(m)-1]
+			}
+			switch m[1 : len(m)-1] {
+			case stackPlaceholder:
+				return f.stack
+			default:
+				if f.fixed != "" && err == nil {
+					err = nodeError(
+						at,
+						fmt.Sprintf("{%s} is the host's name, which differs between hosts, but %s can't", hostPlaceholder, f.fixed),
+					)
+				}
+				return f.host
+			}
+		},
+	)
+	return out, err
 }
 
 // resolveTags replaces each of node's tags named tag with the string
@@ -557,7 +698,7 @@ func (r *Repo) readRoleVhosts(role string, entries []os.DirEntry) error {
 			return err
 		}
 		for _, tag := range findTags(p, vhostTag) {
-			if _, err := vhostNames(tag); err != nil {
+			if _, err := roleVhostNames(tag); err != nil {
 				return fmt.Errorf("%s: %w", r.path(file), err)
 			}
 		}
@@ -568,7 +709,7 @@ func (r *Repo) readRoleVhosts(role string, entries []os.DirEntry) error {
 		}
 		for _, node := range nodes {
 			for _, tag := range findTags(node, vhostTag) {
-				names, err := vhostNames(tag)
+				names, err := roleVhostNames(tag)
 				if err != nil {
 					return fmt.Errorf("%s: %w", r.path(file), err)
 				}
@@ -590,6 +731,15 @@ func (r *Repo) readRoleVhosts(role string, entries []os.DirEntry) error {
 		r.params[role] = append(r.params[role], merge(base, v))
 	}
 	return nil
+}
+
+// roleVhostNames are the domain names in a !vhost in a role's files, which
+// are known before the host is.
+func roleVhostNames(tag *ast.TagNode) ([]string, error) {
+	if v, ok := tag.Value.(*ast.StringNode); ok && rolePlaceholder.MatchString(v.Value) {
+		return nil, nodeError(tag, "a !vhost can't hold a placeholder")
+	}
+	return vhostNames(tag)
 }
 
 // vhostSources returns the parts of a role's file that may hold a !vhost:

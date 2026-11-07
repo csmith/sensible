@@ -205,11 +205,42 @@ func (r *Repo) readRoleSettings(role string) (roleSettings, error) {
 			only.Values = append(only.Values, v)
 		}
 	}
+	if err := fillRoleSettings(role, only); err != nil {
+		return roleSettings{}, fmt.Errorf("%s: %w", r.path(file), err)
+	}
 	var s roleSettings
 	if err := decode(r.keys.context(), only, &s); err != nil {
 		return roleSettings{}, fmt.Errorf("%s: %w", r.path(file), err)
 	}
 	return s, nil
+}
+
+// fillRoleSettings fills the placeholders in the role settings that are the
+// same on every host. Its partials' arguments, and compose.env, are filled
+// for each host.
+func fillRoleSettings(role string, settings *ast.MappingNode) error {
+	fill := func(name string, node ast.Node) error {
+		_, err := roleFiller{stack: stackName(role), fixed: name}.fill(node)
+		return err
+	}
+	for _, v := range settings.Values {
+		switch key := keyString(v.Key); key {
+		case "children":
+			if err := fill(key, v); err != nil {
+				return err
+			}
+		case "compose":
+			for _, c := range mappingValues(v.Value) {
+				if k := keyString(c.Key); k != "env" {
+					if err := fill(key+"."+k, c); err != nil {
+						return err
+					}
+				}
+			}
+		default:
+		}
+	}
+	return nil
 }
 
 var projectName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
@@ -365,11 +396,12 @@ func (r *Repo) renderStack(
 	s := Stack{Name: def.name, Dirs: def.dirs}
 
 	c := &composeRenderer{
-		repo:   r,
-		def:    def,
-		params: e.params,
-		gen:    &generator{saved: generated[def.name], preview: r.keys.preview},
-		certs:  certs,
+		repo:         r,
+		def:          def,
+		params:       e.params,
+		placeholders: e.placeholders,
+		gen:          &generator{saved: generated[def.name], preview: r.keys.preview},
+		certs:        certs,
 	}
 	compose, err := c.renderCompose(e)
 	if err != nil {
@@ -480,8 +512,12 @@ func (c *composeRenderer) roleCompose(file string, partials *ast.File, set map[s
 	if err != nil {
 		return nil, err
 	}
-	body, _, err := c.replace(f.Docs[0].Body)
+	// Before its parameters are replaced, whose values are used as written.
+	body, err := c.placeholders.fill(f.Docs[0].Body)
 	if err != nil {
+		return nil, err
+	}
+	if body, _, err = c.replace(body); err != nil {
 		return nil, err
 	}
 	if partials != nil {
@@ -498,12 +534,13 @@ func (c *composeRenderer) roleCompose(file string, partials *ast.File, set map[s
 }
 
 type composeRenderer struct {
-	repo    *Repo
-	def     *stackDef
-	params  map[string]ast.Node
-	gen     *generator
-	secrets []string
-	certs   []Cert
+	repo         *Repo
+	def          *stackDef
+	params       map[string]ast.Node
+	placeholders roleFiller
+	gen          *generator
+	secrets      []string
+	certs        []Cert
 	// certPaths are the certificate files its !cert tags refer to.
 	certPaths []string
 }

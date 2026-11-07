@@ -1,0 +1,10 @@
+params:
+  queue: "adzeral-{host}"
+  label: plain
+compose:
+  volumes:
+    "{stack}-data": {owner: "1000"}
+  env:
+    HOST: "{host}"
+jobs:
+  "{host}-backup": {command: [backup, "{stack}"], schedule: daily}

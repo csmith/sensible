@@ -56,6 +56,10 @@ zsh:
   prompt_colours: !param prompt_colours
 ```
 
+A role's files can use `{host}`, the host's name in `hosts.d`, and `{stack}`,
+the role's stack name, e.g. `TASK_QUEUE: queue-{host}`. Write `{{host}}` for
+the text itself.
+
 ## Using
 
 ```sh

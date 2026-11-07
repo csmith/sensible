@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"filippo.io/age"
+	"github.com/goccy/go-yaml"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -328,6 +329,13 @@ func TestVhosts_errors(t *testing.T) {
 			"invalid name in a role",
 			map[string]string{"roles/web/docker-compose.yml": "services:\n  a:\n    labels: {v: !vhost localhost}\n"},
 			`"localhost" isn't a domain name`,
+		},
+		{
+			"placeholder in a role",
+			map[string]string{
+				"roles/web/docker-compose.yml": "services:\n  a:\n    labels: {v: !vhost \"{host}.example.com\"}\n",
+			},
+			"a !vhost can't hold a placeholder",
 		},
 		{
 			"not a string",
@@ -660,6 +668,88 @@ func TestHostConfig_noComposeEnvNoFile(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, c.Stacks[0].Files, 1)
 	assert.Nil(t, c.Stacks[0].Generated)
+}
+
+func TestHostConfig_placeholdersInRoleFiles(t *testing.T) {
+	r := newTestRepo(t, readTestTree(t, "role-placeholders")).open(t)
+	for _, host := range []string{"alpha", "beta"} {
+		c, err := r.HostConfig(host, "debian")
+		require.NoError(t, err)
+		var compose struct {
+			Services map[string]struct {
+				Environment map[string]string `yaml:"environment"`
+				Volumes     []string          `yaml:"volumes"`
+			} `yaml:"services"`
+		}
+		require.NoError(t, yaml.Unmarshal([]byte(stackFile(t, c.Stacks[0], "docker-compose.yml").Content), &compose))
+		app := compose.Services["app"]
+		assert.Equal(t, "adzeral-"+host, app.Environment["TASK_QUEUE"])
+		assert.Equal(t, "adzeral-"+host, app.Environment["QUEUE"])
+		assert.Equal(t, "{host} ${HOME} {{.Name}} {other}", app.Environment["LITERAL"])
+		assert.Equal(t, "echo web\n", app.Environment["SCRIPT"])
+		assert.Equal(t, []string{"/srv/volumes/web/web-data:/data"}, app.Volumes)
+		assert.Equal(t, "HOST='"+host+"'\n", stackFile(t, c.Stacks[0], ".env").Content)
+		assert.Equal(t, Command{"backup", "web"}, c.Jobs[host+"-backup"].Command)
+		if host == "alpha" {
+			assert.Equal(t, "{host}", app.Environment["LABEL"], "a host's values are used as written")
+		}
+	}
+}
+
+func TestHostConfig_placeholderErrors(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{
+			"host parameter",
+			map[string]string{"roles/web/role.yml": "params:\n  host: a\n"},
+			"roles/web/role.yml: [2:3] {host} is the host's name, so can't be a parameter",
+		},
+		{
+			"stack parameter in a variant",
+			map[string]string{"roles/web/role.debian.yml": "params:\n  stack: a\n"},
+			"roles/web/role.debian.yml: [2:3] {stack} is the role's stack name, so can't be a parameter",
+		},
+		{
+			"unquoted placeholder",
+			map[string]string{"roles/web/docker-compose.yml": "services:\n  a:\n    image: {host}\n"},
+			"roles/web/docker-compose.yml: [3:12] quote placeholders",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				files := map[string]string{
+					"hosts.d/hosts.yml":            "alpha:\n  roles: {web: }\n",
+					"roles/web/role.yml":           "",
+					"roles/web/docker-compose.yml": "services: {}\n",
+				}
+				maps.Copy(files, tt.files)
+				_, err := newTestRepo(t, files).open(t).HostConfig("alpha", "debian")
+				assert.ErrorContains(t, err, tt.want)
+			},
+		)
+	}
+}
+
+func TestOpen_hostPlaceholderInFixedSettings(t *testing.T) {
+	for _, setting := range []string{
+		"compose:\n  volumes:\n    \"{host}\": {owner: \"1\"}\n",
+		"compose:\n  files: [\"{host}.conf\"]\n",
+		"children: [\"{host}\"]\n",
+	} {
+		_, err := newTestRepo(
+			t,
+			map[string]string{
+				"roles/web/role.yml":           setting,
+				"roles/web/docker-compose.yml": "services: {}\n",
+			},
+		).tryOpen()
+		assert.ErrorContains(t, err, "{host} is the host's name, which differs between hosts, but ")
+	}
 }
 
 func TestHostConfig_generatedErrors(t *testing.T) {

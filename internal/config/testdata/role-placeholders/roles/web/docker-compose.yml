@@ -1,0 +1,10 @@
+services:
+  app:
+    environment:
+      TASK_QUEUE: adzeral-{host}
+      QUEUE: !param queue
+      LABEL: !param label
+      LITERAL: "{{host}} ${HOME} {{.Name}} {other}"
+      SCRIPT: |
+        echo {stack}
+    volumes: [!volume "{stack}-data:/data"]

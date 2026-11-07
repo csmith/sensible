@@ -20,8 +20,8 @@ import (
 
 const (
 	partialFile = "partial.yml"
-	// stackPlaceholder is provided to every partial, and a role's
-	// arguments to them: the including role's stack name.
+	// stackPlaceholder is provided to every role and partial: the role's
+	// stack name.
 	stackPlaceholder = "stack"
 	// hostPlaceholder is likewise the name of the host the role is on.
 	hostPlaceholder = "host"
@@ -165,13 +165,8 @@ func (d *partialDef) split(node ast.Node) (ast.Node, error) {
 			if !isNull(v.Value) && v.Value.Type() != ast.MappingType {
 				return nil, nodeError(v.Value, "params must be a mapping")
 			}
-			for _, p := range mappingValues(v.Value) {
-				switch keyString(p.Key) {
-				case stackPlaceholder:
-					return nil, nodeError(p.Key, "{"+stackPlaceholder+"} is the including role's stack name, so can't be a parameter")
-				case hostPlaceholder:
-					return nil, nodeError(p.Key, "{"+hostPlaceholder+"} is the host's name, so can't be a parameter")
-				}
+			if err := checkParamNames(v.Value); err != nil {
+				return nil, err
 			}
 			d.params = v.Value
 		case "compose":
@@ -198,6 +193,20 @@ func (d *partialDef) split(node ast.Node) (ast.Node, error) {
 		}
 	}
 	return body, nil
+}
+
+// checkParamNames rejects parameters named as the placeholders every role
+// and partial is given.
+func checkParamNames(params ast.Node) error {
+	for _, p := range mappingValues(params) {
+		switch keyString(p.Key) {
+		case stackPlaceholder:
+			return nodeError(p.Key, "{"+stackPlaceholder+"} is the role's stack name, so can't be a parameter")
+		case hostPlaceholder:
+			return nodeError(p.Key, "{"+hostPlaceholder+"} is the host's name, so can't be a parameter")
+		}
+	}
+	return nil
 }
 
 // check rejects placeholders the partial doesn't provide, and records its
