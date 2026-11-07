@@ -180,7 +180,8 @@ type Disowned struct {
 	// Target, if set, limits it to symlinks to Target.
 	Target string `json:"target,omitempty"`
 	// Recorded limits it to regular files that are as their WrittenRecord
-	// says, for files that can't have a Header.
+	// says, for files that can't have a Header. Applying forgets the
+	// records of files that have changed or gone since.
 	Recorded bool `json:"recorded,omitempty"`
 	// Notify is applied after each item is pruned, e.g. to reload a service
 	// that read it.

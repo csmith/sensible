@@ -178,10 +178,33 @@ func (r Absent) Apply(ctx context.Context, sys Sys) error {
 
 func (r Disowned) Check(ctx context.Context, sys Sys) (Change, error) {
 	extra, err := r.Leftovers(ctx, sys)
-	return leftoverWarning(extra, "no longer managed"), err
+	if err != nil {
+		return Change{}, err
+	}
+	change := leftoverWarning(extra, "no longer managed")
+	stale, err := r.staleRecords(ctx, sys)
+	if err != nil {
+		return Change{}, err
+	}
+	for _, path := range stale {
+		change.InSync = false
+		change.Diff += "forget record of " + path + "\n"
+	}
+	return change, nil
 }
 
-func (r Disowned) Apply(context.Context, Sys) error {
+// Apply forgets the records of files that have changed or gone since they
+// were written. It never removes the files themselves.
+func (r Disowned) Apply(ctx context.Context, sys Sys) error {
+	stale, err := r.staleRecords(ctx, sys)
+	if err != nil {
+		return err
+	}
+	for _, path := range stale {
+		if err := sys.RemoveAll(recordPath(path)); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -207,6 +230,54 @@ func (r Disowned) Leftovers(ctx context.Context, sys Sys) ([]string, error) {
 		}
 	}
 	return extra, nil
+}
+
+// staleRecords lists the paths r covers that nothing declares, whose
+// WrittenRecord no longer matches what's there.
+func (r Disowned) staleRecords(ctx context.Context, sys Sys) ([]string, error) {
+	if !r.Recorded {
+		return nil, nil
+	}
+	names, err := sys.ReadDir(WrittenDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	declared := state(ctx).declared
+	var stale []string
+	for _, name := range names {
+		path, err := url.QueryUnescape(name)
+		if err != nil || !filepath.IsAbs(path) || declared[path] || declared[recordPath(path)] || !r.covers(path) {
+			continue
+		}
+		info, err := sys.Lstat(path)
+		ok := false
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+		case err != nil:
+			return nil, err
+		case info.IsRegular():
+			if ok, err = isRecorded(sys, path); err != nil {
+				return nil, err
+			}
+		}
+		if !ok {
+			stale = append(stale, path)
+		}
+	}
+	return stale, nil
+}
+
+func (r Disowned) covers(path string) bool {
+	return slices.ContainsFunc(
+		r.Paths,
+		func(pattern string) bool {
+			ok, _ := filepath.Match(pattern, path)
+			return ok
+		},
+	)
 }
 
 func (r Disowned) matches(sys Sys, path string) (bool, error) {

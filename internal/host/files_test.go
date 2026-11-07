@@ -377,6 +377,47 @@ func TestDisowned_RecordedLimitsToFilesAsWritten(t *testing.T) {
 	assert.True(t, sys.exists(recordPath("/root/.docker/config.json")))
 }
 
+func TestDisowned_RecordedForgetsFilesNoLongerAsWritten(t *testing.T) {
+	sys := newTestSys(t)
+	for _, f := range []File{
+		{Path: "/etc/docker/daemon.json", Content: "{}\n"},
+		{Path: "/etc/docker/gone.json", Content: "{}\n"},
+		{Path: "/etc/docker/kept.json", Content: "{}\n"},
+		{Path: "/etc/docker/declared.json", Content: "{}\n"},
+		{Path: "/etc/other.json", Content: "{}\n"},
+	} {
+		record := WrittenRecord(f)
+		sys.write(f.Path, f.Content)
+		sys.write(record.Path, record.Content)
+	}
+	sys.write("/etc/docker/daemon.json", `{"by": "hand"}`)
+	sys.write("/etc/docker/declared.json", `{"by": "hand"}`)
+	sys.write("/etc/other.json", `{"by": "hand"}`)
+	require.NoError(t, os.Remove(sys.path("/etc/docker/gone.json")))
+	r := Disowned{Name: "docker", Paths: []string{"/etc/docker/*.json"}, Recorded: true}
+	st := newRunState()
+	st.declare(File{Path: "/etc/docker/declared.json"})
+	ctx := withRunState(context.Background(), st)
+
+	change, err := r.Check(ctx, sys)
+	require.NoError(t, err)
+	assert.False(t, change.InSync)
+	assert.Equal(t, "forget record of /etc/docker/daemon.json\nforget record of /etc/docker/gone.json\n", change.Diff)
+	assert.Contains(t, change.Warning, "/etc/docker/kept.json")
+
+	require.NoError(t, r.Apply(ctx, sys))
+	after, err := r.Check(ctx, sys)
+	require.NoError(t, err)
+	assert.True(t, after.InSync)
+	assert.Equal(t, change.Warning, after.Warning)
+	assert.False(t, sys.exists(recordPath("/etc/docker/daemon.json")))
+	assert.False(t, sys.exists(recordPath("/etc/docker/gone.json")))
+	assert.True(t, sys.exists("/etc/docker/daemon.json"))
+	for _, kept := range []string{"/etc/docker/kept.json", "/etc/docker/declared.json", "/etc/other.json"} {
+		assert.True(t, sys.exists(recordPath(kept)), kept)
+	}
+}
+
 func TestDisowned_SkipsWhatOtherResourcesDeclare(t *testing.T) {
 	sys := newTestSys(t)
 	for _, path := range []string{"/usr/local/bin/vi", "/usr/share/oh-my-zsh/oh-my-zsh.sh", "/var/cache/pam-rssh.deb"} {
