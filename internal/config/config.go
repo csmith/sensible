@@ -135,6 +135,7 @@ type Config struct {
 	Backups    map[string]BackupConfig  `yaml:"backups"`
 	Restic     *ResticConfig            `yaml:"restic"`
 	Certs      map[string]CertConfig    `yaml:"certs"`
+	Remove     *RemoveConfig            `yaml:"remove"`
 	// Stacks come from the host's roles that have a docker-compose.yml,
 	// rather than from a module, and are in name order.
 	Stacks []Stack `yaml:"-"`
@@ -275,6 +276,12 @@ type LocaleConfig struct {
 type NTPConfig struct {
 	// Servers replace the distribution's default servers. Empty keeps them.
 	Servers Set `yaml:"servers"`
+}
+
+type RemoveConfig struct {
+	// Paths are removed, recursively, on every apply. Each is absolute, or
+	// "~user/..." for a path in a user's home.
+	Paths Set `yaml:"paths"`
 }
 
 // JobConfig is a command run on a schedule by a systemd timer.

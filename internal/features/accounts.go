@@ -103,8 +103,6 @@ func zsh(h Host) ([]host.Resource, error) {
 				Owner:   name,
 				Mode:    0o644,
 			},
-			// Per-account copies, from before it was shared.
-			host.Absent{Path: home(h, name) + "/.oh-my-zsh"},
 		)
 	}
 	return rs, nil
@@ -201,8 +199,6 @@ func sshd(h Host) ([]host.Resource, error) {
 			Validate: sshdValidate,
 			Notify:   host.ResourceList{reload},
 		},
-		// Written by ansible, and sorted first, so its settings would win.
-		host.Absent{Path: "/etc/ssh/sshd_config.d/10-ansible.conf"},
 	}
 	if h.Facts.OSFamily == archLinux {
 		// pacman leaves the package's sshd_config as a .pacnew when the

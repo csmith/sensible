@@ -278,3 +278,23 @@ func execLine(argv []string) string {
 	}
 	return strings.Join(quoted, " ")
 }
+
+func remove(h Host) ([]host.Resource, error) {
+	if h.Config.Remove == nil {
+		return nil, nil
+	}
+	rs := make([]host.Resource, 0, len(h.Config.Remove.Paths))
+	for _, p := range h.Config.Remove.Paths {
+		resolved := p
+		if rest, ok := strings.CutPrefix(p, "~"); ok {
+			if name, sub, _ := strings.Cut(rest, "/"); name != "" && sub != "" {
+				resolved = home(h, name) + "/" + sub
+			}
+		}
+		if !path.IsAbs(resolved) || path.Clean(resolved) != resolved || resolved == "/" {
+			return nil, fmt.Errorf("host %s: remove.paths: %q must be an absolute path or ~user/path", h.Name, p)
+		}
+		rs = append(rs, host.Absent{Path: resolved})
+	}
+	return rs, nil
+}

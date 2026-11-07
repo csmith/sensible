@@ -689,6 +689,41 @@ func TestResources_pamRSSHArchHasNoLoginService(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestResources_remove(t *testing.T) {
+	h := testHost(archLinux)
+	h.Config.Users["carol"] = config.UserConfig{Home: "/srv/carol"}
+	h.Config.Remove = &config.RemoveConfig{
+		Paths: config.Set{"/etc/ssh/sshd_config.d/10-other.conf", "~alice/.cache/old", "~carol/.old", "~root/.old"},
+	}
+
+	rs, err := Resources(h)
+	require.NoError(t, err)
+	assert.Equal(
+		t,
+		[]string{
+			"absent:/etc/ssh/sshd_config.d/10-other.conf",
+			"absent:/home/alice/.cache/old",
+			"absent:/srv/carol/.old",
+			"absent:/root/.old",
+		},
+		ids(rs)[:4],
+	)
+}
+
+func TestResources_removeRejectsPaths(t *testing.T) {
+	for _, p := range []string{"etc/x", "/", "/etc/../x", "/etc/x/", "~", "~alice", "~alice/", "~/x", "~alice/../bob"} {
+		t.Run(
+			p,
+			func(t *testing.T) {
+				h := testHost(archLinux)
+				h.Config.Remove = &config.RemoveConfig{Paths: config.Set{p}}
+				_, err := Resources(h)
+				assert.ErrorContains(t, err, "remove.paths")
+			},
+		)
+	}
+}
+
 func TestResources_pamRSSHOffRemovesOnlyItsLine(t *testing.T) {
 	for _, tt := range []struct {
 		osFamily string
