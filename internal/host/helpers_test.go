@@ -78,6 +78,11 @@ func (s *testSys) on(argv string, stdout string, code int) {
 	s.commands[argv] = func(Cmd) Result { return Result{Stdout: stdout, Code: code} }
 }
 
+// path is where p is outside the test's root.
+func (s *testSys) path(p string) string {
+	return filepath.Join(s.root, p)
+}
+
 func (s *testSys) write(path, content string) {
 	s.t.Helper()
 	full := s.path(path)

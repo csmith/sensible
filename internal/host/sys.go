@@ -2,6 +2,7 @@ package host
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -77,8 +78,8 @@ type Cmd struct {
 	Stdin string
 	// Env is added to the agent's environment.
 	Env map[string]string
-	// User runs the command as that account, from its home directory if it
-	// exists. Empty runs it as the agent's user.
+	// User runs the command as that account, from its home directory if
+	// that's a directory. Empty runs it as the agent's user.
 	User string
 	// Dir is where the command runs, in place of / or the user's home.
 	Dir string
@@ -153,6 +154,7 @@ func (s *localSys) Run(ctx context.Context, cmd Cmd) (Result, error) {
 	c.Dir = "/"
 	c.Stdin = strings.NewReader(cmd.Stdin)
 	env := environment()
+	var home string
 	if cmd.User != "" {
 		u, err := s.LookupUser(cmd.User)
 		if err != nil {
@@ -168,12 +170,19 @@ func (s *localSys) Run(ctx context.Context, cmd Cmd) (Result, error) {
 			Groups: gids,
 		}}
 		env["HOME"], env["USER"], env["LOGNAME"] = u.Home, u.Name, u.Name
-		if info, err := os.Stat(u.Home); err == nil && info.IsDir() {
-			c.Dir = u.Home
-		}
+		home = u.Home
 	}
-	if cmd.Dir != "" {
-		c.Dir = s.path(cmd.Dir)
+	if dir := cmp.Or(cmd.Dir, home); dir != "" {
+		d, err := s.openDir(dir)
+		switch {
+		case err == nil:
+			defer func() { _ = d.Close() }()
+			c.Dir = fdPath(d)
+		case cmd.Dir != "":
+			return Result{}, err
+		}
+		// Otherwise it's a home that isn't a real directory, e.g. because its
+		// user replaced it with a link, and the command starts in /.
 	}
 	maps.Copy(env, cmd.Env)
 	for k, v := range env {
@@ -215,11 +224,18 @@ func (s *localSys) ReadFile(path string) ([]byte, error) {
 		path,
 		followLast,
 		func(f fileOps) ([]byte, error) {
-			file, err := f.open(f.name, unix.O_RDONLY, 0)
+			// Opening a FIFO someone else put in place would block until they
+			// opened its other end.
+			file, err := f.open(f.name, unix.O_RDONLY|unix.O_NONBLOCK, 0)
 			if err != nil {
 				return nil, err
 			}
 			defer func() { _ = file.Close() }()
+			if info, err := file.Stat(); err != nil {
+				return nil, err
+			} else if !info.Mode().IsRegular() {
+				return nil, f.err("read", f.name, errNotRegular)
+			}
 			return io.ReadAll(file)
 		},
 	)
@@ -329,13 +345,38 @@ func (s *localSys) ReadDir(path string) ([]string, error) {
 	)
 }
 
+// Glob matches as filepath.Glob does, a component at a time, so it only
+// follows the links other operations would.
 func (s *localSys) Glob(pattern string) ([]string, error) {
-	matches, err := filepath.Glob(s.path(pattern))
-	if err != nil || s.root == "/" {
-		return matches, err
+	if _, err := filepath.Match(pattern, ""); err != nil {
+		return nil, err
 	}
-	for i, m := range matches {
-		matches[i] = "/" + strings.TrimPrefix(strings.TrimPrefix(m, s.root), "/")
+	parts := components(pattern)
+	matches := []string{"/"}
+	for i, part := range parts {
+		var next []string
+		for _, dir := range matches {
+			if !strings.ContainsAny(part, `*?[\`) {
+				path := filepath.Join(dir, part)
+				// Later components fail to match if this is missing.
+				if i < len(parts)-1 {
+					next = append(next, path)
+				} else if _, err := s.Lstat(path); err == nil {
+					next = append(next, path)
+				}
+				continue
+			}
+			names, err := s.ReadDir(dir)
+			if err != nil {
+				continue
+			}
+			for _, name := range names {
+				if ok, _ := filepath.Match(part, name); ok {
+					next = append(next, filepath.Join(dir, name))
+				}
+			}
+		}
+		matches = next
 	}
 	return matches, nil
 }
@@ -372,7 +413,12 @@ func (s *localSys) Chown(path string, uid, gid int) error {
 		path,
 		lastAsIs,
 		func(f fileOps) error {
-			return f.err("lchown", f.name, unix.Fchownat(f.dir, f.name, uid, gid, unix.AT_SYMLINK_NOFOLLOW))
+			file, _, err := f.openToChange("lchown")
+			if err != nil {
+				return err
+			}
+			defer func() { _ = file.Close() }()
+			return f.err("lchown", f.name, unix.Fchownat(int(file.Fd()), "", uid, gid, emptyPath))
 		},
 	)
 }
@@ -386,15 +432,11 @@ func (s *localSys) Chmod(path string, mode fs.FileMode) error {
 			// fchmod doesn't take an O_PATH descriptor, so the file is changed
 			// through /proc, which refers to the one opened rather than
 			// resolving its path again.
-			file, err := f.open(f.name, openPath, 0)
+			file, info, err := f.openToChange("chmod")
 			if err != nil {
 				return err
 			}
 			defer func() { _ = file.Close() }()
-			info, err := file.Stat()
-			if err != nil {
-				return err
-			}
 			if info.Mode()&fs.ModeSymlink != 0 {
 				return f.err("chmod", f.name, errUntrustedLink)
 			}
@@ -537,6 +579,20 @@ func (s *localSys) Now() time.Time {
 	return time.Now()
 }
 
+// openDir opens a directory for a command to start in. The command is given
+// the descriptor's path under /proc, so the directory can't be swapped for a
+// link before it starts.
+func (s *localSys) openDir(path string) (*os.File, error) {
+	return confined(
+		s,
+		path,
+		followLast,
+		func(f fileOps) (*os.File, error) {
+			return f.open(f.name, openPath|unix.O_DIRECTORY, 0)
+		},
+	)
+}
+
 // resolution says what confine does with a link at the end of a path.
 type resolution int
 
@@ -571,7 +627,11 @@ func confinedErr(s *localSys, path string, last resolution, op func(f fileOps) e
 	return err
 }
 
-var errUntrustedLink = errors.New("won't follow a link someone else could change")
+var (
+	errUntrustedLink = errors.New("won't follow a link someone else could change")
+	errHardLinked    = errors.New("won't change a file with other links where someone else could have linked it")
+	errNotRegular    = errors.New("not a regular file")
+)
 
 // maxLinks is the most links confine follows for one path, as for the kernel.
 const maxLinks = 40
@@ -597,7 +657,7 @@ func (s *localSys) confine(path string, last resolution) (fileOps, error) {
 		return fileOps{}, err
 	}
 
-	f := fileOps{dir: w.dir, name: ".", path: path}
+	f := fileOps{dir: w.dir, name: ".", path: path, trusted: w.trusted}
 	if len(w.todo) > 0 {
 		f.name = w.todo[0]
 	}
@@ -724,6 +784,9 @@ type fileOps struct {
 	name string
 	// path is the path asked for, for errors.
 	path string
+	// trusted is whether only root or the agent could change dir or any
+	// directory on the way to it.
+	trusted bool
 }
 
 func (f fileOps) open(name string, flag int, perm uint32) (*os.File, error) {
@@ -741,6 +804,27 @@ func (f fileOps) stat() (FileInfo, error) {
 	}
 	defer func() { _ = file.Close() }()
 	return fileInfo(file.Stat())
+}
+
+// openToChange opens name to change its owner or mode. Where someone else
+// could change dir, they could have hard linked another's file into it, so a
+// file with more than one link is refused.
+func (f fileOps) openToChange(op string) (*os.File, fs.FileInfo, error) {
+	file, err := f.open(f.name, openPath, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := file.Stat()
+	if err == nil && !f.trusted && !info.IsDir() {
+		if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Nlink > 1 {
+			err = f.err(op, f.name, errHardLinked)
+		}
+	}
+	if err != nil {
+		_ = file.Close()
+		return nil, nil, err
+	}
+	return file, info, nil
 }
 
 func (f fileOps) rename(from, to string) error {
@@ -810,13 +894,6 @@ func removeAllAt(dir int, name string) error {
 
 func fdPath(f *os.File) string {
 	return "/proc/self/fd/" + strconv.Itoa(int(f.Fd()))
-}
-
-func (s *localSys) path(p string) string {
-	if s.root == "/" {
-		return p
-	}
-	return filepath.Join(s.root, p)
 }
 
 func (s *localSys) groupIDs(u UserInfo) ([]uint32, error) {

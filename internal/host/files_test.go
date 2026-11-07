@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 )
 
 func TestFile_CreatesWithOwnerAndMode(t *testing.T) {
@@ -253,6 +254,83 @@ func TestFile_DoesNotFollowLinksIntoUserDirsWhereTheyChange(t *testing.T) {
 
 	require.Error(t, err)
 	assert.False(t, sys.exists("/etc/sudoers.d/authorized_keys"))
+}
+
+func TestSys_DoesNotChangeFilesHardLinkedIntoUserDirs(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/home/alice/.profile", "")
+	require.NoError(t, os.Chmod(sys.path("/home/alice"), 0o777))
+	require.NoError(t, os.Chmod(sys.path("/etc/shadow"), 0o600))
+	require.NoError(t, os.Link(sys.path("/etc/shadow"), sys.path("/home/alice/.zshrc")))
+
+	require.ErrorIs(t, sys.Chmod("/home/alice/.zshrc", 0o644), errHardLinked)
+	require.ErrorIs(t, sys.Chown("/home/alice/.zshrc", os.Getuid(), os.Getgid()), errHardLinked)
+	info, err := sys.Stat("/etc/shadow")
+	require.NoError(t, err)
+	assert.Equal(t, fs.FileMode(0o600), info.Mode.Perm())
+}
+
+func TestSys_DoesNotWaitOnFIFOs(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/home/alice/.profile", "")
+	require.NoError(t, os.Chmod(sys.path("/home/alice"), 0o777))
+	require.NoError(t, unix.Mkfifo(sys.path("/home/alice/.zshrc"), 0o644))
+
+	_, err := sys.ReadFile("/home/alice/.zshrc")
+
+	assert.ErrorIs(t, err, errNotRegular)
+}
+
+func TestSys_GlobDoesNotFollowLinksInUserDirs(t *testing.T) {
+	sys := newTestSys(t)
+	userHome(t, sys, "keys")
+	sys.write("/home/alice/keys/authorized_keys", "")
+	sys.write("/home/bob/.ssh/authorized_keys", "")
+	require.NoError(t, os.Symlink("bob", sys.path("/home/carol")))
+
+	matches, err := sys.Glob("/home/*/.ssh/authorized_keys")
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"/home/bob/.ssh/authorized_keys", "/home/carol/.ssh/authorized_keys"}, matches)
+}
+
+func TestSys_RunsCommandsInDirWithoutFollowingUserLinks(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/srv/app/.keep", "")
+	userHome(t, sys, "../../srv/app")
+	local := &localSys{root: sys.root}
+
+	res, err := local.Run(context.Background(), Cmd{Argv: []string{"pwd", "-P"}, Dir: "/srv/app"})
+	require.NoError(t, err)
+	want, err := filepath.EvalSymlinks(sys.path("/srv/app"))
+	require.NoError(t, err)
+	assert.Equal(t, want+"\n", res.Stdout)
+
+	_, err = local.Run(context.Background(), Cmd{Argv: []string{"pwd"}, Dir: "/home/alice/.ssh"})
+	assert.ErrorIs(t, err, errUntrustedLink)
+}
+
+func TestSys_RunsUsersCommandsInTheirHomeUnlessItIsALink(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("running a command as another user needs root")
+	}
+	sys := newTestSys(t)
+	sys.write("/etc/passwd", "alice:x:65534:65534::/home/alice:/bin/sh\nbob:x:65534:65534::/home/bob:/bin/sh\n")
+	sys.write("/etc/group", "nogroup:x:65534:\n")
+	sys.write("/home/alice/.profile", "")
+	require.NoError(t, os.Chmod(sys.path("/home"), 0o777))
+	require.NoError(t, os.Symlink("alice", sys.path("/home/bob")))
+	local := &localSys{root: sys.root}
+
+	res, err := local.Run(context.Background(), Cmd{Argv: []string{"pwd", "-P"}, User: "alice"})
+	require.NoError(t, err)
+	want, err := filepath.EvalSymlinks(sys.path("/home/alice"))
+	require.NoError(t, err)
+	assert.Equal(t, want+"\n", res.Stdout)
+
+	res, err = local.Run(context.Background(), Cmd{Argv: []string{"pwd", "-P"}, User: "bob"})
+	require.NoError(t, err)
+	assert.Equal(t, "/\n", res.Stdout)
 }
 
 func TestSys_FollowsLastLinkTheAgentControls(t *testing.T) {
