@@ -6,6 +6,7 @@ import (
 	"maps"
 	"net/netip"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -209,8 +210,24 @@ var pamRSSHDebs = map[string]struct{ file, sha256 string }{
 }
 
 func pamRSSH(h Host) ([]host.Resource, error) {
+	services := []string{"sudo"}
+	if h.Facts.OSFamily == debian {
+		// Debian's sudo authenticates `sudo -i` with its own PAM service.
+		services = append(services, "sudo-i")
+	}
+
 	if h.Config.PamRSSH == nil || len(h.Config.PamRSSH.Keys) == 0 {
-		return nil, nil
+		// sudo falls back to the next auth module, so the line can go
+		// straight away. Only lines using sensible's keys are ours.
+		rs := make([]host.Resource, len(services))
+		for i, service := range services {
+			rs[i] = host.LineInFile{
+				Path:   "/etc/pam.d/" + service,
+				Regexp: `^\s*auth\s+\S+\s+\S*pam_rssh\.so\s.*auth_key_file=` + regexp.QuoteMeta(sudoersKeys) + `(\s|$)`,
+				Absent: true,
+			}
+		}
+		return rs, nil
 	}
 
 	rs, module, err := installPAMRSSH(h)
@@ -229,12 +246,6 @@ func pamRSSH(h Host) ([]host.Resource, error) {
 		// Let sudo pass the agent through to pam_rssh.
 		sudoersFile("pam_rssh", []string{`Defaults env_keep += "SSH_AUTH_SOCK"`}),
 	)
-
-	services := []string{"sudo"}
-	if h.Facts.OSFamily == debian {
-		// Debian's sudo authenticates `sudo -i` with its own PAM service.
-		services = append(services, "sudo-i")
-	}
 	for _, service := range services {
 		rs = append(
 			rs,

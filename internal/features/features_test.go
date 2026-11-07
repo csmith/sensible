@@ -689,6 +689,43 @@ func TestResources_pamRSSHArchHasNoLoginService(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestResources_pamRSSHOffRemovesOnlyItsLine(t *testing.T) {
+	for _, tt := range []struct {
+		osFamily string
+		services []string
+	}{
+		{archLinux, []string{"sudo"}},
+		{debian, []string{"sudo", "sudo-i"}},
+	} {
+		t.Run(
+			tt.osFamily,
+			func(t *testing.T) {
+				h := testHost(tt.osFamily)
+				h.Config.AUR = nil
+				on, err := Resources(h)
+				require.NoError(t, err)
+				h.Config.PamRSSH = nil
+				off, err := Resources(h)
+				require.NoError(t, err)
+
+				var removed []string
+				for _, r := range off {
+					l, ok := r.(host.LineInFile)
+					if !ok || !l.Absent {
+						continue
+					}
+					removed = append(removed, strings.TrimPrefix(l.Path, "/etc/pam.d/"))
+					added, ok := find[host.LineInFile](on, "line:"+l.Path+":"+`^\s*auth\s+\S+\s+\S*pam_rssh\.so`)
+					require.True(t, ok, l.Path)
+					assert.Regexp(t, l.Regexp, added.Line)
+					assert.NotRegexp(t, l.Regexp, "auth sufficient pam_rssh.so auth_key_file=/etc/other.keys")
+				}
+				assert.Equal(t, tt.services, removed)
+			},
+		)
+	}
+}
+
 func TestResources_zshrc(t *testing.T) {
 	tests := []struct {
 		name     string

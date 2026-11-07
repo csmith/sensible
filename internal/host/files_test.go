@@ -592,6 +592,18 @@ func TestLineInFile(t *testing.T) {
 			resource: LineInFile{Regexp: `^x`, Line: "c"},
 			want:     "a\nc\n",
 		},
+		{
+			name:     "removes every match when absent",
+			content:  "auth x\nauth sufficient pam_rssh.so\nauth y\n  auth optional pam_rssh.so\n",
+			resource: LineInFile{Regexp: `^\s*auth\s+\S+\s+pam_rssh\.so`, Absent: true},
+			want:     "auth x\nauth y\n",
+		},
+		{
+			name:     "leaves a file without a match when absent",
+			content:  "auth x\n",
+			resource: LineInFile{Regexp: `pam_rssh`, Absent: true},
+			want:     "auth x\n",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(
@@ -617,6 +629,14 @@ func TestLineInFile_MissingFileIsNotYetCheckable(t *testing.T) {
 	_, err := LineInFile{Path: "/etc/pam.d/sudo", Regexp: "x", Line: "x"}.Check(context.Background(), sys)
 
 	assert.ErrorIs(t, err, ErrNotYetCheckable)
+}
+
+func TestLineInFile_AbsentFromMissingFileIsInSync(t *testing.T) {
+	change, err := LineInFile{Path: "/etc/pam.d/sudo-i", Regexp: "x", Absent: true}.
+		Check(context.Background(), newTestSys(t))
+
+	require.NoError(t, err)
+	assert.True(t, change.InSync)
 }
 
 func TestCommentOut_CommentsMatchingLinesAcrossFiles(t *testing.T) {

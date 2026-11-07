@@ -388,6 +388,9 @@ func (r Symlink) Apply(ctx context.Context, sys Sys) error {
 
 func (r LineInFile) Check(ctx context.Context, sys Sys) (Change, error) {
 	current, _, err := readForEdit(sys, r.Path)
+	if r.Absent && errors.Is(err, ErrNotYetCheckable) {
+		return Change{InSync: true}, nil
+	}
 	if err != nil {
 		return Change{}, err
 	}
@@ -416,6 +419,15 @@ func (r LineInFile) edit(content string) (string, error) {
 	re, err := regexp.Compile(r.Regexp)
 	if err != nil {
 		return "", fmt.Errorf("regexp: %w", err)
+	}
+	if r.Absent {
+		var kept strings.Builder
+		for line := range strings.Lines(content) {
+			if !re.MatchString(strings.TrimSuffix(line, "\n")) {
+				kept.WriteString(line)
+			}
+		}
+		return kept.String(), nil
 	}
 	var before *regexp.Regexp
 	if r.InsertBefore != "" {

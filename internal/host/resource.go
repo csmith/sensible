@@ -297,8 +297,11 @@ type LineInFile struct {
 	// InsertBefore is where Line goes when no line matches Regexp and Line
 	// isn't already present: before the first line it matches. Empty, or no
 	// match, appends it.
-	InsertBefore string       `json:"insert_before,omitempty"`
-	Notify       ResourceList `json:"notify,omitempty"`
+	InsertBefore string `json:"insert_before,omitempty"`
+	// Absent removes every line matching Regexp instead, ignoring Line. A
+	// missing file is then in sync.
+	Absent bool         `json:"absent,omitempty"`
+	Notify ResourceList `json:"notify,omitempty"`
 }
 
 // CommentOut comments out lines across a set of files by prefixing "# ".
