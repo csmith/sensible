@@ -176,8 +176,18 @@ func access(h Host) ([]host.Resource, error) {
 // for prune to remove. Unlike the clean-ups, it's only a warning, as the host
 // may still rely on them.
 func disowned(h Host) ([]host.Resource, error) {
+	homes := []string{"/root", "/home/*"}
+	for _, name := range slices.Sorted(maps.Keys(h.Config.Users)) {
+		if d := h.Config.Users[name].Home; d != "" && !slices.Contains(homes, d) {
+			homes = append(homes, d)
+		}
+	}
 	inHomes := func(name string) []string {
-		return []string{path.Join(home("root"), name), path.Join(home("*"), name)}
+		paths := make([]string, len(homes))
+		for i, d := range homes {
+			paths[i] = path.Join(d, name)
+		}
+		return paths
 	}
 	rs := []host.Resource{
 		host.Disowned{

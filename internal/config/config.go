@@ -167,6 +167,11 @@ type AURConfig struct {
 
 type UserConfig struct {
 	Groups Set `yaml:"groups"`
+	// Home defaults to /home/<name>, or /root. Changing it doesn't move the
+	// existing directory.
+	Home string `yaml:"home"`
+	// Shell is left alone if empty, unless zsh.users sets it.
+	Shell string `yaml:"shell"`
 }
 
 type PamRSSHConfig struct {

@@ -2,7 +2,9 @@ package features
 
 import (
 	_ "embed"
+	"fmt"
 	"maps"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -14,7 +16,16 @@ import (
 func users(h Host) ([]host.Resource, error) {
 	rs := make([]host.Resource, 0, len(h.Config.Users))
 	for _, name := range slices.Sorted(maps.Keys(h.Config.Users)) {
-		rs = append(rs, host.User{Name: name, Groups: h.Config.Users[name].Groups, Managed: true})
+		u := h.Config.Users[name]
+		for _, p := range [][2]string{{"home", u.Home}, {"shell", u.Shell}} {
+			if p[1] != "" && (!path.IsAbs(p[1]) || path.Clean(p[1]) != p[1]) {
+				return nil, fmt.Errorf("users.%s.%s must be an absolute path, not %q", name, p[0], p[1])
+			}
+		}
+		rs = append(
+			rs,
+			host.User{Name: name, Groups: u.Groups, Home: u.Home, Shell: u.Shell, Managed: true},
+		)
 	}
 	return rs, nil
 }
@@ -23,7 +34,10 @@ func usersCleanUp(Host) ([]host.Resource, error) {
 	return []host.Resource{host.Users{}}, nil
 }
 
-func home(name string) string {
+func home(h Host, name string) string {
+	if d := h.Config.Users[name].Home; d != "" {
+		return d
+	}
 	if name == "root" {
 		return "/root"
 	}
@@ -33,6 +47,8 @@ func home(name string) string {
 const ohMyZshVersion = "17a2b4c3a5855524ad4772a17ada0dc474e2fdf3"
 
 const ohMyZshPath = "/usr/share/oh-my-zsh"
+
+const zshPath = "/usr/bin/zsh"
 
 func zsh(h Host) ([]host.Resource, error) {
 	c := h.Config.Zsh
@@ -52,7 +68,10 @@ func zsh(h Host) ([]host.Resource, error) {
 		host.GitCheckout{Path: ohMyZshPath, Repo: "https://github.com/ohmyzsh/ohmyzsh.git", Commit: ohMyZshVersion},
 	)
 	for _, name := range c.Users {
-		rs = append(rs, host.User{Name: name, Shell: "/usr/bin/zsh"})
+		if s := h.Config.Users[name].Shell; s != "" && s != zshPath {
+			return nil, fmt.Errorf("users.%s.shell is %s, but zsh.users sets it to %s", name, s, zshPath)
+		}
+		rs = append(rs, host.User{Name: name, Shell: zshPath})
 	}
 	for _, name := range c.Users {
 		var b strings.Builder
@@ -70,13 +89,13 @@ func zsh(h Host) ([]host.Resource, error) {
 		rs = append(
 			rs,
 			host.File{
-				Path:    home(name) + "/.zshrc",
+				Path:    home(h, name) + "/.zshrc",
 				Content: b.String(),
 				Owner:   name,
 				Mode:    0o644,
 			},
 			// Per-account copies, from before it was shared.
-			host.Absent{Path: home(name) + "/.oh-my-zsh"},
+			host.Absent{Path: home(h, name) + "/.oh-my-zsh"},
 		)
 	}
 	return rs, nil
@@ -201,9 +220,9 @@ func sshd(h Host) ([]host.Resource, error) {
 	for _, name := range slices.Sorted(maps.Keys(c.AuthorizedKeys)) {
 		rs = append(
 			rs,
-			host.Dir{Path: home(name) + "/.ssh", Owner: name, Mode: 0o700},
+			host.Dir{Path: home(h, name) + "/.ssh", Owner: name, Mode: 0o700},
 			host.File{
-				Path:    home(name) + "/.ssh/authorized_keys",
+				Path:    home(h, name) + "/.ssh/authorized_keys",
 				Content: managedLines(c.AuthorizedKeys[name]),
 				Owner:   name,
 				Mode:    0o600,

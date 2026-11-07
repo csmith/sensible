@@ -788,15 +788,17 @@ func TestResources_onlyConfiguredUsersAreManaged(t *testing.T) {
 func TestResources_accountFilesInHome(t *testing.T) {
 	h := testHost(debian)
 	h.Config.AUR = nil
-	h.Config.Zsh.Users = []string{"carol", "root"}
+	h.Config.Users["git"] = config.UserConfig{Home: "/var/lib/git"}
+	h.Config.Zsh.Users = []string{"carol", "git", "root"}
 	h.Config.SSHD.AuthorizedKeys = map[string]config.Set{
 		"carol": {"ssh-ed25519 AAAA carol"},
+		"git":   {"ssh-ed25519 AAAA git"},
 		"root":  {"ssh-ed25519 AAAA root"},
 	}
 	rs, err := Resources(h)
 	require.NoError(t, err)
 
-	for name, home := range map[string]string{"carol": "/home/carol", "root": "/root"} {
+	for name, home := range map[string]string{"carol": "/home/carol", "git": "/var/lib/git", "root": "/root"} {
 		for _, id := range []string{"file:" + home + "/.zshrc", "file:" + home + "/.ssh/authorized_keys"} {
 			f, ok := find[host.File](rs, id)
 			require.True(t, ok, id)
@@ -808,6 +810,59 @@ func TestResources_accountFilesInHome(t *testing.T) {
 		assert.Equal(t, name, d.Owner)
 		assert.Empty(t, d.Group)
 	}
+}
+
+func TestResources_userHomeAndShell(t *testing.T) {
+	h := testHost(debian)
+	h.Config.AUR = nil
+	h.Config.Users["git"] = config.UserConfig{Home: "/var/lib/git", Shell: "/usr/bin/git-shell"}
+	rs, err := Resources(h)
+	require.NoError(t, err)
+
+	u, ok := find[host.User](rs, "user:git")
+	require.True(t, ok)
+	assert.Equal(t, "/var/lib/git", u.Home)
+	assert.Equal(t, "/usr/bin/git-shell", u.Shell)
+}
+
+func TestResources_userErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		user config.UserConfig
+		want string
+	}{
+		{
+			"relative home",
+			config.UserConfig{Home: "var/lib/git"},
+			`users.alice.home must be an absolute path, not "var/lib/git"`,
+		},
+		{"unclean shell", config.UserConfig{Shell: "/bin/../bin/sh"}, "users.alice.shell must be an absolute path"},
+		{
+			"shell zsh would change",
+			config.UserConfig{Shell: "/bin/bash"},
+			"users.alice.shell is /bin/bash, but zsh.users sets it to /usr/bin/zsh",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				h := testHost(debian)
+				h.Config.AUR = nil
+				h.Config.Users["alice"] = tt.user
+				_, err := Resources(h)
+				assert.ErrorContains(t, err, tt.want)
+			},
+		)
+	}
+}
+
+func TestResources_zshUserMayAlsoSetZsh(t *testing.T) {
+	h := testHost(debian)
+	h.Config.AUR = nil
+	h.Config.Users["alice"] = config.UserConfig{Shell: "/usr/bin/zsh"}
+	_, err := Resources(h)
+	assert.NoError(t, err)
 }
 
 func TestResources_hostname(t *testing.T) {
@@ -1041,11 +1096,17 @@ func TestResources_disownedMatchWhatFeaturesWrite(t *testing.T) {
 				h.Config.Docker.Auths = map[string]string{"registry.example.com": "YTph"}
 				h.Config.Zsh.Users = append(h.Config.Zsh.Users, "root")
 				h.Config.SSHD.AuthorizedKeys["root"] = config.Set{"ssh-ed25519 AAAA root"}
+				h.Config.Users["git"] = config.UserConfig{Home: "/var/lib/git"}
+				h.Config.Zsh.Users = append(h.Config.Zsh.Users, "git")
+				h.Config.SSHD.AuthorizedKeys["git"] = config.Set{"ssh-ed25519 AAAA git"}
 				rs, err := Resources(h)
 				require.NoError(t, err)
 
 				disowned := trailingDisowned(t, rs)
 				require.NotEmpty(t, disowned)
+				zsh, ok := find[host.Disowned](rs, "disowned:zsh")
+				require.True(t, ok)
+				assert.Contains(t, zsh.Paths, "/var/lib/git/.zshrc")
 				for _, d := range disowned {
 					for _, pattern := range d.Paths {
 						assertWritten(t, rs, d, pattern)
