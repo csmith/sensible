@@ -116,7 +116,10 @@ func sudoers(h Host) ([]host.Resource, error) {
 	return rs, nil
 }
 
-func loginMessages(Host) ([]host.Resource, error) {
+func loginMessages(h Host) ([]host.Resource, error) {
+	if h.Config.QuietLogin == nil {
+		return nil, nil
+	}
 	// pam_motd shows /etc/motd, and on Debian the output of /etc/update-motd.d,
 	// and pam_lastlog shows when the account last logged in. Commenting them
 	// out stops the messages without fighting the packages that provide them.

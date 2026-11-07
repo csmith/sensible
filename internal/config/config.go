@@ -115,25 +115,26 @@ type Command []string
 // Config is one host's configuration, merged from its roles. A nil module
 // is one no role mentions, which doesn't run.
 type Config struct {
-	AptRepos  map[string]AptRepoConfig `yaml:"apt_repos"`
-	Packages  *PackagesConfig          `yaml:"packages"`
-	AUR       *AURConfig               `yaml:"aur"`
-	Users     map[string]UserConfig    `yaml:"users"`
-	Sudoers   map[string]Set           `yaml:"sudoers"`
-	PamRSSH   *PamRSSHConfig           `yaml:"pam_rssh"`
-	SSHD      *SSHDConfig              `yaml:"sshd"`
-	Tailscale *TailscaleConfig         `yaml:"tailscale"`
-	Zsh       *ZshConfig               `yaml:"zsh"`
-	Docker    *DockerConfig            `yaml:"docker"`
-	Vim       *VimConfig               `yaml:"vim"`
-	Hostname  *HostnameConfig          `yaml:"hostname"`
-	Timezone  *TimezoneConfig          `yaml:"timezone"`
-	Locale    *LocaleConfig            `yaml:"locale"`
-	NTP       *NTPConfig               `yaml:"ntp"`
-	Jobs      map[string]JobConfig     `yaml:"jobs"`
-	Backups   map[string]BackupConfig  `yaml:"backups"`
-	Restic    *ResticConfig            `yaml:"restic"`
-	Certs     map[string]CertConfig    `yaml:"certs"`
+	AptRepos   map[string]AptRepoConfig `yaml:"apt_repos"`
+	Packages   *PackagesConfig          `yaml:"packages"`
+	AUR        *AURConfig               `yaml:"aur"`
+	Users      map[string]UserConfig    `yaml:"users"`
+	Sudoers    map[string]Set           `yaml:"sudoers"`
+	PamRSSH    *PamRSSHConfig           `yaml:"pam_rssh"`
+	SSHD       *SSHDConfig              `yaml:"sshd"`
+	Tailscale  *TailscaleConfig         `yaml:"tailscale"`
+	Zsh        *ZshConfig               `yaml:"zsh"`
+	Docker     *DockerConfig            `yaml:"docker"`
+	Vim        *VimConfig               `yaml:"vim"`
+	QuietLogin *QuietLoginConfig        `yaml:"quiet_login"`
+	Hostname   *HostnameConfig          `yaml:"hostname"`
+	Timezone   *TimezoneConfig          `yaml:"timezone"`
+	Locale     *LocaleConfig            `yaml:"locale"`
+	NTP        *NTPConfig               `yaml:"ntp"`
+	Jobs       map[string]JobConfig     `yaml:"jobs"`
+	Backups    map[string]BackupConfig  `yaml:"backups"`
+	Restic     *ResticConfig            `yaml:"restic"`
+	Certs      map[string]CertConfig    `yaml:"certs"`
 	// Stacks come from the host's roles that have a docker-compose.yml,
 	// rather than from a module, and are in name order.
 	Stacks []Stack `yaml:"-"`
@@ -239,6 +240,10 @@ type DockerNetworkConfig struct {
 }
 
 type VimConfig struct{}
+
+// QuietLoginConfig hides the message of the day and the last login notice.
+// Removing it doesn't restore the lines it commented out.
+type QuietLoginConfig struct{}
 
 type HostnameConfig struct {
 	// Name defaults to the host's inventory name.

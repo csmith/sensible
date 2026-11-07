@@ -39,13 +39,14 @@ func testHost(osFamily string) Host {
 				Users:    []string{"alice"},
 				Networks: map[string]config.DockerNetworkConfig{"web": {}},
 			},
-			Vim:      &config.VimConfig{},
-			Hostname: &config.HostnameConfig{},
-			Timezone: &config.TimezoneConfig{Zone: "Europe/London"},
-			Locale:   &config.LocaleConfig{Lang: "en_GB.UTF-8", Generate: []string{"en_US.UTF-8"}},
-			NTP:      &config.NTPConfig{Servers: []string{"ntp.example.com"}},
-			Stacks:   []config.Stack{{Name: "web", Files: []config.StackFile{{Path: "docker-compose.yml"}}}},
-			Jobs:     map[string]config.JobConfig{"prune": {Command: []string{"docker", "image", "prune"}, Schedule: "daily"}},
+			Vim:        &config.VimConfig{},
+			QuietLogin: &config.QuietLoginConfig{},
+			Hostname:   &config.HostnameConfig{},
+			Timezone:   &config.TimezoneConfig{Zone: "Europe/London"},
+			Locale:     &config.LocaleConfig{Lang: "en_GB.UTF-8", Generate: []string{"en_US.UTF-8"}},
+			NTP:        &config.NTPConfig{Servers: []string{"ntp.example.com"}},
+			Stacks:     []config.Stack{{Name: "web", Files: []config.StackFile{{Path: "docker-compose.yml"}}}},
+			Jobs:       map[string]config.JobConfig{"prune": {Command: []string{"docker", "image", "prune"}, Schedule: "daily"}},
 		},
 		Facts: host.Facts{
 			OSFamily: osFamily,
@@ -740,6 +741,27 @@ func TestResources_zshSetsShells(t *testing.T) {
 		}
 	}
 	assert.Equal(t, []string{"alice /usr/bin/zsh", "carol /usr/bin/zsh"}, shells)
+}
+
+func TestResources_loginMessagesOnlyHiddenWhenQuiet(t *testing.T) {
+	for _, quiet := range []bool{true, false} {
+		h := testHost(debian)
+		h.Config.AUR = nil
+		if !quiet {
+			h.Config.QuietLogin = nil
+		}
+		rs, err := Resources(h)
+		require.NoError(t, err)
+
+		hidden := slices.ContainsFunc(
+			rs,
+			func(r host.Resource) bool {
+				_, ok := r.(host.CommentOut)
+				return ok
+			},
+		)
+		assert.Equal(t, quiet, hidden)
+	}
 }
 
 func TestResources_onlyConfiguredUsersAreManaged(t *testing.T) {

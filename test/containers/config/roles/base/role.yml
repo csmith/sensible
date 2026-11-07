@@ -12,6 +12,8 @@ packages:
 
 hostname:
 
+quiet_login:
+
 timezone:
   zone: Europe/London
 
