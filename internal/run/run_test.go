@@ -866,6 +866,8 @@ func TestPrintable(t *testing.T) {
 		"delete":           {"a\x7fb", `a\x7fb`},
 		"c1 control":       {"a\u009b2Jb", `a\u009b2Jb`},
 		"invalid utf-8":    {"a\x9b2J\xffb", `a\x9b2J\xffb`},
+		"bidi override":    {"a\u202eb\u2066c", `a\u202eb\u2066c`},
+		"zero width":       {"a\u200bb\ufeffc", `a\u200bb\ufeffc`},
 	}
 	for name, tt := range tests {
 		t.Run(

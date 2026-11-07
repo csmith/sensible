@@ -335,7 +335,7 @@ func printable(s string) string {
 }
 
 func isUnprintable(c rune) bool {
-	return unicode.IsControl(c) && c != '\n' && c != '\t'
+	return unicode.IsControl(c) && c != '\n' && c != '\t' || unicode.Is(unicode.Cf, c)
 }
 
 // truncate cuts s to width visible characters, skipping colour codes.
