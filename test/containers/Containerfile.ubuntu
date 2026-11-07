@@ -1,0 +1,13 @@
+ARG RELEASE=24.04
+FROM docker.io/library/ubuntu:${RELEASE}
+# EXTRA adds packages a real install would have, e.g. sudo-rs from 26.04.
+ARG EXTRA=
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    systemd systemd-sysv openssh-server ca-certificates iproute2 $EXTRA \
+ && rm -rf /var/lib/apt/lists/*
+# sshd is left socket-activated, as Ubuntu installs it.
+RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh \
+ && printf 'PermitRootLogin prohibit-password\n' > /etc/ssh/sshd_config.d/00-test.conf
+COPY rootkey.pub /root/.ssh/authorized_keys
+CMD ["/sbin/init"]

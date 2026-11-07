@@ -12,5 +12,8 @@ sshd:
     AuthorizedKeysFile: .ssh/authorized_keys
     MaxAuthTries: 4
     LogLevel: VERBOSE
+    # The containers' published port. Set so that, on Ubuntu, the first
+    # apply restarts ssh.socket.
+    Port: 22
 
   authorized_keys: !param authorized_keys

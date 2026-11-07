@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Starts disposable Debian and Arch hosts for trying sensible against, and
-# writes a matching config and environment to .work/. Source .work/env.sh
+# Starts disposable Debian, Arch and Ubuntu hosts for trying sensible against,
+# and writes a matching config and environment to .work/. Source .work/env.sh
 # afterwards to use them, e.g.:
 #
 #   ./up.sh && source .work/env.sh
@@ -10,7 +10,7 @@
 #
 # The containers run systemd, so they need a Docker daemon that allows
 # --privileged and doesn't set no-new-privileges. Remove them with
-# `docker rm -f deb1 arch1`.
+# `docker rm -f deb1 arch1 ubu24 ubu26`.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -25,6 +25,10 @@ recipient=$(grep 'public key' "$work/age.key" | awk '{print $NF}')
 
 docker build -q -t sensible-test-debian -f "$here/Containerfile.debian" "$here" >/dev/null
 docker build -q -t sensible-test-arch -f "$here/Containerfile.arch" "$here" >/dev/null
+docker build -q -t sensible-test-ubuntu24 -f "$here/Containerfile.ubuntu" \
+    --build-arg RELEASE=24.04 "$here" >/dev/null
+docker build -q -t sensible-test-ubuntu26 -f "$here/Containerfile.ubuntu" \
+    --build-arg RELEASE=26.04 --build-arg EXTRA=sudo-rs "$here" >/dev/null
 rm -f "$here/rootkey.pub"
 
 start() {
@@ -34,6 +38,8 @@ start() {
 }
 start deb1 sensible-test-debian 2211
 start arch1 sensible-test-arch 2212
+start ubu24 sensible-test-ubuntu24 2213
+start ubu26 sensible-test-ubuntu26 2214
 
 cp -r "$here/config/." "$work/config/"
 cat > "$work/config/sensible.yml" <<YAML
@@ -59,6 +65,24 @@ YAML
 cat > "$work/config/hosts.d/arch1.yml" <<YAML
 arch1:
   address: 127.0.0.1:2212
+  roles:
+    base:
+    vim:
+    sshd:
+    zsh:
+YAML
+cat > "$work/config/hosts.d/ubu24.yml" <<YAML
+ubu24:
+  address: 127.0.0.1:2213
+  roles:
+    base:
+    vim:
+    sshd:
+    zsh:
+YAML
+cat > "$work/config/hosts.d/ubu26.yml" <<YAML
+ubu26:
+  address: 127.0.0.1:2214
   roles:
     base:
     vim:
