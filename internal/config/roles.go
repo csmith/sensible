@@ -186,7 +186,7 @@ func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (expan
 		return expansion{}, fmt.Errorf("%s: %w", r.sources[joinPath(host, "roles", role, perr.key)].source, perr)
 	}
 
-	merged, partials, set, err := r.expandPartials(role, values)
+	merged, partials, set, err := r.expandPartials(host, role, values)
 	if err != nil {
 		return expansion{}, err
 	}

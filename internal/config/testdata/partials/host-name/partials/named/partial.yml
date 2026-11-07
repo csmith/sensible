@@ -1,0 +1,5 @@
+params:
+  name: ~
+partials: [{partial: tailscale-proxy, hostname: "{name}", upstream: "http://{host}"}]
+jobs:
+  "{host}-job": {command: [run, "{host}"], schedule: daily}

@@ -20,9 +20,11 @@ import (
 
 const (
 	partialFile = "partial.yml"
-	// stackPlaceholder is provided to every partial: the including role's
-	// stack name.
+	// stackPlaceholder is provided to every partial, and a role's
+	// arguments to them: the including role's stack name.
 	stackPlaceholder = "stack"
+	// hostPlaceholder is likewise the name of the host the role is on.
+	hostPlaceholder = "host"
 )
 
 // partialDef is a directory in partials/: parameterised role settings, and
@@ -164,8 +166,11 @@ func (d *partialDef) split(node ast.Node) (ast.Node, error) {
 				return nil, nodeError(v.Value, "params must be a mapping")
 			}
 			for _, p := range mappingValues(v.Value) {
-				if keyString(p.Key) == stackPlaceholder {
+				switch keyString(p.Key) {
+				case stackPlaceholder:
 					return nil, nodeError(p.Key, "{"+stackPlaceholder+"} is the including role's stack name, so can't be a parameter")
+				case hostPlaceholder:
+					return nil, nodeError(p.Key, "{"+hostPlaceholder+"} is the host's name, so can't be a parameter")
 				}
 			}
 			d.params = v.Value
@@ -201,22 +206,11 @@ func (d *partialDef) check(node ast.Node) error {
 	if tag := findTag(node, paramTag); tag != nil {
 		return nodeError(tag, "a partial's files take values from {placeholders}, not !param")
 	}
-	known := []string{stackPlaceholder}
+	known := []string{stackPlaceholder, hostPlaceholder}
 	for _, p := range mappingValues(d.params) {
 		known = append(known, keyString(p.Key))
 	}
-	err := walkStrings(
-		node,
-		func(n ast.Node, s string) error {
-			for _, m := range placeholderPattern.FindAllStringSubmatch(s, -1) {
-				if m[1] != "" && !slices.Contains(known, m[1]) {
-					return nodeError(n, fmt.Sprintf("unknown placeholder {%s}", m[1]))
-				}
-			}
-			return nil
-		},
-	)
-	if err != nil {
+	if err := checkPlaceholders(node, known); err != nil {
 		return err
 	}
 	for _, tag := range findTags(node, vhostTag) {
@@ -230,6 +224,20 @@ func (d *partialDef) check(node ast.Node) error {
 		d.vhosts = append(d.vhosts, names...)
 	}
 	return nil
+}
+
+func checkPlaceholders(node ast.Node, known []string) error {
+	return walkStrings(
+		node,
+		func(n ast.Node, s string) error {
+			for _, m := range placeholderPattern.FindAllStringSubmatch(s, -1) {
+				if m[1] != "" && !slices.Contains(known, m[1]) {
+					return nodeError(n, fmt.Sprintf("unknown placeholder {%s}", m[1]))
+				}
+			}
+			return nil
+		},
+	)
 }
 
 // walkStrings calls fn with each string in node, keys included. A flow
@@ -286,20 +294,47 @@ type partialUse struct {
 	source string
 }
 
-// fillArgs returns the use's arguments with the placeholders of the partial
-// including it filled from all, the values of the role's partials before
-// it. varying is as for filler.
-func (u partialUse) fillArgs(all []map[string]ast.Node, varying bool) (*ast.MappingNode, error) {
-	args := merge(nil, u.args)
+// fillArgs returns the use's arguments with their placeholders filled: from
+// all, the values of the role's partials before it, if a partial includes
+// it, or from provided if the role does. varying is as for filler.
+func (u partialUse) fillArgs(
+	provided map[string]ast.Node,
+	all []map[string]ast.Node,
+	varying bool,
+) (*ast.MappingNode, error) {
+	values := provided
 	if u.parent >= 0 {
-		f := filler{values: all[u.parent], varying: varying, exact: copyValue}
-		var err error
-		if args, _, err = f.fill(args); err != nil {
-			return nil, err
-		}
+		values = all[u.parent]
+	}
+	f := filler{values: values, varying: varying, exact: copyValue}
+	args, _, err := f.fill(merge(nil, u.args))
+	if err != nil {
+		return nil, err
 	}
 	m, _ := args.(*ast.MappingNode)
 	return m, nil
+}
+
+// providedPlaceholders are the values a partial's files and a role's
+// arguments to them can use without declaring them. host is nil where the
+// host isn't known, which a fixed filler rejects.
+func providedPlaceholders(role string, host *string) (map[string]ast.Node, error) {
+	stack, err := flowNode(stackName(role))
+	if err != nil {
+		return nil, err
+	}
+	values := map[string]ast.Node{stackPlaceholder: stack}
+	if host == nil {
+		// As any role parameter, which differs between hosts.
+		f, err := parser.ParseBytes([]byte(paramTag+" "+hostPlaceholder), 0)
+		if err != nil {
+			return nil, err
+		}
+		values[hostPlaceholder] = f.Docs[0].Body
+	} else if values[hostPlaceholder], err = flowNode(*host); err != nil {
+		return nil, err
+	}
+	return values, nil
 }
 
 // partialRef is an item in a role's partials, as written.
@@ -348,6 +383,9 @@ func (r *Repo) checkPartials(role string, refs []partialRef) error {
 		if _, perr := resolveParams(def.params, RoleParams{node: ref.args}); perr != nil {
 			return fmt.Errorf("%s: partial %s: %w", roleFile, ref.name, perr)
 		}
+		if err := checkPlaceholders(ref.args, []string{stackPlaceholder, hostPlaceholder}); err != nil {
+			return fmt.Errorf("%s: partial %s: %w", roleFile, ref.name, err)
+		}
 		r.addPartial(role, partialUse{def: def, args: ref.args, parent: -1, source: "partial " + def.name})
 	}
 	return nil
@@ -370,16 +408,20 @@ func (r *Repo) partialVolumes(role string, volumes map[string]Perms) (map[string
 	for name := range volumes {
 		sources[name] = "role.yml"
 	}
+	provided, err := providedPlaceholders(role, nil)
+	if err != nil {
+		return nil, err
+	}
 	uses := r.rolePartials[role]
 	all := make([]map[string]ast.Node, len(uses))
 	for i, use := range uses {
 		file := use.def.file(partialFile)
-		args, err := use.fillArgs(all, true)
+		args, err := use.fillArgs(provided, all, true)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %s: %s: %w", r.path("roles", role, "role.yml"), use.source, r.path(file), err)
 		}
 		all[i], _ = resolveParams(use.def.params, RoleParams{node: args})
-		all[i][stackPlaceholder], _ = flowNode(stackName(role))
+		maps.Copy(all[i], provided)
 
 		node, err := r.readLayer(file, false)
 		if err != nil {
@@ -445,18 +487,22 @@ func (r *Repo) partialVhosts(role string) ([]string, error) {
 // values of each partial's placeholders, and what set each setting, for
 // the role's own settings to be checked against.
 func (r *Repo) expandPartials(
-	role string,
+	host, role string,
 	roleValues map[string]ast.Node,
 ) (ast.Node, []map[string]ast.Node, map[string]setBy, error) {
 	uses := r.rolePartials[role]
 	if len(uses) == 0 {
 		return nil, nil, nil, nil
 	}
+	provided, err := providedPlaceholders(role, &host)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	var merged ast.Node
 	all := make([]map[string]ast.Node, len(uses))
 	set := map[string]setBy{}
 	for i, use := range uses {
-		values, err := r.partialValues(role, use, roleValues, all)
+		values, err := r.partialValues(role, use, roleValues, provided, all)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("%s: %s: %w", r.path("roles", role, "role.yml"), use.source, err)
 		}
@@ -480,7 +526,7 @@ func (r *Repo) expandPartials(
 func (r *Repo) partialValues(
 	role string,
 	use partialUse,
-	roleValues map[string]ast.Node,
+	roleValues, provided map[string]ast.Node,
 	all []map[string]ast.Node,
 ) (map[string]ast.Node, error) {
 	volumePath := func(tag *ast.TagNode) (string, error) { return r.volumePath(role, tag) }
@@ -488,7 +534,7 @@ func (r *Repo) partialValues(
 	if err := resolveTags(declared, volumeTag, volumePath); err != nil {
 		return nil, err
 	}
-	args, err := use.fillArgs(all, false)
+	args, err := use.fillArgs(provided, all, false)
 	if err != nil {
 		return nil, err
 	}
@@ -502,9 +548,7 @@ func (r *Repo) partialValues(
 	if perr != nil {
 		return nil, perr
 	}
-	if values[stackPlaceholder], err = flowNode(stackName(role)); err != nil {
-		return nil, err
-	}
+	maps.Copy(values, provided)
 	return values, nil
 }
 
@@ -751,7 +795,7 @@ func (f filler) value(at ast.Node, name string) (ast.Node, error) {
 	if f.fixed && findTag(v, paramTag) != nil {
 		return nil, nodeError(
 			at,
-			fmt.Sprintf("{%s} is a role parameter here, which can differ between hosts, but volumes can't", name),
+			fmt.Sprintf("{%s} is a role parameter or the host's name here, which differ between hosts, but volumes can't", name),
 		)
 	}
 	return v, nil

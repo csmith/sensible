@@ -188,6 +188,25 @@ func TestPartials_nestedDefaults(t *testing.T) {
 	assert.Equal(t, Set{"vim"}, c.Packages.Install, "a null argument leaves the default")
 }
 
+func TestPartials_hostName(t *testing.T) {
+	r := newTestRepo(t, withPartials(t, readTestTree(t, "partials/host-name"))).open(t)
+	for _, host := range []string{"alpha", "beta"} {
+		c, err := r.HostConfig(host, "debian")
+		require.NoError(t, err)
+		require.Len(t, c.Stacks, 1)
+		var compose struct {
+			Services map[string]struct {
+				Environment map[string]string `yaml:"environment"`
+			} `yaml:"services"`
+		}
+		require.NoError(t, yaml.Unmarshal([]byte(c.Stacks[0].Files[0].Content), &compose))
+		env := compose.Services["thp"].Environment
+		assert.Equal(t, "proxy-"+host+"-{x}", env["TAILSCALE_HOSTNAME"])
+		assert.Equal(t, "http://"+host, env["UPSTREAM"])
+		assert.Equal(t, Command{"run", host}, c.Jobs[host+"-job"].Command)
+	}
+}
+
 func TestPartials_errors(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -328,6 +347,29 @@ func TestPartials_errors(t *testing.T) {
 				"roles/web/role.yml":     "params: {v: a}\npartials: [{partial: x, v: !param v}]\n",
 			},
 			"volumes can't",
+		},
+		{
+			"host parameter",
+			map[string]string{"partials/x/partial.yml": "params:\n  host: a\n"},
+			"can't be a parameter",
+		},
+		{
+			"unknown placeholder in a role's argument",
+			map[string]string{"roles/web/role.yml": "partials: [{partial: tailscale-proxy, upstream: \"{nope}\"}]\n"},
+			"roles/web/role.yml: partial tailscale-proxy: [1:49] unknown placeholder {nope}",
+		},
+		{
+			"volume from the host's name",
+			map[string]string{"roles/web/role.yml": "partials: [{partial: tailscale-proxy, volume: \"ts-{host}\"}]\n"},
+			"{volume} is a role parameter or the host's name here",
+		},
+		{
+			"host's name in a partial's volumes",
+			map[string]string{
+				"partials/x/partial.yml": "compose:\n  volumes:\n    \"{host}\": {owner: 1}\n",
+				"roles/web/role.yml":     "partials: [{partial: x}]\n",
+			},
+			"{host} is a role parameter or the host's name here",
 		},
 		{
 			"mapping in a longer string",

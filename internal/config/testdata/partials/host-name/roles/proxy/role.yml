@@ -1,0 +1,2 @@
+partials:
+  - {partial: named, name: "{stack}-{host}-{{x}}"}

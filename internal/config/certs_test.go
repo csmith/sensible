@@ -295,11 +295,11 @@ func TestHostCerts_fromAPartial(t *testing.T) {
 			"hosts.d/hosts.yml": "alpha:\n  roles: {web: }\n",
 			"partials/tls/partial.yml": `
 params:
-  host: ~
+  domain: ~
 certs:
   "{stack}-tls":
     ca: internal
-    server: ["{host}"]
+    server: ["{domain}"]
 `,
 			"partials/tls/docker-compose.yml": `
 services:
@@ -309,7 +309,7 @@ services:
 `,
 			"roles/web/role.yml": `
 partials:
-  - {partial: tls, host: web.example.com}
+  - {partial: tls, domain: web.example.com}
 compose:
   env:
     CA_PATH: !cert web-tls/ca.crt
