@@ -658,8 +658,9 @@ func (r Command) Check(ctx context.Context, sys Sys) (Change, error) {
 }
 
 func (r Command) Apply(ctx context.Context, sys Sys) error {
-	_, err := runOK(ctx, sys, Cmd{Argv: r.ApplyArgv, User: r.User, Env: r.Env})
-	return err
+	// Commands can install packages, as Docker's does on Arch.
+	res, err := runOK(ctx, sys, Cmd{Argv: r.ApplyArgv, User: r.User, Env: r.Env})
+	return explainStaleSyncDB(res, err)
 }
 
 func (r TailscaleSet) Check(ctx context.Context, sys Sys) (Change, error) {

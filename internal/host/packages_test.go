@@ -83,24 +83,35 @@ func TestPackage_PacmanInstallFailures(t *testing.T) {
 			stderr: "error: failed to commit transaction (conflicting files)\n",
 		},
 	}
+	installs := []struct {
+		name     string
+		argv     string
+		resource Resource
+	}{
+		{"package", "pacman -S --needed --noconfirm git", Package{Name: "git"}},
+		{"aur package", "paru *", AURPackage{Name: "pam_rssh", BuildUser: "bob"}},
+		{"command", "sh -c pacman -S docker", Command{Name: "docker", ApplyArgv: []string{"sh", "-c", "pacman -S docker"}}},
+	}
 	for _, tt := range tests {
-		t.Run(
-			tt.name,
-			func(t *testing.T) {
-				sys := newArchSys(t)
-				sys.commands["pacman -S --needed --noconfirm git"] = func(Cmd) Result {
-					return Result{Stderr: tt.stderr, Code: 1}
-				}
-				err := Package{Name: "git"}.Apply(withRunState(context.Background(), newRunState()), sys)
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), "failed to commit transaction")
-				if tt.wantSyu {
-					assert.Contains(t, err.Error(), "pacman -Syu")
-				} else {
-					assert.NotContains(t, err.Error(), "pacman -Syu")
-				}
-			},
-		)
+		for _, install := range installs {
+			t.Run(
+				tt.name+"/"+install.name,
+				func(t *testing.T) {
+					sys := newArchSys(t)
+					sys.commands[install.argv] = func(Cmd) Result {
+						return Result{Stderr: tt.stderr, Code: 1}
+					}
+					err := install.resource.Apply(withRunState(context.Background(), newRunState()), sys)
+					require.Error(t, err)
+					assert.Contains(t, err.Error(), "failed to commit transaction")
+					if tt.wantSyu {
+						assert.Contains(t, err.Error(), "pacman -Syu")
+					} else {
+						assert.NotContains(t, err.Error(), "pacman -Syu")
+					}
+				},
+			)
+		}
 	}
 }
 

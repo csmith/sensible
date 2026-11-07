@@ -42,12 +42,7 @@ func (r Package) Apply(ctx context.Context, sys Sys) error {
 			return err
 		}
 		res, err := runOK(ctx, sys, argv("pacman", "-S", "--needed", "--noconfirm", r.Name))
-		// Mirrors only keep current versions, so a stale sync database
-		// names files they've deleted.
-		if out := output(res); err != nil && strings.Contains(out, "failed retrieving file") && strings.Contains(out, "404") {
-			return fmt.Errorf("%w\npacman's sync database is out of date; run pacman -Syu on the host", err)
-		}
-		return err
+		return explainStaleSyncDB(res, err)
 	}
 
 	if r.Absent {
@@ -429,7 +424,7 @@ func (r AURPackage) Check(ctx context.Context, sys Sys) (Change, error) {
 }
 
 func (r AURPackage) Apply(ctx context.Context, sys Sys) error {
-	_, err := runOK(
+	res, err := runOK(
 		ctx,
 		sys,
 		Cmd{
@@ -437,6 +432,16 @@ func (r AURPackage) Apply(ctx context.Context, sys Sys) error {
 			User: r.BuildUser,
 		},
 	)
+	return explainStaleSyncDB(res, err)
+}
+
+// explainStaleSyncDB advises a pacman -Syu after a 404 from the mirrors.
+func explainStaleSyncDB(res Result, err error) error {
+	// Mirrors only keep current versions, so a stale sync database names
+	// files they've deleted.
+	if out := output(res); err != nil && strings.Contains(out, "failed retrieving file") && strings.Contains(out, "404") {
+		return fmt.Errorf("%w\npacman's sync database is out of date; run pacman -Syu on the host", err)
+	}
 	return err
 }
 
