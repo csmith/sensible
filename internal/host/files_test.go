@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -104,7 +105,9 @@ func TestFile_ValidatesTemporaryCopy(t *testing.T) {
 	sys.write("/etc/sudoers.d/x", "old\n")
 	var validated string
 	sys.commands["visudo *"] = func(cmd Cmd) Result {
-		validated = sys.read(cmd.Argv[2])
+		data, err := os.ReadFile(cmd.Argv[2])
+		require.NoError(t, err)
+		validated = string(data)
 		return Result{Code: 1, Stderr: "syntax error"}
 	}
 
@@ -117,6 +120,31 @@ func TestFile_ValidatesTemporaryCopy(t *testing.T) {
 	names, err := sys.ReadDir("/etc/sudoers.d")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"x"}, names)
+}
+
+func TestFile_ValidatesTheCopyEvenIfItsDirIsSwapped(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/home/alice/.ssh/.keep", "")
+	require.NoError(t, os.Chmod(sys.path("/home/alice"), 0o777))
+	var validated string
+	sys.commands["check *"] = func(cmd Cmd) Result {
+		// Swap in another directory with a file of the same name.
+		tmp, err := os.Readlink(cmd.Argv[1])
+		require.NoError(t, err)
+		require.NoError(t, os.Rename(sys.path("/home/alice/.ssh"), sys.path("/home/alice/.ssh-old")))
+		sys.write("/home/alice/.ssh/"+filepath.Base(tmp), "good\n")
+
+		data, err := os.ReadFile(cmd.Argv[1])
+		require.NoError(t, err)
+		validated = string(data)
+		return Result{Code: 1}
+	}
+
+	err := File{Path: "/home/alice/.ssh/config", Content: "bad\n", Validate: []string{"check", "%s"}}.
+		Apply(context.Background(), sys)
+
+	require.Error(t, err)
+	assert.Equal(t, "bad\n", validated)
 }
 
 func TestFile_ChangingAptSourceMarksIndexStale(t *testing.T) {

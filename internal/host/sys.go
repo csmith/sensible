@@ -94,9 +94,10 @@ type WriteOptions struct {
 	UID  int
 	GID  int
 	Mode fs.FileMode
-	// Validate, if set, is called with the path of the fully written
-	// temporary file before it replaces the original. An error aborts the
-	// write.
+	// Validate, if set, is called with a path to the fully written
+	// temporary file before it replaces the original. The path refers to
+	// the file itself, under /proc, so it can't be redirected elsewhere. An
+	// error aborts the write.
 	Validate func(tmpPath string) error
 }
 
@@ -242,30 +243,12 @@ func (s *localSys) WriteFile(path string, data []byte, opts WriteOptions) error 
 				}
 			}()
 
-			if _, err := file.Write(data); err != nil {
-				_ = file.Close()
-				return err
+			err = writeTemp(file, data, opts)
+			if closeErr := file.Close(); err == nil {
+				err = closeErr
 			}
-			// Changing the owner can clear the mode's setuid bits, so it goes first.
-			if err := file.Chown(opts.UID, opts.GID); err != nil {
-				_ = file.Close()
+			if err != nil {
 				return err
-			}
-			if err := file.Chmod(opts.Mode); err != nil {
-				_ = file.Close()
-				return err
-			}
-			if err := file.Sync(); err != nil {
-				_ = file.Close()
-				return err
-			}
-			if err := file.Close(); err != nil {
-				return err
-			}
-			if opts.Validate != nil {
-				if err := opts.Validate(f.pathOf(tmp)); err != nil {
-					return err
-				}
 			}
 			if err := f.rename(tmp, f.name); err != nil {
 				return err
@@ -278,6 +261,28 @@ func (s *localSys) WriteFile(path string, data []byte, opts WriteOptions) error 
 			return nil
 		},
 	)
+}
+
+func writeTemp(file *os.File, data []byte, opts WriteOptions) error {
+	if _, err := file.Write(data); err != nil {
+		return err
+	}
+	// Changing the owner can clear the mode's setuid bits, so it goes first.
+	if err := file.Chown(opts.UID, opts.GID); err != nil {
+		return err
+	}
+	if err := file.Chmod(opts.Mode); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if opts.Validate == nil {
+		return nil
+	}
+	// The validator runs as another process, so it's given the agent's
+	// descriptor for the file rather than a path that could be redirected.
+	return opts.Validate(fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), file.Fd()))
 }
 
 func syncDir(dir string) {
