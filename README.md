@@ -3,7 +3,7 @@
 sensible configures Linux hosts from a directory of YAML: packages, users,
 system settings, Docker Compose stacks, backups, certificates and so on. It
 connects over SSH, runs a small agent on each host, shows you what would change,
-and applies it once you confirm. Debian and Arch hosts are supported.
+and applies it once you confirm. Debian, Ubuntu and Arch hosts are supported.
 
 ## Installing
 

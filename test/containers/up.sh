@@ -42,6 +42,18 @@ start ubu24 sensible-test-ubuntu24 2213
 start ubu26 sensible-test-ubuntu26 2214
 
 cp -r "$here/config/." "$work/config/"
+# Lets chris log in and sudo with the test key, through a forwarded agent.
+mkdir -p "$work/config/roles/rssh"
+cat > "$work/config/roles/rssh/role.yml" <<YAML
+sshd:
+  authorized_keys:
+    chris:
+      - $(cat "$work/rootkey.pub")
+
+pam_rssh:
+  keys:
+    - $(cat "$work/rootkey.pub")
+YAML
 cat > "$work/config/sensible.yml" <<YAML
 secrets:
   recipients:
@@ -58,6 +70,7 @@ deb1:
     base:
     vim:
     sshd:
+    rssh:
     zsh:
       prompt_colours:
         chris: yellow
@@ -69,6 +82,7 @@ arch1:
     base:
     vim:
     sshd:
+    rssh:
     zsh:
 YAML
 cat > "$work/config/hosts.d/ubu24.yml" <<YAML
@@ -78,6 +92,7 @@ ubu24:
     base:
     vim:
     sshd:
+    rssh:
     zsh:
 YAML
 cat > "$work/config/hosts.d/ubu26.yml" <<YAML
@@ -87,6 +102,7 @@ ubu26:
     base:
     vim:
     sshd:
+    rssh:
     zsh:
 YAML
 
