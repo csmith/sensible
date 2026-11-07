@@ -56,17 +56,6 @@ func aptRepos(h Host) ([]host.Resource, error) {
 	return rs, nil
 }
 
-// aptCleanUp removes the apt sources and keys that no repo declared.
-func aptCleanUp(h Host) ([]host.Resource, error) {
-	if h.Facts.OSFamily != debian {
-		return nil, nil
-	}
-	return []host.Resource{
-		host.OwnedDir{Path: host.AptSourcesDir},
-		host.OwnedDir{Path: host.AptKeyringsDir},
-	}, nil
-}
-
 func packages(h Host) ([]host.Resource, error) {
 	c := h.Config.Packages
 	if c == nil {

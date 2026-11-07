@@ -161,10 +161,9 @@ func TestResources_order(t *testing.T) {
 				"systemd-units:sensible-",
 				"users",
 				"owned-dir:/etc/sudoers.d",
-				"owned-dir:/etc/apt/sources.list.d",
-				"owned-dir:/etc/apt/keyrings",
 				"disowned:sshd",
 				"disowned:pam_rssh package",
+				"disowned-apt-sources",
 			},
 		},
 	}
@@ -1272,8 +1271,8 @@ func TestResources_recordsOnlyPackagesSafeToPrune(t *testing.T) {
 	}
 }
 
-// trailingDisowned returns the Disowned resources, requiring them and the
-// DisownedPackages to come after every other resource.
+// trailingDisowned returns the Disowned resources, requiring them,
+// DisownedPackages and DisownedAptSources to come after every other resource.
 func trailingDisowned(t *testing.T, rs host.ResourceList) []host.Disowned {
 	t.Helper()
 	var disowned []host.Disowned
@@ -1283,7 +1282,7 @@ func trailingDisowned(t *testing.T, rs host.ResourceList) []host.Disowned {
 		case host.Disowned:
 			disowned = append(disowned, d)
 			trailing = true
-		case host.DisownedPackages:
+		case host.DisownedPackages, host.DisownedAptSources:
 			trailing = true
 		default:
 			require.False(t, trailing, "%s comes after a disowned resource", r.ID())

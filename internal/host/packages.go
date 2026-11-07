@@ -227,13 +227,9 @@ func aptIndexStale(sys Sys) (bool, error) {
 
 // aptSourcesModified returns when an apt source file last changed.
 func aptSourcesModified(sys Sys) (time.Time, error) {
-	paths := []string{"/etc/apt/sources.list"}
-	names, err := sys.ReadDir("/etc/apt/sources.list.d")
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	paths, err := aptSourcePaths(sys)
+	if err != nil {
 		return time.Time{}, err
-	}
-	for _, n := range names {
-		paths = append(paths, "/etc/apt/sources.list.d/"+n)
 	}
 	var latest time.Time
 	for _, p := range paths {
@@ -249,6 +245,19 @@ func aptSourcesModified(sys Sys) (time.Time, error) {
 		}
 	}
 	return latest, nil
+}
+
+// aptSourcePaths lists sources.list and the entries in AptSourcesDir.
+func aptSourcePaths(sys Sys) ([]string, error) {
+	paths := []string{"/etc/apt/sources.list"}
+	names, err := sys.ReadDir(AptSourcesDir)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, err
+	}
+	for _, n := range names {
+		paths = append(paths, AptSourcesDir+"/"+n)
+	}
+	return paths, nil
 }
 
 type dpkgPackage struct {
@@ -409,6 +418,59 @@ func (r AptRepo) key(ctx context.Context, sys Sys) ([]byte, string, error) {
 		ext = "asc"
 	}
 	return key, AptKeyringsDir + "/" + r.Name + "." + ext, nil
+}
+
+func (r DisownedAptSources) Check(ctx context.Context, sys Sys) (Change, error) {
+	extra, err := r.Leftovers(ctx, sys)
+	return leftoverWarning(extra, "no apt repo declares these"), err
+}
+
+func (r DisownedAptSources) Apply(context.Context, Sys) error { return nil }
+
+func (r DisownedAptSources) Leftovers(ctx context.Context, sys Sys) ([]string, error) {
+	declared := state(ctx).declared
+	sources, err := undeclaredIn(sys, declared, AptSourcesDir, false)
+	if err != nil {
+		return nil, err
+	}
+	keys, err := undeclaredIn(sys, declared, AptKeyringsDir, false)
+	if err != nil {
+		return nil, err
+	}
+	// Removing a key that a source still refers to would break the source.
+	paths, err := aptSourcePaths(sys)
+	if err != nil {
+		return nil, err
+	}
+	var referenced strings.Builder
+	for _, path := range paths {
+		info, err := sys.Stat(path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !info.IsRegular() {
+			continue
+		}
+		content, err := sys.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		referenced.Write(content)
+		referenced.WriteByte('\n')
+	}
+	for _, key := range keys {
+		if !strings.Contains(referenced.String(), key) {
+			sources = append(sources, key)
+		}
+	}
+	return sources, nil
+}
+
+func (r DisownedAptSources) Prune(_ context.Context, sys Sys, item string) error {
+	return sys.RemoveAll(item)
 }
 
 func (r AURPackage) Check(ctx context.Context, sys Sys) (Change, error) {

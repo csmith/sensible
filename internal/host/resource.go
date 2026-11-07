@@ -99,6 +99,7 @@ var resourceTypes = registry(
 	Symlink{},
 	Package{},
 	AptRepo{},
+	DisownedAptSources{},
 	AURPackage{},
 	DisownedPackages{},
 	Service{},
@@ -219,6 +220,12 @@ type AptRepo struct {
 	Components    []string `json:"components"`
 	SigningKeyURL string   `json:"signing_key_url"`
 }
+
+// DisownedAptSources warns about the apt sources in AptSourcesDir that no
+// AptRepo earlier in the same run declared, and the keys in AptKeyringsDir
+// that no AptRepo declared and no source refers to. They may be the
+// distribution's own, so applying never removes them, but pruning does.
+type DisownedAptSources struct{}
 
 // AURPackage installs a package from the AUR with paru.
 type AURPackage struct {
@@ -444,6 +451,8 @@ func (r Symlink) ID() string { return "symlink:" + r.Path }
 func (r Package) ID() string { return "package:" + r.Name }
 
 func (r AptRepo) ID() string { return "apt-repo:" + r.Name }
+
+func (r DisownedAptSources) ID() string { return "disowned-apt-sources" }
 
 func (r AURPackage) ID() string { return "aur:" + r.Name }
 

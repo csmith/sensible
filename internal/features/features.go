@@ -69,9 +69,8 @@ func Resources(h Host) (host.ResourceList, error) {
 		usersCleanUp,
 		// After the stacks that may still have been mounting them.
 		certsCleanUp,
-		// After everything that writes sudoers files or adds apt repos.
+		// After everything that writes sudoers files.
 		sudoersCleanUp,
-		aptCleanUp,
 		// Last, so it sees every path the others declare.
 		disowned,
 	}
@@ -213,7 +212,11 @@ func disowned(h Host) ([]host.Resource, error) {
 	}
 	switch h.Facts.OSFamily {
 	case debian:
-		rs = append(rs, host.Disowned{Name: "pam_rssh package", Paths: []string{pamRSSHDebGlob}})
+		rs = append(
+			rs,
+			host.Disowned{Name: "pam_rssh package", Paths: []string{pamRSSHDebGlob}},
+			host.DisownedAptSources{},
+		)
 	case archLinux:
 		links := make([]string, len(vimLinks))
 		for i, n := range vimLinks {

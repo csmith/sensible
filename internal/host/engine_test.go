@@ -299,40 +299,55 @@ func TestEngineApply_LostConnectionStopsAfterCurrentResource(t *testing.T) {
 	assert.Equal(t, []string{"config", "reload"}, log)
 }
 
-func TestEngine_OwnedDirKeepsAptRepoFiles(t *testing.T) {
+func TestEngine_DisownedAptSourcesKeepsWhatApplyDoesNotDeclare(t *testing.T) {
 	sys := newDebianSys(t)
 	sys.urls["https://pkgs.example.com/key.gpg"] = "\x99binary"
-	sys.write(AptSourcesDir+"/example.sources", "")
-	sys.write(AptSourcesDir+"/stray.list", "")
+	sys.write(AptSourcesDir+"/debian.sources", "Types: deb\nSigned-By: /etc/apt/keyrings/debian.gpg\n")
+	sys.write(AptKeyringsDir+"/debian.gpg", "")
 	sys.write(AptKeyringsDir+"/example.asc", "")
-	sys.write(AptKeyringsDir+"/stray.gpg", "")
+	list := ResourceList{
+		AptRepo{
+			Name:          "example",
+			URIs:          []string{"https://pkgs.example.com/debian"},
+			Suites:        []string{"trixie"},
+			SigningKeyURL: "https://pkgs.example.com/key.gpg",
+		},
+		DisownedAptSources{},
+	}
 	e := newTestEngine()
 	e.sys = sys
 
-	_, err := e.apply(
-		context.Background(),
-		ResourceList{
-			AptRepo{
-				Name:          "example",
-				URIs:          []string{"https://pkgs.example.com/debian"},
-				Suites:        []string{"trixie"},
-				SigningKeyURL: "https://pkgs.example.com/key.gpg",
-			},
-			OwnedDir{Path: AptSourcesDir},
-			OwnedDir{Path: AptKeyringsDir},
-		},
-		-1,
-		func(any) error { return nil },
-	)
-
+	_, err := e.apply(context.Background(), list, -1, func(any) error { return nil })
 	require.NoError(t, err)
+
 	names, err := sys.ReadDir(AptSourcesDir)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"example.sources"}, names)
-	// The key isn't armored, so the old armored copy goes too.
+	assert.Equal(t, []string{"debian.sources", "example.sources"}, names)
 	names, err = sys.ReadDir(AptKeyringsDir)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"example.gpg"}, names)
+	assert.Equal(t, []string{"debian.gpg", "example.asc", "example.gpg"}, names)
+
+	// The key isn't armored, so the old armored copy is left over. The
+	// distribution's key is kept while its source refers to it.
+	leftovers := func() []string {
+		var found []Leftovers
+		_, err := e.leftovers(
+			context.Background(),
+			list,
+			func(l Leftovers) error {
+				found = append(found, l)
+				return nil
+			},
+		)
+		require.NoError(t, err)
+		require.Len(t, found, 1)
+		return found[0].Items
+	}
+	assert.Equal(t, []string{AptSourcesDir + "/debian.sources", AptKeyringsDir + "/example.asc"}, leftovers())
+
+	require.NoError(t, e.remove(context.Background(), list, "disowned-apt-sources", AptSourcesDir+"/debian.sources"))
+	assert.False(t, sys.exists(AptSourcesDir+"/debian.sources"))
+	assert.Equal(t, []string{AptKeyringsDir + "/debian.gpg", AptKeyringsDir + "/example.asc"}, leftovers())
 }
 
 func TestEngine_OwnedDirSeesFilesDeclaredEarlier(t *testing.T) {
