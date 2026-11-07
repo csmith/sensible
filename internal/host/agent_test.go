@@ -120,7 +120,6 @@ func TestServe_HelloFactsCheckApplyBye(t *testing.T) {
 	assert.Equal(t, "aarch64", facts.Arch)
 	assert.Equal(t, "192.0.2.10", facts.DefaultIPv4)
 	assert.Empty(t, facts.DefaultIPv6)
-	assert.Equal(t, "/home/alice", facts.Users["alice"].Home)
 
 	list := ResourceList{
 		scriptedResource{Name: "a", Drift: true, Notify: ResourceList{scriptedResource{Name: "h"}}},

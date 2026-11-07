@@ -182,17 +182,12 @@ func gatherFacts(ctx context.Context, sys Sys) (Facts, error) {
 	if err != nil {
 		return Facts{}, err
 	}
-	passwd, err := sys.ReadFile("/etc/passwd")
-	if err != nil {
-		return Facts{}, err
-	}
 	return Facts{
 		OSFamily:    family,
 		Release:     release,
 		Arch:        strings.TrimSpace(uname.Stdout),
 		DefaultIPv4: defaultSource(ctx, sys, "-4", "1.1.1.1"),
 		DefaultIPv6: defaultSource(ctx, sys, "-6", "2606:4700:4700::1111"),
-		Users:       parsePasswd(string(passwd)),
 	}, nil
 }
 

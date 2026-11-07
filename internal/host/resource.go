@@ -50,10 +50,9 @@ type Facts struct {
 	// Release is the distribution's codename, e.g. "bookworm". Empty on Arch.
 	Release string `json:"release"`
 	// Arch is the machine as reported by uname, e.g. "x86_64" or "aarch64".
-	Arch        string                `json:"arch"`
-	DefaultIPv4 string                `json:"default_ipv4"`
-	DefaultIPv6 string                `json:"default_ipv6"`
-	Users       map[string]PasswdUser `json:"users"`
+	Arch        string `json:"arch"`
+	DefaultIPv4 string `json:"default_ipv4"`
+	DefaultIPv6 string `json:"default_ipv6"`
 }
 
 type PasswdUser struct {
