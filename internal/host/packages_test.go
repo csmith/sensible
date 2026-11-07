@@ -430,7 +430,7 @@ func TestDisownedPackages(t *testing.T) {
 	st := newRunState()
 	st.declare(Package{Name: "zsh"})
 	ctx := withRunState(context.Background(), st)
-	r := DisownedPackages{Name: "test", Packages: []string{"vim", "zsh", "gone", "xxd"}}
+	r := DisownedPackages{}
 
 	change, err := r.Check(ctx, sys)
 	require.NoError(t, err)
@@ -449,12 +449,19 @@ func TestDisownedPackages(t *testing.T) {
 	assert.True(t, sys.exists(packageRecordPath("zsh")))
 }
 
+func TestDisownedPackages_NothingRecorded(t *testing.T) {
+	sys := newArchSys(t)
+	change, err := DisownedPackages{}.Check(withRunState(context.Background(), newRunState()), sys)
+	require.NoError(t, err)
+	assert.Equal(t, Change{InSync: true}, change)
+}
+
 func TestDisownedPackages_Apt(t *testing.T) {
 	sys := newDebianSys(t)
 	sys.write(packageRecordPath("pam-rssh"), "")
 	sys.on("apt-get -y -q remove pam-rssh", "", 0)
 	ctx := withRunState(context.Background(), newRunState())
-	r := DisownedPackages{Name: "pam_rssh", Packages: []string{"pam-rssh"}}
+	r := DisownedPackages{}
 
 	got, err := r.Leftovers(ctx, sys)
 	require.NoError(t, err)

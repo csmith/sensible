@@ -229,16 +229,11 @@ type AURPackage struct {
 	Record bool `json:"record,omitempty"`
 }
 
-// DisownedPackages warns about the packages in Names that sensible installed
-// with Record, but that no Package or AURPackage earlier in the same run
-// declares. Applying forgets the records of packages that have gone since,
-// and never removes the packages, but pruning does.
-type DisownedPackages struct {
-	// Name says what installed them, e.g. "pam_rssh", and identifies the
-	// resource.
-	Name     string   `json:"name"`
-	Packages []string `json:"packages"`
-}
+// DisownedPackages warns about the packages sensible installed with Record
+// that no Package or AURPackage earlier in the same run declares. Applying
+// forgets the records of packages that have gone since, and never removes
+// the packages, but pruning does.
+type DisownedPackages struct{}
 
 // Service manages a systemd unit's state.
 type Service struct {
@@ -345,6 +340,9 @@ type Command struct {
 	// CheckArgv exiting 0 means in sync. Any other status, or the program
 	// not existing, means ApplyArgv is run.
 	CheckArgv []string `json:"check"`
+	// Watch, if set, replaces CheckArgv: ApplyArgv runs only if one of the
+	// resources with these IDs changed earlier in the run.
+	Watch     []string `json:"watch,omitempty"`
 	ApplyArgv []string `json:"apply"`
 	// User runs both commands. Empty means root.
 	User string `json:"user,omitempty"`
@@ -449,7 +447,7 @@ func (r AptRepo) ID() string { return "apt-repo:" + r.Name }
 
 func (r AURPackage) ID() string { return "aur:" + r.Name }
 
-func (r DisownedPackages) ID() string { return "disowned-packages:" + r.Name }
+func (r DisownedPackages) ID() string { return "disowned-packages" }
 
 func (r Service) ID() string { return "service:" + r.Name }
 

@@ -447,6 +447,22 @@ func TestCommand(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotYetCheckable)
 }
 
+func TestCommand_WatchRunsOnlyAfterAChange(t *testing.T) {
+	sys := newTestSys(t)
+	st := newRunState()
+	ctx := withRunState(context.Background(), st)
+	r := Command{Name: "start", Watch: []string{"package:docker"}, ApplyArgv: []string{"start"}}
+
+	change, err := r.Check(ctx, sys)
+	require.NoError(t, err)
+	assert.True(t, change.InSync)
+
+	st.modified["package:docker"] = true
+	change, err = r.Check(ctx, sys)
+	require.NoError(t, err)
+	assert.False(t, change.InSync)
+}
+
 func TestTailscaleSet(t *testing.T) {
 	sys := newTestSys(t)
 	sys.on("tailscale status --json", `{"BackendState":"Running"}`, 0)

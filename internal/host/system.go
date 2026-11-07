@@ -645,6 +645,13 @@ func (r Command) Check(ctx context.Context, sys Sys) (Change, error) {
 			return Change{}, err
 		}
 	}
+	if len(r.Watch) > 0 {
+		modified := state(ctx).modified
+		if slices.ContainsFunc(r.Watch, func(id string) bool { return modified[id] }) {
+			return drift("run " + strings.Join(r.ApplyArgv, " ") + "\n"), nil
+		}
+		return Change{InSync: true}, nil
+	}
 	res, err := sys.Run(ctx, Cmd{Argv: r.CheckArgv, User: r.User, Env: r.Env})
 	// A check that can't run, e.g. `paru --version` before paru is
 	// installed, means the command needs applying.
@@ -658,7 +665,7 @@ func (r Command) Check(ctx context.Context, sys Sys) (Change, error) {
 }
 
 func (r Command) Apply(ctx context.Context, sys Sys) error {
-	// Commands can install packages, as Docker's does on Arch.
+	// Commands can install packages, as paru's build does.
 	res, err := runOK(ctx, sys, Cmd{Argv: r.ApplyArgv, User: r.User, Env: r.Env})
 	return explainStaleSyncDB(res, err)
 }

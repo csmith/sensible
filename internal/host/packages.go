@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
-	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -507,7 +506,7 @@ func (r DisownedPackages) Apply(ctx context.Context, sys Sys) error {
 // "package <name>".
 func (r DisownedPackages) Leftovers(ctx context.Context, sys Sys) ([]string, error) {
 	var extra []string
-	err := r.eachRecorded(
+	err := eachRecorded(
 		ctx,
 		sys,
 		func(name string, installed bool) {
@@ -521,8 +520,8 @@ func (r DisownedPackages) Leftovers(ctx context.Context, sys Sys) ([]string, err
 
 func (r DisownedPackages) Prune(ctx context.Context, sys Sys, item string) error {
 	name, ok := strings.CutPrefix(item, "package ")
-	if !ok || !slices.Contains(r.Packages, name) {
-		return fmt.Errorf("%q isn't one of %s's packages", item, r.Name)
+	if !ok || name == "" {
+		return fmt.Errorf("%q isn't a package", item)
 	}
 	family, err := osFamily(ctx, sys)
 	if err != nil {
@@ -538,7 +537,7 @@ func (r DisownedPackages) Prune(ctx context.Context, sys Sys, item string) error
 // installed.
 func (r DisownedPackages) goneRecords(ctx context.Context, sys Sys) ([]string, error) {
 	var gone []string
-	err := r.eachRecorded(
+	err := eachRecorded(
 		ctx,
 		sys,
 		func(name string, installed bool) {
@@ -550,22 +549,24 @@ func (r DisownedPackages) goneRecords(ctx context.Context, sys Sys) ([]string, e
 	return gone, err
 }
 
-// eachRecorded calls fn for each of r's packages that nothing earlier in the
-// run declares, and that has a record.
-func (r DisownedPackages) eachRecorded(ctx context.Context, sys Sys, fn func(name string, installed bool)) error {
+// eachRecorded calls fn for each recorded package that nothing earlier in
+// the run declares.
+func eachRecorded(ctx context.Context, sys Sys, fn func(name string, installed bool)) error {
+	names, err := sys.ReadDir(InstalledDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
 	family, err := osFamily(ctx, sys)
 	if err != nil {
 		return err
 	}
 	declared := state(ctx).packages
-	for _, name := range r.Packages {
+	for _, name := range names {
 		if declared[name] {
 			continue
-		}
-		if _, err := sys.Stat(packageRecordPath(name)); errors.Is(err, fs.ErrNotExist) {
-			continue
-		} else if err != nil {
-			return err
 		}
 		installed, err := packageInstalled(ctx, sys, family, name)
 		if err != nil {

@@ -209,7 +209,7 @@ func disowned(h Host) ([]host.Resource, error) {
 		// Docker reads its settings only when it starts, and restarting it
 		// would stop the containers, so it's left to pick up the change.
 		host.Disowned{Name: "docker", Paths: []string{dockerDaemonFile, dockerClientFile}, Recorded: true},
-		host.DisownedPackages{Name: "pam_rssh", Packages: []string{pamRSSHPackage(h)}},
+		host.DisownedPackages{},
 	}
 	switch h.Facts.OSFamily {
 	case debian:
@@ -277,6 +277,17 @@ func installPackages(names ...string) []host.Resource {
 	rs := make([]host.Resource, len(names))
 	for i, n := range names {
 		rs[i] = host.Package{Name: n}
+	}
+	return rs
+}
+
+// recordedPackages installs packages that prune may offer to remove once
+// nothing declares them. Packages other things may rely on, such as a login
+// shell, use installPackages instead.
+func recordedPackages(names ...string) []host.Resource {
+	rs := make([]host.Resource, len(names))
+	for i, n := range names {
+		rs[i] = host.Package{Name: n, Record: true}
 	}
 	return rs
 }

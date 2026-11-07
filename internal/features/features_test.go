@@ -345,7 +345,7 @@ func TestResources_featuresTurnOff(t *testing.T) {
 		{
 			name:    "no docker",
 			modify:  func(h *Host) { h.Config.Docker = nil },
-			absent:  []string{"package:docker", "command:install and start docker", "docker-network:web"},
+			absent:  []string{"package:docker", "command:start docker", "docker-network:web"},
 			present: []string{"docker-networks"},
 		},
 		{
@@ -1226,15 +1226,46 @@ func TestResources_disownedMatchWhatFeaturesWrite(t *testing.T) {
 						assertWritten(t, rs, d, pattern)
 					}
 				}
-				packages, ok := find[host.DisownedPackages](rs, "disowned-packages:pam_rssh")
-				require.True(t, ok)
-				for _, name := range packages.Packages {
-					assert.True(
-						t,
-						slices.ContainsFunc(rs, func(r host.Resource) bool { return recordedInstall(r, name) }),
-						"nothing installs %s with a record",
-						name,
-					)
+				_, ok = find[host.DisownedPackages](rs, "disowned-packages")
+				assert.True(t, ok)
+			},
+		)
+	}
+}
+
+func TestResources_recordsOnlyPackagesSafeToPrune(t *testing.T) {
+	for osFamily, docker := range map[string]string{archLinux: "docker", debian: "docker-ce"} {
+		t.Run(
+			osFamily,
+			func(t *testing.T) {
+				h := testHost(osFamily)
+				if osFamily == debian {
+					h.Config.AUR.Packages = nil
+				}
+				rs, err := Resources(h)
+				require.NoError(t, err)
+
+				recorded := map[string]bool{}
+				for _, r := range rs {
+					switch r := r.(type) {
+					case host.Package:
+						if r.Record {
+							recorded[r.Name] = true
+						}
+					case host.AURPackage:
+						if r.Record {
+							recorded[r.Name] = true
+						}
+					default:
+					}
+				}
+				wanted := append([]string{docker, pamRSSHPackage(h)}, h.Config.Packages.Install...)
+				wanted = append(wanted, h.Config.AUR.Packages...)
+				for _, name := range wanted {
+					assert.True(t, recorded[name], "%s isn't recorded", name)
+				}
+				for _, name := range []string{"git", "base-devel", "sudo", "zsh", "tailscale"} {
+					assert.False(t, recorded[name], "%s is recorded, but other things may rely on it", name)
 				}
 			},
 		)
@@ -1284,17 +1315,6 @@ func assertWritten(t *testing.T, rs host.ResourceList, d host.Disowned, pattern 
 		}
 	}
 	assert.NotZero(t, written, "nothing writes %s", pattern)
-}
-
-func recordedInstall(r host.Resource, name string) bool {
-	switch r := r.(type) {
-	case host.Package:
-		return r.Name == name && r.Record && !r.Absent
-	case host.AURPackage:
-		return r.Name == name && r.Record
-	default:
-		return false
-	}
 }
 
 func writtenPath(r host.Resource) (string, bool) {

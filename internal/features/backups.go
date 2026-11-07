@@ -51,7 +51,7 @@ func backups(h Host) ([]host.Resource, error) {
 	}
 
 	return append(
-		installPackages("restic", "rclone"),
+		recordedPackages("restic", "rclone"),
 		host.Dir{Path: path.Dir(resticEnvFile), Owner: "root", Group: "root", Mode: 0o755},
 		host.File{
 			Path:    resticEnvFile,

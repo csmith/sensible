@@ -78,7 +78,7 @@ func packages(h Host) ([]host.Resource, error) {
 	for _, n := range c.Remove {
 		rs = append(rs, host.Package{Name: n, Absent: true})
 	}
-	return append(rs, installPackages(c.Install...)...), nil
+	return append(rs, recordedPackages(c.Install...)...), nil
 }
 
 func aur(h Host) ([]host.Resource, error) {
@@ -128,7 +128,7 @@ func aurPackages(h Host, names ...string) ([]host.Resource, error) {
 		},
 	)
 	for _, n := range names {
-		rs = append(rs, host.AURPackage{Name: n, BuildUser: aurUser})
+		rs = append(rs, host.AURPackage{Name: n, BuildUser: aurUser, Record: true})
 	}
 	return rs, nil
 }
@@ -270,14 +270,7 @@ func pamRSSHPackage(h Host) string {
 func installPAMRSSH(h Host) ([]host.Resource, string, error) {
 	if h.Facts.OSFamily == archLinux {
 		rs, err := aurPackages(h, pamRSSHPackage(h))
-		if err != nil {
-			return nil, "", err
-		}
-		// Recorded so prune can offer to remove it once it's off.
-		pkg := rs[len(rs)-1].(host.AURPackage)
-		pkg.Record = true
-		rs[len(rs)-1] = pkg
-		return rs, "/usr/lib/security/pam_rssh.so", nil
+		return rs, "/usr/lib/security/pam_rssh.so", err
 	}
 
 	distro, err := vendorDistro(h, "pam_rssh")
@@ -382,7 +375,7 @@ func docker(h Host) ([]host.Resource, error) {
 		)
 		rs = append(
 			rs,
-			installPackages(
+			recordedPackages(
 				"docker-ce",
 				"docker-ce-cli",
 				"containerd.io",
@@ -394,19 +387,15 @@ func docker(h Host) ([]host.Resource, error) {
 		// Arch's packages don't start Docker, so it's started when it's first
 		// installed. Existing installs are left as they are, e.g. if they rely
 		// on socket activation.
+		rs = append(rs, recordedPackages("docker", "docker-compose")...)
 		rs = append(
 			rs,
 			host.Command{
-				Name:      "install and start docker",
-				CheckArgv: []string{"test", "-e", "/usr/bin/dockerd"},
-				ApplyArgv: []string{
-					"sh",
-					"-c",
-					"pacman -S --needed --noconfirm docker docker-compose && systemctl enable --now docker",
-				},
+				Name:      "start docker",
+				Watch:     []string{host.Package{Name: "docker"}.ID()},
+				ApplyArgv: []string{"systemctl", "enable", "--now", "docker"},
 			},
 		)
-		rs = append(rs, installPackages("docker", "docker-compose")...)
 	}
 	// JSON has no comments for a header, so the files are recorded instead.
 	if c.Daemon != nil || len(c.Auths) > 0 {
