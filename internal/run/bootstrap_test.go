@@ -1,9 +1,11 @@
 package run
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -288,9 +290,80 @@ func TestRotate_setsPasswordAndKeyThroughExistingAgent(t *testing.T) {
 func TestBootstrap_acceptsAnyAccount(t *testing.T) {
 	_, dir, _ := testRepo(t)
 	t.Setenv("SSH_AUTH_SOCK", "")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
 
-	err := Bootstrap(t.Context(), BootstrapOptions{ConfigDir: dir, Host: "acidburn", User: "deploy"})
-	assert.ErrorContains(t, err, "no SSH agent")
+	err := Bootstrap(ctx, BootstrapOptions{ConfigDir: dir, Host: "acidburn", User: "deploy"})
+	assert.ErrorIs(t, err, context.Canceled, "should get as far as connecting")
+}
+
+type sudoFixture struct {
+	accepted map[string]bool
+	commands []string
+	stdins   []string
+	prompts  int
+}
+
+func (f *sudoFixture) run(command string, stdin io.Reader) error {
+	f.commands = append(f.commands, command)
+	in := ""
+	if stdin != nil {
+		data, err := io.ReadAll(stdin)
+		if err != nil {
+			return err
+		}
+		in = string(data)
+	}
+	f.stdins = append(f.stdins, in)
+	if !f.accepted[command+" "+in] {
+		return errors.New("sudo: a password is required")
+	}
+	return nil
+}
+
+func (f *sudoFixture) password() (string, error) {
+	f.prompts++
+	return "hunter2", nil
+}
+
+func TestSudoShell_usesSudoAsItIsWhenItNeedsNoPassword(t *testing.T) {
+	f := &sudoFixture{accepted: map[string]bool{"sudo -n true ": true}}
+
+	command, input, err := sudoShell(f.run, f.password)
+
+	require.NoError(t, err)
+	assert.Equal(t, "sudo sh -s", command)
+	assert.Empty(t, input)
+	assert.Zero(t, f.prompts)
+}
+
+func TestSudoShell_givesThePasswordAheadOfTheScript(t *testing.T) {
+	f := &sudoFixture{accepted: map[string]bool{"sudo -k -S -p '' true hunter2\n": true}}
+
+	command, input, err := sudoShell(f.run, f.password)
+
+	require.NoError(t, err)
+	assert.Equal(t, "sudo -k -S -p '' sh -s", command)
+	assert.Equal(t, "hunter2\n", input)
+	assert.Equal(t, 1, f.prompts)
+}
+
+func TestSudoShell_rejectedPasswordIsReported(t *testing.T) {
+	f := &sudoFixture{}
+
+	_, _, err := sudoShell(f.run, f.password)
+
+	require.ErrorContains(t, err, "a password is required")
+	assert.Equal(t, []string{"sudo -n true", "sudo -k -S -p '' true"}, f.commands)
+}
+
+func TestSudoShell_passwordPromptFailureIsReported(t *testing.T) {
+	f := &sudoFixture{}
+
+	_, _, err := sudoShell(f.run, func() (string, error) { return "", errNoTerminal })
+
+	require.ErrorIs(t, err, errNoTerminal)
+	assert.Equal(t, []string{"sudo -n true"}, f.commands)
 }
 
 func TestBootstrap_thisMachineRefusesUser(t *testing.T) {

@@ -31,8 +31,9 @@ import (
 type BootstrapOptions struct {
 	ConfigDir string
 	Host      string
-	// User is the account to log in as with the SSH agent's keys. Root may
-	// also use a password; other accounts install through sudo. With Rotate
+	// User is the account to log in as, with the SSH agent's keys or a
+	// password. Accounts other than root install through sudo, which is
+	// given a password if it asks for one. With Rotate
 	// it may be empty, in which case the host's existing sensible access is
 	// used. It must be empty for the machine this runs on, which is set up
 	// with sudo directly.
@@ -92,6 +93,7 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 		builds:             NewEmbeddedBuilds(),
 		known:              entry.HostKeys,
 		confirm:            confirmOnTerminal,
+		askPassword:        passwordFromTerminal,
 		hostKeyFingerprint: opts.HostKey,
 	}
 	step := "installed credentials and agent"
@@ -170,12 +172,13 @@ func sshAgent(ctx context.Context) sshagent.ExtendedAgent {
 }
 
 type bootstrapper struct {
-	name    string
-	address string
-	creds   credentials
-	builds  Builds
-	known   []config.HostKey
-	confirm func(prompt string) (bool, error)
+	name        string
+	address     string
+	creds       credentials
+	builds      Builds
+	known       []config.HostKey
+	confirm     func(prompt string) (bool, error)
+	askPassword func(prompt string) (string, error)
 	// hostKeyFingerprint, if set, replaces the confirmation of a new key.
 	hostKeyFingerprint string
 	// newHostKey is a key accepted during this bootstrap, to be saved once
@@ -190,35 +193,30 @@ func (b *bootstrapper) install(ctx context.Context, user string, keyring sshagen
 	if keyring != nil {
 		auth = append(auth, ssh.PublicKeysCallback(keyring.Signers))
 	}
-	if user == "root" {
-		var password string
-		ask := func() (string, error) {
-			if password != "" {
-				return password, nil
-			}
-			var err error
-			password, err = passwordFromTerminal(fmt.Sprintf("root@%s password: ", b.name))
-			return password, err
+	var password string
+	ask := func() (string, error) {
+		if password != "" {
+			return password, nil
 		}
-		answer := func(_, _ string, questions []string, echos []bool) ([]string, error) {
-			answers := make([]string, len(questions))
-			for i := range questions {
-				if echos[i] {
-					return nil, errors.New("unexpected keyboard-interactive question")
-				}
-				p, err := ask()
-				if err != nil {
-					return nil, err
-				}
-				answers[i] = p
+		var err error
+		password, err = b.askPassword(fmt.Sprintf("%s@%s password: ", user, b.name))
+		return password, err
+	}
+	answer := func(_, _ string, questions []string, echos []bool) ([]string, error) {
+		answers := make([]string, len(questions))
+		for i := range questions {
+			if echos[i] {
+				return nil, errors.New("unexpected keyboard-interactive question")
 			}
-			return answers, nil
+			p, err := ask()
+			if err != nil {
+				return nil, err
+			}
+			answers[i] = p
 		}
-		auth = append(auth, ssh.PasswordCallback(ask), ssh.KeyboardInteractive(answer))
+		return answers, nil
 	}
-	if len(auth) == 0 {
-		return errors.New("no SSH agent to authenticate with (SSH_AUTH_SOCK isn't set)")
-	}
+	auth = append(auth, ssh.PasswordCallback(ask), ssh.KeyboardInteractive(answer))
 
 	client, err := dialSSH(
 		ctx,
@@ -235,7 +233,8 @@ func (b *bootstrapper) install(ctx context.Context, user string, keyring sshagen
 	}
 	defer func() { _ = client.Close() }()
 	sudo := user != "root"
-	if sudo {
+	forward := sudo && keyring != nil
+	if forward {
 		if err := sshagent.ForwardToAgent(client, keyring); err != nil {
 			return err
 		}
@@ -263,15 +262,50 @@ func (b *bootstrapper) install(ctx context.Context, user string, keyring sshagen
 		return fmt.Errorf("uploading agent: %w", err)
 	}
 
-	script := bootstrapScript(b.creds.password, strings.TrimSpace(tmp), build.Hash, b.creds.authorizedKey, false)
-	command := "sh -s"
+	command, input := "sh -s", ""
 	if sudo {
-		command = "sudo sh -s"
+		run := func(command string, stdin io.Reader) error {
+			_, err := runRemote(client, command, stdin, forward)
+			return err
+		}
+		sudoPassword := func() (string, error) {
+			if password != "" {
+				return password, nil
+			}
+			return b.askPassword(fmt.Sprintf("%s@%s sudo password: ", user, b.name))
+		}
+		if command, input, err = sudoShell(run, sudoPassword); err != nil {
+			return err
+		}
 	}
-	if _, err := runRemote(client, command, strings.NewReader(script), sudo); err != nil {
+	input += bootstrapScript(b.creds.password, strings.TrimSpace(tmp), build.Hash, b.creds.authorizedKey, false)
+	if _, err := runRemote(client, command, strings.NewReader(input), forward); err != nil {
 		return fmt.Errorf("running setup: %w", err)
 	}
 	return nil
+}
+
+// sudoShell returns a command that runs a script from stdin as root, and
+// what stdin must start with. Sudo that needs no password, such as with
+// NOPASSWD or pam_rssh, is used as it is; otherwise the password goes on
+// the first line of stdin, ahead of the script.
+func sudoShell(
+	run func(command string, stdin io.Reader) error,
+	password func() (string, error),
+) (string, string, error) {
+	if run("sudo -n true", nil) == nil {
+		return "sudo sh -s", "", nil
+	}
+	p, err := password()
+	if err != nil {
+		return "", "", err
+	}
+	// The password is checked on its own first, as sudo reads its retries
+	// from stdin, which would otherwise be the script.
+	if err := run("sudo -k -S -p '' true", strings.NewReader(p+"\n")); err != nil {
+		return "", "", fmt.Errorf("sudo: %w", err)
+	}
+	return "sudo -k -S -p '' sh -s", p + "\n", nil
 }
 
 // installLocal sets up the machine this runs on with sudo, which prompts on
