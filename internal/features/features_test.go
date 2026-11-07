@@ -1295,6 +1295,43 @@ func TestResources_disownedReloadsSSHD(t *testing.T) {
 
 		d, ok := find[host.Disowned](rs, "disowned:sshd")
 		require.True(t, ok)
-		assert.Equal(t, host.ResourceList{host.ServiceAction{Name: unit, Action: "reload"}}, d.Notify)
+		assert.Equal(
+			t,
+			host.ResourceList{host.ServiceAction{Name: unit, Action: "reload"}, sshdSocketRestart(h)},
+			d.Notify,
+		)
+	}
+}
+
+func TestResources_sshdListenSettingsRestartSocket(t *testing.T) {
+	for osFamily, unit := range map[string]string{archLinux: "sshd", debian: "ssh"} {
+		t.Run(
+			osFamily,
+			func(t *testing.T) {
+				h := testHost(osFamily)
+				h.Config.AUR.Packages = nil
+				h.Config.SSHD.Settings = map[string]string{
+					"MaxAuthTries":  "3",
+					"Port":          "2222",
+					"listenaddress": "192.0.2.1",
+				}
+				rs, err := Resources(h)
+				require.NoError(t, err)
+
+				settings, ok := find[host.File](rs, "file:"+sshdDropIn)
+				require.True(t, ok)
+				assert.Equal(t, managedLines([]string{"MaxAuthTries 3"}), settings.Content)
+				assert.Equal(t, host.ResourceList{host.ServiceAction{Name: unit, Action: "reload"}}, settings.Notify)
+
+				listen, ok := find[host.File](rs, "file:"+sshdListenDropIn)
+				require.True(t, ok)
+				assert.Equal(t, managedLines([]string{"Port 2222", "listenaddress 192.0.2.1"}), listen.Content)
+				require.Len(t, listen.Notify, 2)
+				assert.Equal(t, host.ServiceAction{Name: unit, Action: "reload"}, listen.Notify[0])
+				restart, ok := listen.Notify[1].(host.Command)
+				require.True(t, ok)
+				assert.Contains(t, restart.ApplyArgv[len(restart.ApplyArgv)-1], "systemctl restart "+unit+".socket")
+			},
+		)
 	}
 }

@@ -165,9 +165,14 @@ func sshdService(h Host) string {
 }
 
 const (
-	sshdConfig = "/etc/ssh/sshd_config"
-	sshdDropIn = "/etc/ssh/sshd_config.d/10-sensible.conf"
+	sshdConfig       = "/etc/ssh/sshd_config"
+	sshdDropIn       = "/etc/ssh/sshd_config.d/10-sensible.conf"
+	sshdListenDropIn = "/etc/ssh/sshd_config.d/10-sensible-listen.conf"
 )
+
+// sshdListenSettings say where sshd listens, lowercased. They have their own
+// file, as changing them means restarting the socket that starts sshd.
+var sshdListenSettings = []string{"addressfamily", "listenaddress", "port"}
 
 func sshd(h Host) ([]host.Resource, error) {
 	c := h.Config.SSHD
@@ -180,9 +185,13 @@ func sshd(h Host) ([]host.Resource, error) {
 	}
 	reload := host.ServiceAction{Name: svc, Action: "reload"}
 
-	lines := make([]string, 0, len(c.Settings))
+	var lines, listen []string
 	for _, k := range slices.Sorted(maps.Keys(c.Settings)) {
-		lines = append(lines, k+" "+c.Settings[k])
+		if slices.Contains(sshdListenSettings, strings.ToLower(k)) {
+			listen = append(listen, k+" "+c.Settings[k])
+		} else {
+			lines = append(lines, k+" "+c.Settings[k])
+		}
 	}
 
 	rs := []host.Resource{
@@ -198,6 +207,15 @@ func sshd(h Host) ([]host.Resource, error) {
 			Mode:     0o644,
 			Validate: sshdValidate,
 			Notify:   host.ResourceList{reload},
+		},
+		host.File{
+			Path:     sshdListenDropIn,
+			Content:  managedLines(listen),
+			Owner:    "root",
+			Group:    "root",
+			Mode:     0o644,
+			Validate: sshdValidate,
+			Notify:   host.ResourceList{reload, sshdSocketRestart(h)},
 		},
 	}
 	if h.Facts.OSFamily == archLinux {
@@ -236,4 +254,24 @@ func sshd(h Host) ([]host.Resource, error) {
 		)
 	}
 	return rs, nil
+}
+
+// sshdSocketRestart is a handler for changes to where sshd listens. Where a
+// socket starts sshd, as on Ubuntu, the socket holds the addresses, which a
+// generator reads from sshd_config when systemd reloads.
+func sshdSocketRestart(h Host) host.Command {
+	socket := sshdService(h) + ".socket"
+	return host.Command{
+		Name:      "restart " + socket + " if active",
+		CheckArgv: []string{"false"},
+		ApplyArgv: []string{
+			"sh",
+			"-c",
+			"set -eu\n" +
+				"if systemctl is-active --quiet " + socket + "; then\n" +
+				"\tsystemctl daemon-reload\n" +
+				"\tsystemctl restart " + socket + "\n" +
+				"fi\n",
+		},
+	}
 }

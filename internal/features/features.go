@@ -195,9 +195,12 @@ func disowned(h Host) ([]host.Resource, error) {
 	rs := []host.Resource{
 		host.Disowned{
 			Name:   "sshd",
-			Paths:  append([]string{sshdDropIn}, inHomes(".ssh/authorized_keys")...),
+			Paths:  append([]string{sshdDropIn, sshdListenDropIn}, inHomes(".ssh/authorized_keys")...),
 			Header: managedMark,
-			Notify: host.ResourceList{host.ServiceAction{Name: sshdService(h), Action: "reload"}},
+			Notify: host.ResourceList{
+				host.ServiceAction{Name: sshdService(h), Action: "reload"},
+				sshdSocketRestart(h),
+			},
 		},
 		host.Disowned{Name: "zsh", Paths: inHomes(".zshrc"), Header: managedMark},
 		host.Disowned{Name: "oh-my-zsh", Paths: []string{ohMyZshPath}},
