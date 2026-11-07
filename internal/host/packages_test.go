@@ -135,6 +135,8 @@ func TestPackage_PacmanDatabaseIsCachedUntilAChange(t *testing.T) {
 	assert.True(t, change.InSync)
 }
 
+const aptRelease = "/var/lib/apt/lists/deb.debian.org_debian_dists_trixie_InRelease"
+
 func newDebianSys(t *testing.T) *testSys {
 	sys := newTestSys(t)
 	sys.write("/etc/os-release", "ID=debian\nVERSION_CODENAME=trixie\n")
@@ -146,6 +148,7 @@ func newDebianSys(t *testing.T) *testSys {
 			"Package: pam-rssh\nStatus: install ok installed\nVersion: 1.2.1-1\n",
 	)
 	sys.write("/var/lib/apt/lists/lock", "")
+	sys.write(aptRelease, "")
 	require.NoError(t, os.Chtimes(sys.path("/var/lib/apt/lists"), sys.now, sys.now.Add(-10*time.Minute)))
 	return sys
 }
@@ -174,6 +177,8 @@ func TestPackage_AptAvailability(t *testing.T) {
 		name     string
 		policy   string
 		indexAge time.Duration
+		// emptyLists leaves the index with nothing fetched.
+		emptyLists bool
 		// sourcesChanged marks an apt source as changed earlier in the run.
 		sourcesChanged bool
 		wantDiff       string
@@ -208,6 +213,16 @@ func TestPackage_AptAvailability(t *testing.T) {
 			notYet:   true,
 		},
 		{
+			name:       "unknown with a recent but empty index",
+			indexAge:   10 * time.Minute,
+			emptyLists: true,
+			wantDiff:   "install package, after refreshing the package index\n",
+			wantApply: []string{
+				"apt-get -y -q update",
+				aptInstallGit,
+			},
+		},
+		{
 			name:           "unknown with a fresh index after a source changed",
 			indexAge:       10 * time.Minute,
 			sourcesChanged: true,
@@ -219,6 +234,9 @@ func TestPackage_AptAvailability(t *testing.T) {
 			tt.name,
 			func(t *testing.T) {
 				sys := newDebianSys(t)
+				if tt.emptyLists {
+					require.NoError(t, os.Remove(sys.path(aptRelease)))
+				}
 				require.NoError(t, os.Chtimes(sys.path("/var/lib/apt/lists"), sys.now, sys.now.Add(-tt.indexAge)))
 				sys.on("apt-cache policy git", tt.policy, 0)
 				sys.on("apt-get *", "", 0)

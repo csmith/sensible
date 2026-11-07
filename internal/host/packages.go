@@ -202,9 +202,13 @@ func refreshAptIndex(ctx context.Context, sys Sys) error {
 	return nil
 }
 
-// aptIndexStale reports whether the index is over an hour old, or older than
-// a source, as when a run added a repository then failed before updating.
+// aptIndexStale reports whether the index is missing, over an hour old, or
+// older than a source, as when a run added a repository then failed before
+// updating.
 func aptIndexStale(sys Sys) (bool, error) {
+	if fetched, err := aptListsFetched(sys); err != nil || !fetched {
+		return !fetched, err
+	}
 	for _, path := range []string{"/var/lib/apt/periodic/update-success-stamp", "/var/lib/apt/lists"} {
 		info, err := sys.Stat(path)
 		if errors.Is(err, fs.ErrNotExist) {
@@ -223,6 +227,25 @@ func aptIndexStale(sys Sys) (bool, error) {
 		return sources.After(info.ModTime), nil
 	}
 	return true, nil
+}
+
+// aptListsFetched reports whether apt-get update has fetched any repository.
+// The lists directory's own age doesn't show that: images often empty it,
+// leaving it newer than an hour with nothing in it.
+func aptListsFetched(sys Sys) (bool, error) {
+	names, err := sys.ReadDir("/var/lib/apt/lists")
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	for _, name := range names {
+		if strings.HasSuffix(name, "Release") {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // aptSourcesModified returns when an apt source file last changed.
