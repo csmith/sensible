@@ -54,6 +54,9 @@ type Stack struct {
 	// this stack rather than saved for the host, by name. Repo.SaveGenerated
 	// must save them before the stack is deployed with them.
 	Generated map[string]string
+	// Unused are the names of the values saved for this stack on the host
+	// that it no longer uses, in order.
+	Unused []string
 	// Migrations are in name order.
 	Migrations []Migration
 	// CertPaths are the certificate files the stack refers to with !cert,
@@ -387,6 +390,12 @@ func (r *Repo) renderStack(
 		return Stack{}, fmt.Errorf("%s: %w", migrationsKey, err)
 	}
 	s.Generated = c.gen.created
+	for name := range generated[def.name] {
+		if _, ok := c.gen.values[name]; !ok {
+			s.Unused = append(s.Unused, name)
+		}
+	}
+	slices.Sort(s.Unused)
 	s.CertPaths = c.certPaths
 
 	for _, rel := range def.files {

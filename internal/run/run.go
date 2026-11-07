@@ -96,23 +96,33 @@ func compiler(repo *config.Repo) func(target, host.Facts) (compiled, error) {
 }
 
 // unusedSecrets are the host's saved generated values for stacks it no
-// longer has. A stack whose volume directory is still declared keeps its
-// values, as the volumes may hold data that uses them.
+// longer has, and those its stacks no longer use. A removed stack whose
+// volume directory is still declared keeps its values, as the volumes may
+// hold data that uses them.
 func unusedSecrets(repo *config.Repo, name string, cfg config.Config) []savedSecrets {
 	saved := repo.Inventory().Hosts[name].Generated
 	var unused []savedSecrets
 	for _, stack := range slices.Sorted(maps.Keys(saved)) {
-		dir := filepath.Join(config.VolumesDir, stack)
-		if slices.ContainsFunc(cfg.Stacks, func(s config.Stack) bool { return s.Name == stack }) ||
-			slices.ContainsFunc(cfg.Volumes, func(v config.Volume) bool { return filepath.Dir(v.Path) == dir }) {
+		names := slices.Sorted(maps.Keys(saved[stack]))
+		inUse := false
+		if i := slices.IndexFunc(cfg.Stacks, func(s config.Stack) bool { return s.Name == stack }); i >= 0 {
+			names, inUse = cfg.Stacks[i].Unused, true
+		} else {
+			dir := filepath.Join(config.VolumesDir, stack)
+			if slices.ContainsFunc(cfg.Volumes, func(v config.Volume) bool { return filepath.Dir(v.Path) == dir }) {
+				continue
+			}
+		}
+		if len(names) == 0 {
 			continue
 		}
 		unused = append(
 			unused,
 			savedSecrets{
 				stack: stack,
-				names: slices.Sorted(maps.Keys(saved[stack])),
-				drop:  func() error { return repo.DropGenerated(name, stack) },
+				names: names,
+				inUse: inUse,
+				drop:  func() error { return repo.DropGenerated(name, stack, names) },
 			},
 		)
 	}
@@ -278,6 +288,9 @@ type compiled struct {
 type savedSecrets struct {
 	stack string
 	names []string
+	// inUse is set when the host still has the stack, which no longer
+	// uses these values.
+	inUse bool
 	drop  func() error
 }
 

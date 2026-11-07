@@ -559,7 +559,7 @@ func TestDropGenerated_dropsOnlyThatStack(t *testing.T) {
 	require.NoError(t, r.SaveGenerated("alpha", stacks))
 	require.NoError(t, r.SaveGenerated("beta", stacks))
 
-	require.NoError(t, r.DropGenerated("alpha", "old"))
+	require.NoError(t, r.DropGenerated("alpha", "old", []string{"db", "token"}))
 
 	for _, r := range []*Repo{r, tr.open(t)} {
 		alpha := r.Inventory().Hosts["alpha"].Generated
@@ -579,10 +579,37 @@ func TestDropGenerated_refusesValuesSetElsewhere(t *testing.T) {
 	writeFile(t, tr.dir, "hosts.d/extra.yml", "alpha:\n  generated:\n    old:\n      db: "+indent(secret, "      ")+"\n")
 	r = tr.open(t)
 
-	err = r.DropGenerated("alpha", "old")
+	err = r.DropGenerated("alpha", "old", []string{"db"})
 
 	require.ErrorContains(t, err, "extra.yml sets alpha's generated db for old")
 	assert.Contains(t, tr.open(t).Inventory().Hosts["alpha"].Generated, "old")
+}
+
+func TestDropGenerated_dropsOnlyTheNamedValues(t *testing.T) {
+	tr := newGeneratedRepo(t)
+	r := tr.open(t)
+	stacks := []Stack{{Name: "app", Generated: map[string]string{"db": "app-db", "old": "x", "older": "y"}}}
+	require.NoError(t, r.SaveGenerated("alpha", stacks))
+
+	require.NoError(t, r.DropGenerated("alpha", "app", []string{"old", "older"}))
+
+	app := tr.open(t).Inventory().Hosts["alpha"].Generated["app"]
+	assert.Equal(t, []string{"db"}, slices.Collect(maps.Keys(app)))
+}
+
+func TestHostConfig_unusedGeneratedValues(t *testing.T) {
+	tr := newGeneratedRepo(t)
+	r := tr.open(t)
+	saved := map[string]string{"db": "a", "old": "b", "older": "c", "token": "d"}
+	require.NoError(t, r.SaveGenerated("alpha", []Stack{{Name: "app", Generated: saved}}))
+
+	c, err := tr.open(t).HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"old", "older"}, c.Stacks[0].Unused)
+
+	beta, err := tr.open(t).HostConfig("beta", "debian")
+	require.NoError(t, err)
+	assert.Empty(t, beta.Stacks[0].Unused)
 }
 
 func TestHostConfig_composeEnv(t *testing.T) {

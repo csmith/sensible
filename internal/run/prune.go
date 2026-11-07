@@ -52,6 +52,8 @@ type leftover struct {
 	// label says what's removed, e.g. a path.
 	label  string
 	remove func() error
+	// note, if set, warns what removing it may affect.
+	note string
 	// after, if set, must be removed first, or this is kept.
 	after   *leftover
 	removed bool
@@ -105,7 +107,11 @@ func (r *Runner) Prune(ctx context.Context, targets []target) error {
 			out.item(out.p.dim("- " + l.h.name + ": " + l.label + "  kept with " + l.after.label))
 			continue
 		}
-		ok, err := r.Confirm(fmt.Sprintf("Remove %s from %s? [y/N] ", l.label, l.h.name))
+		prompt := fmt.Sprintf("Remove %s from %s? ", l.label, l.h.name)
+		if l.note != "" {
+			prompt += strings.ToUpper(l.note[:1]) + l.note[1:] + ". "
+		}
+		ok, err := r.Confirm(prompt + "[y/N] ")
 		if err != nil {
 			return errors.Join(err, failedErr(failed))
 		}
@@ -146,19 +152,34 @@ func (h *hostRun) findLeftovers() {
 }
 
 // findUnusedSecrets offers the values saved for stacks the host no longer
-// has. A stack's volume directory may hold data that uses them, so they're
-// only offered once it's gone: they come after the host's other leftovers,
-// and are kept unless the directory is removed first. If the host's
-// leftovers couldn't all be listed, the directory may be there unlisted.
+// has, and those its stacks no longer use. A removed stack's volume
+// directory may hold data that uses them, so they're only offered once it's
+// gone: they come after the host's other leftovers, and are kept unless the
+// directory is removed first. If the host's leftovers couldn't all be
+// listed, the directory may be there unlisted. A stack's own volumes are
+// still there, so its values come with a warning.
 func (h *hostRun) findUnusedSecrets() {
-	if len(h.unlisted) > 0 {
-		return
-	}
 	volumes := slices.Clone(h.leftovers)
 	for _, s := range h.unusedSecrets {
+		names := " (" + strings.Join(s.names, ", ") + ")"
+		if s.inUse {
+			h.leftovers = append(
+				h.leftovers,
+				&leftover{
+					h:      h,
+					label:  "generated secrets " + s.stack + " no longer uses" + names,
+					note:   "data in its volumes may still use them",
+					remove: s.drop,
+				},
+			)
+			continue
+		}
+		if len(h.unlisted) > 0 {
+			continue
+		}
 		l := &leftover{
 			h:      h,
-			label:  "generated secrets for " + s.stack + " (" + strings.Join(s.names, ", ") + ")",
+			label:  "generated secrets for " + s.stack + names,
 			remove: s.drop,
 		}
 		dir := filepath.Join(config.VolumesDir, s.stack)
@@ -194,6 +215,9 @@ func leftoverLines(h *hostRun, p palette) []string {
 		line := p.change("-") + " " + l.label
 		if l.after != nil {
 			line += p.dim("  once " + l.after.label + " is removed")
+		}
+		if l.note != "" {
+			line += p.dim("  " + l.note)
 		}
 		lines = append(lines, line)
 	}

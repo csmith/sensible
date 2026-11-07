@@ -1044,14 +1044,14 @@ func TestCompiler_savesIssuedCertsOnce(t *testing.T) {
 	assert.Equal(t, keyContent(first), keyContent(second))
 }
 
-func TestCompiler_findsSecretsOfRemovedStacks(t *testing.T) {
+func TestCompiler_findsUnusedSecrets(t *testing.T) {
 	id, err := age.GenerateX25519Identity()
 	require.NoError(t, err)
 	dir := t.TempDir()
 	for name, content := range map[string]string{
 		"sensible.yml":                 "secrets:\n  recipients: [" + id.Recipient().String() + "]\n",
 		"hosts.d/hosts.yml":            "alpha:\n  roles: {app: , data: }\n",
-		"roles/app/docker-compose.yml": "services:\n  app:\n    image: nginx\n",
+		"roles/app/docker-compose.yml": "services:\n  app:\n    image: nginx\n    environment:\n      DB: !generated db\n",
 		"roles/data/role.yml":          "compose:\n  volumes: {blobs: {}}\n",
 	} {
 		path := filepath.Join(dir, name)
@@ -1075,14 +1075,21 @@ func TestCompiler_findsSecretsOfRemovedStacks(t *testing.T) {
 
 	c, err := compiler(open())(target{name: "alpha"}, facts)
 	require.NoError(t, err)
-	require.Len(t, c.unusedSecrets, 1)
-	assert.Equal(t, "old", c.unusedSecrets[0].stack)
-	assert.Equal(t, []string{"db", "token"}, c.unusedSecrets[0].names)
+	require.Len(t, c.unusedSecrets, 2)
+	assert.Equal(t, "app", c.unusedSecrets[0].stack)
+	assert.Equal(t, []string{"token"}, c.unusedSecrets[0].names)
+	assert.True(t, c.unusedSecrets[0].inUse)
+	assert.Equal(t, "old", c.unusedSecrets[1].stack)
+	assert.Equal(t, []string{"db", "token"}, c.unusedSecrets[1].names)
+	assert.False(t, c.unusedSecrets[1].inUse)
 
-	require.NoError(t, c.unusedSecrets[0].drop())
+	for _, s := range c.unusedSecrets {
+		require.NoError(t, s.drop())
+	}
 	again, err := compiler(open())(target{name: "alpha"}, facts)
 	require.NoError(t, err)
 	assert.Empty(t, again.unusedSecrets)
 	generated := open().Inventory().Hosts["alpha"].Generated
 	assert.ElementsMatch(t, []string{"app", "data"}, slices.Collect(maps.Keys(generated)))
+	assert.Equal(t, []string{"db"}, slices.Collect(maps.Keys(generated["app"])))
 }

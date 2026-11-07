@@ -158,3 +158,43 @@ func TestPrune_offersNoSecretsWhenLeftoversCantBeListed(t *testing.T) {
 	assert.Empty(t, *dropped)
 	assert.NotContains(t, f.out.String(), "generated secrets")
 }
+
+func TestPrune_warnsAboutSecretsOfStacksStillThere(t *testing.T) {
+	f := newRunnerFixture(t, nil)
+	dropped := false
+	f.runner.Compile = func(target, host.Facts) (compiled, error) {
+		return compiled{
+			resources: pruneResources,
+			unusedSecrets: []savedSecrets{{
+				stack: "app",
+				names: []string{"old"},
+				inUse: true,
+				drop: func() error {
+					dropped = true
+					return nil
+				},
+			}},
+		}, nil
+	}
+	f.runner.Confirm = func(prompt string) (bool, error) {
+		f.confirmed = append(f.confirmed, prompt)
+		return true, nil
+	}
+	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", &fakeAgent{})})
+
+	require.NoError(t, err)
+	assert.Equal(
+		t,
+		[]string{
+			"Remove generated secrets app no longer uses (old) from acidburn? " +
+				"Data in its volumes may still use them. [y/N] ",
+		},
+		f.confirmed,
+	)
+	assert.True(t, dropped)
+	assert.Contains(
+		t,
+		f.out.String(),
+		"- generated secrets app no longer uses (old)  data in its volumes may still use them\n",
+	)
+}

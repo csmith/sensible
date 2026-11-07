@@ -496,19 +496,29 @@ func (r *Repo) SaveGenerated(name string, stacks []Stack) error {
 	)
 }
 
-// DropGenerated removes the values saved for one of the host's stacks from
-// its state file.
-func (r *Repo) DropGenerated(name, stack string) error {
+// DropGenerated removes the named values saved for one of the host's stacks
+// from its state file.
+func (r *Repo) DropGenerated(name, stack string, keys []string) error {
 	if err := r.checkHost(name); err != nil {
 		return err
 	}
 	file := stateFile(name)
-	for key := range r.inventory.Hosts[name].Generated[stack] {
+	for _, key := range keys {
 		if s, ok := r.sources[joinPath(name, "generated", stack, key)]; ok && s.source != r.path(file) {
 			return fmt.Errorf("%s sets %s's generated %s for %s, so it can't be removed", s.source, name, key, stack)
 		}
 	}
-	return r.updateState(name, func(s *hostState) { delete(s.Generated, stack) })
+	return r.updateState(
+		name,
+		func(s *hostState) {
+			for _, key := range keys {
+				delete(s.Generated[stack], key)
+			}
+			if len(s.Generated[stack]) == 0 {
+				delete(s.Generated, stack)
+			}
+		},
+	)
 }
 
 // AddHostKey adds a key to the host's host_keys in its state file.
