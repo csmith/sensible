@@ -1226,22 +1226,37 @@ func TestResources_disownedMatchWhatFeaturesWrite(t *testing.T) {
 						assertWritten(t, rs, d, pattern)
 					}
 				}
+				packages, ok := find[host.DisownedPackages](rs, "disowned-packages:pam_rssh")
+				require.True(t, ok)
+				for _, name := range packages.Packages {
+					assert.True(
+						t,
+						slices.ContainsFunc(rs, func(r host.Resource) bool { return recordedInstall(r, name) }),
+						"nothing installs %s with a record",
+						name,
+					)
+				}
 			},
 		)
 	}
 }
 
-// trailingDisowned returns the Disowned resources, requiring them to come
-// after every other resource.
+// trailingDisowned returns the Disowned resources, requiring them and the
+// DisownedPackages to come after every other resource.
 func trailingDisowned(t *testing.T, rs host.ResourceList) []host.Disowned {
 	t.Helper()
 	var disowned []host.Disowned
+	trailing := false
 	for _, r := range rs {
-		if d, ok := r.(host.Disowned); ok {
+		switch d := r.(type) {
+		case host.Disowned:
 			disowned = append(disowned, d)
-			continue
+			trailing = true
+		case host.DisownedPackages:
+			trailing = true
+		default:
+			require.False(t, trailing, "%s comes after a disowned resource", r.ID())
 		}
-		require.Empty(t, disowned, "%s comes after a disowned resource", r.ID())
 	}
 	return disowned
 }
@@ -1269,6 +1284,17 @@ func assertWritten(t *testing.T, rs host.ResourceList, d host.Disowned, pattern 
 		}
 	}
 	assert.NotZero(t, written, "nothing writes %s", pattern)
+}
+
+func recordedInstall(r host.Resource, name string) bool {
+	switch r := r.(type) {
+	case host.Package:
+		return r.Name == name && r.Record && !r.Absent
+	case host.AURPackage:
+		return r.Name == name && r.Record
+	default:
+		return false
+	}
 }
 
 func writtenPath(r host.Resource) (string, bool) {

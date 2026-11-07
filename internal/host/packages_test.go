@@ -396,3 +396,70 @@ func TestPackage_AptSourceNewerThanIndex(t *testing.T) {
 	require.NoError(t, Package{Name: "docker-ce"}.Apply(ctx, sys))
 	assert.Equal(t, "apt-get -y -q update", sys.ran[1])
 }
+
+func TestPackage_RecordsOnlyWhatItInstalls(t *testing.T) {
+	sys := newArchSys(t)
+	sys.on("pacman -S *", "", 0)
+	sys.on("pacman -R *", "", 0)
+	sys.on("paru *", "", 0)
+	ctx := withRunState(context.Background(), newRunState())
+
+	require.NoError(t, Package{Name: "git", Record: true}.Apply(ctx, sys))
+	require.NoError(t, Package{Name: "curl"}.Apply(ctx, sys))
+	require.NoError(t, Package{Name: "vim", Record: true}.Apply(ctx, sys))
+	require.NoError(t, AURPackage{Name: "pam_rssh", BuildUser: "bob", Record: true}.Apply(ctx, sys))
+	assert.True(t, sys.exists(packageRecordPath("git")))
+	assert.False(t, sys.exists(packageRecordPath("curl")))
+	assert.False(t, sys.exists(packageRecordPath("vim")), "vim was installed by hand")
+	assert.True(t, sys.exists(packageRecordPath("pam_rssh")))
+
+	require.NoError(t, Package{Name: "git", Absent: true}.Apply(ctx, sys))
+	assert.False(t, sys.exists(packageRecordPath("git")))
+}
+
+func TestDisownedPackages(t *testing.T) {
+	sys := newArchSys(t)
+	for _, name := range []string{"vim", "zsh", "gone"} {
+		sys.write(packageRecordPath(name), "")
+	}
+	var removed []string
+	sys.commands["pacman -R *"] = func(cmd Cmd) Result {
+		removed = append(removed, cmd.Argv[len(cmd.Argv)-1])
+		return Result{}
+	}
+	st := newRunState()
+	st.declare(Package{Name: "zsh"})
+	ctx := withRunState(context.Background(), st)
+	r := DisownedPackages{Name: "test", Packages: []string{"vim", "zsh", "gone", "xxd"}}
+
+	change, err := r.Check(ctx, sys)
+	require.NoError(t, err)
+	assert.False(t, change.InSync)
+	assert.Equal(t, "forget record of package gone\n", change.Diff)
+	assert.Contains(t, change.Warning, "package vim\nno longer managed")
+
+	require.NoError(t, r.Apply(ctx, sys))
+	assert.False(t, sys.exists(packageRecordPath("gone")))
+	assert.True(t, sys.exists(packageRecordPath("vim")))
+	assert.Empty(t, removed)
+
+	require.NoError(t, r.Prune(ctx, sys, "package vim"))
+	assert.Equal(t, []string{"vim"}, removed)
+	assert.False(t, sys.exists(packageRecordPath("vim")))
+	assert.True(t, sys.exists(packageRecordPath("zsh")))
+}
+
+func TestDisownedPackages_Apt(t *testing.T) {
+	sys := newDebianSys(t)
+	sys.write(packageRecordPath("pam-rssh"), "")
+	sys.on("apt-get -y -q remove pam-rssh", "", 0)
+	ctx := withRunState(context.Background(), newRunState())
+	r := DisownedPackages{Name: "pam_rssh", Packages: []string{"pam-rssh"}}
+
+	got, err := r.Leftovers(ctx, sys)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"package pam-rssh"}, got)
+
+	require.NoError(t, r.Prune(ctx, sys, "package pam-rssh"))
+	assert.False(t, sys.exists(packageRecordPath("pam-rssh")))
+}

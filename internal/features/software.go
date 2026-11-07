@@ -260,10 +260,24 @@ func pamRSSH(h Host) ([]host.Resource, error) {
 	return rs, nil
 }
 
+func pamRSSHPackage(h Host) string {
+	if h.Facts.OSFamily == archLinux {
+		return "pam_rssh"
+	}
+	return "pam-rssh"
+}
+
 func installPAMRSSH(h Host) ([]host.Resource, string, error) {
 	if h.Facts.OSFamily == archLinux {
-		rs, err := aurPackages(h, "pam_rssh")
-		return rs, "/usr/lib/security/pam_rssh.so", err
+		rs, err := aurPackages(h, pamRSSHPackage(h))
+		if err != nil {
+			return nil, "", err
+		}
+		// Recorded so prune can offer to remove it once it's off.
+		pkg := rs[len(rs)-1].(host.AURPackage)
+		pkg.Record = true
+		rs[len(rs)-1] = pkg
+		return rs, "/usr/lib/security/pam_rssh.so", nil
 	}
 
 	distro, err := vendorDistro(h, "pam_rssh")
@@ -288,7 +302,7 @@ func installPAMRSSH(h Host) ([]host.Resource, string, error) {
 			SHA256: deb.sha256,
 			Mode:   0o644,
 		},
-		host.Package{Name: "pam-rssh", Deb: path},
+		host.Package{Name: pamRSSHPackage(h), Deb: path, Record: true},
 	}, "/lib/" + h.Facts.Arch + "-linux-gnu/security/libpam_rssh.so", nil
 }
 

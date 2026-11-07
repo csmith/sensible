@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -36,18 +37,29 @@ func (r Package) Apply(ctx context.Context, sys Sys) error {
 	if err != nil {
 		return err
 	}
-	if family == familyArch {
-		if r.Absent {
-			_, err = runOK(ctx, sys, argv("pacman", "-R", "--noconfirm", r.Name))
+	if r.Absent {
+		if err := removePackage(ctx, sys, family, r.Name); err != nil {
 			return err
 		}
+		return forgetPackage(sys, r.Name)
+	}
+	if !r.Record {
+		return r.install(ctx, sys, family)
+	}
+	installed, err := packageInstalled(ctx, sys, family, r.Name)
+	if err != nil {
+		return err
+	}
+	if err := r.install(ctx, sys, family); err != nil || installed {
+		return err
+	}
+	return recordPackage(sys, r.Name)
+}
+
+func (r Package) install(ctx context.Context, sys Sys, family string) error {
+	if family == familyArch {
 		res, err := runOK(ctx, sys, argv("pacman", "-S", "--needed", "--noconfirm", r.Name))
 		return explainStaleSyncDB(res, err)
-	}
-
-	if r.Absent {
-		_, err = runOK(ctx, sys, aptGet("remove", r.Name))
-		return err
 	}
 	if err := refreshAptIndex(ctx, sys); err != nil {
 		return err
@@ -56,7 +68,7 @@ func (r Package) Apply(ctx context.Context, sys Sys) error {
 	if r.Deb != "" {
 		target = r.Deb
 	}
-	_, err = runOK(
+	_, err := runOK(
 		ctx,
 		sys,
 		aptGet(
@@ -424,6 +436,14 @@ func (r AURPackage) Check(ctx context.Context, sys Sys) (Change, error) {
 }
 
 func (r AURPackage) Apply(ctx context.Context, sys Sys) error {
+	installed := false
+	if r.Record {
+		db, err := pacman(ctx, sys)
+		if err != nil {
+			return err
+		}
+		installed = db.installed[r.Name]
+	}
 	res, err := runOK(
 		ctx,
 		sys,
@@ -432,7 +452,13 @@ func (r AURPackage) Apply(ctx context.Context, sys Sys) error {
 			User: r.BuildUser,
 		},
 	)
-	return explainStaleSyncDB(res, err)
+	if err := explainStaleSyncDB(res, err); err != nil {
+		return err
+	}
+	if r.Record && !installed {
+		return recordPackage(sys, r.Name)
+	}
+	return nil
 }
 
 // explainStaleSyncDB advises a pacman -Syu after a 404 from the mirrors.
@@ -442,6 +468,158 @@ func explainStaleSyncDB(res Result, err error) error {
 	if out := output(res); err != nil && strings.Contains(out, "failed retrieving file") && strings.Contains(out, "404") {
 		return fmt.Errorf("%w\npacman's sync database is out of date; run pacman -Syu on the host", err)
 	}
+	return err
+}
+
+func (r DisownedPackages) Check(ctx context.Context, sys Sys) (Change, error) {
+	extra, err := r.Leftovers(ctx, sys)
+	if err != nil {
+		return Change{}, err
+	}
+	change := leftoverWarning(extra, "no longer managed")
+	gone, err := r.goneRecords(ctx, sys)
+	if err != nil {
+		return Change{}, err
+	}
+	for _, name := range gone {
+		change.InSync = false
+		change.Diff += "forget record of package " + name + "\n"
+	}
+	return change, nil
+}
+
+// Apply forgets the records of packages that have been removed since they
+// were installed. It never removes the packages themselves.
+func (r DisownedPackages) Apply(ctx context.Context, sys Sys) error {
+	gone, err := r.goneRecords(ctx, sys)
+	if err != nil {
+		return err
+	}
+	for _, name := range gone {
+		if err := forgetPackage(sys, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Leftovers lists each undeclared, recorded and installed package as
+// "package <name>".
+func (r DisownedPackages) Leftovers(ctx context.Context, sys Sys) ([]string, error) {
+	var extra []string
+	err := r.eachRecorded(
+		ctx,
+		sys,
+		func(name string, installed bool) {
+			if installed {
+				extra = append(extra, "package "+name)
+			}
+		},
+	)
+	return extra, err
+}
+
+func (r DisownedPackages) Prune(ctx context.Context, sys Sys, item string) error {
+	name, ok := strings.CutPrefix(item, "package ")
+	if !ok || !slices.Contains(r.Packages, name) {
+		return fmt.Errorf("%q isn't one of %s's packages", item, r.Name)
+	}
+	family, err := osFamily(ctx, sys)
+	if err != nil {
+		return err
+	}
+	if err := removePackage(ctx, sys, family, name); err != nil {
+		return err
+	}
+	return forgetPackage(sys, name)
+}
+
+// goneRecords lists the undeclared packages that are recorded but no longer
+// installed.
+func (r DisownedPackages) goneRecords(ctx context.Context, sys Sys) ([]string, error) {
+	var gone []string
+	err := r.eachRecorded(
+		ctx,
+		sys,
+		func(name string, installed bool) {
+			if !installed {
+				gone = append(gone, name)
+			}
+		},
+	)
+	return gone, err
+}
+
+// eachRecorded calls fn for each of r's packages that nothing earlier in the
+// run declares, and that has a record.
+func (r DisownedPackages) eachRecorded(ctx context.Context, sys Sys, fn func(name string, installed bool)) error {
+	family, err := osFamily(ctx, sys)
+	if err != nil {
+		return err
+	}
+	declared := state(ctx).packages
+	for _, name := range r.Packages {
+		if declared[name] {
+			continue
+		}
+		if _, err := sys.Stat(packageRecordPath(name)); errors.Is(err, fs.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		installed, err := packageInstalled(ctx, sys, family, name)
+		if err != nil {
+			return err
+		}
+		fn(name, installed)
+	}
+	return nil
+}
+
+// InstalledDir holds a record of each package a Package or AURPackage with
+// Record installed.
+const InstalledDir = "/var/lib/sensible/packages"
+
+func packageRecordPath(name string) string {
+	return filepath.Join(InstalledDir, name)
+}
+
+func recordPackage(sys Sys, name string) error {
+	if err := sys.MkdirAll(InstalledDir, 0o700); err != nil {
+		return err
+	}
+	return sys.WriteFile(packageRecordPath(name), nil, WriteOptions{UID: -1, GID: -1, Mode: 0o600})
+}
+
+func forgetPackage(sys Sys, name string) error {
+	if err := sys.RemoveAll(packageRecordPath(name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func packageInstalled(ctx context.Context, sys Sys, family, name string) (bool, error) {
+	if family == familyArch {
+		db, err := pacman(ctx, sys)
+		if err != nil {
+			return false, err
+		}
+		return db.installed[name], nil
+	}
+	installed, err := dpkg(ctx, sys)
+	if err != nil {
+		return false, err
+	}
+	_, ok := installed[name]
+	return ok, nil
+}
+
+func removePackage(ctx context.Context, sys Sys, family, name string) error {
+	if family == familyArch {
+		_, err := runOK(ctx, sys, argv("pacman", "-R", "--noconfirm", name))
+		return err
+	}
+	_, err := runOK(ctx, sys, aptGet("remove", name))
 	return err
 }
 

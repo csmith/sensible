@@ -209,6 +209,7 @@ func disowned(h Host) ([]host.Resource, error) {
 		// Docker reads its settings only when it starts, and restarting it
 		// would stop the containers, so it's left to pick up the change.
 		host.Disowned{Name: "docker", Paths: []string{dockerDaemonFile, dockerClientFile}, Recorded: true},
+		host.DisownedPackages{Name: "pam_rssh", Packages: []string{pamRSSHPackage(h)}},
 	}
 	switch h.Facts.OSFamily {
 	case debian:

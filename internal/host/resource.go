@@ -100,6 +100,7 @@ var resourceTypes = registry(
 	Package{},
 	AptRepo{},
 	AURPackage{},
+	DisownedPackages{},
 	Service{},
 	ServiceAction{},
 	User{},
@@ -202,6 +203,9 @@ type Package struct {
 	Deb string `json:"deb,omitempty"`
 	// Absent removes the package instead.
 	Absent bool `json:"absent,omitempty"`
+	// Record marks the package as sensible's when it installs it, so a
+	// DisownedPackages can tell it from one installed by hand.
+	Record bool `json:"record,omitempty"`
 }
 
 // AptRepo manages a deb822 apt source. Changing it makes later Package
@@ -221,6 +225,19 @@ type AURPackage struct {
 	Name string `json:"name"`
 	// BuildUser runs paru, as makepkg refuses to run as root.
 	BuildUser string `json:"build_user"`
+	// Record is as for Package.
+	Record bool `json:"record,omitempty"`
+}
+
+// DisownedPackages warns about the packages in Names that sensible installed
+// with Record, but that no Package or AURPackage earlier in the same run
+// declares. Applying forgets the records of packages that have gone since,
+// and never removes the packages, but pruning does.
+type DisownedPackages struct {
+	// Name says what installed them, e.g. "pam_rssh", and identifies the
+	// resource.
+	Name     string   `json:"name"`
+	Packages []string `json:"packages"`
 }
 
 // Service manages a systemd unit's state.
@@ -431,6 +448,8 @@ func (r Package) ID() string { return "package:" + r.Name }
 func (r AptRepo) ID() string { return "apt-repo:" + r.Name }
 
 func (r AURPackage) ID() string { return "aur:" + r.Name }
+
+func (r DisownedPackages) ID() string { return "disowned-packages:" + r.Name }
 
 func (r Service) ID() string { return "service:" + r.Name }
 

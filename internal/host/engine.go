@@ -254,6 +254,9 @@ type runState struct {
 	networks map[string]bool
 	// users holds the names of every User seen so far that isn't Absent.
 	users map[string]bool
+	// packages holds the names of every Package seen so far that isn't
+	// Absent, and every AURPackage.
+	packages map[string]bool
 
 	osFamily string
 
@@ -275,6 +278,7 @@ func newRunState() *runState {
 		modified: map[string]bool{},
 		networks: map[string]bool{},
 		users:    map[string]bool{},
+		packages: map[string]bool{},
 	}
 }
 
@@ -300,6 +304,12 @@ func (s *runState) declare(r Resource) {
 		if !r.Absent {
 			s.users[r.Name] = true
 		}
+	case Package:
+		if !r.Absent {
+			s.packages[r.Name] = true
+		}
+	case AURPackage:
+		s.packages[r.Name] = true
 	case Migration:
 		s.declared[filepath.Dir(r.dir())] = true
 		s.declared[r.dir()] = true
