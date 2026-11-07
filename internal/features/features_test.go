@@ -1,7 +1,9 @@
 package features
 
 import (
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -119,6 +121,8 @@ func TestResources_order(t *testing.T) {
 				"systemd-units:sensible-",
 				"users",
 				"owned-dir:/etc/sudoers.d",
+				"disowned:sshd",
+				"disowned:vim",
 			},
 		},
 		{
@@ -157,6 +161,8 @@ func TestResources_order(t *testing.T) {
 				"owned-dir:/etc/sudoers.d",
 				"owned-dir:/etc/apt/sources.list.d",
 				"owned-dir:/etc/apt/keyrings",
+				"disowned:sshd",
+				"disowned:pam_rssh package",
 			},
 		},
 	}
@@ -964,4 +970,97 @@ func TestResources_certsCleanUpWithoutCerts(t *testing.T) {
 	rs, err := Resources(Host{Name: "testhost", Facts: host.Facts{OSFamily: archLinux}})
 	require.NoError(t, err)
 	assert.True(t, slices.ContainsFunc(rs, func(r host.Resource) bool { return r.ID() == "cert-records" }))
+}
+
+func TestResources_disownedMatchWhatFeaturesWrite(t *testing.T) {
+	for _, osFamily := range []string{archLinux, debian} {
+		t.Run(
+			osFamily,
+			func(t *testing.T) {
+				h := testHost(osFamily)
+				if osFamily == debian {
+					h.Config.AUR.Packages = nil
+				}
+				h.Config.Docker.Daemon = map[string]any{"log-driver": "local"}
+				h.Config.Docker.Auths = map[string]string{"registry.example.com": "YTph"}
+				h.Config.Zsh.Users = append(h.Config.Zsh.Users, "root")
+				h.Config.SSHD.AuthorizedKeys["root"] = config.Set{"ssh-ed25519 AAAA root"}
+				rs, err := Resources(h)
+				require.NoError(t, err)
+
+				disowned := trailingDisowned(t, rs)
+				require.NotEmpty(t, disowned)
+				for _, d := range disowned {
+					for _, pattern := range d.Paths {
+						assertWritten(t, rs, d, pattern)
+					}
+				}
+			},
+		)
+	}
+}
+
+// trailingDisowned returns the Disowned resources, requiring them to come
+// after every other resource.
+func trailingDisowned(t *testing.T, rs host.ResourceList) []host.Disowned {
+	t.Helper()
+	var disowned []host.Disowned
+	for _, r := range rs {
+		if d, ok := r.(host.Disowned); ok {
+			disowned = append(disowned, d)
+			continue
+		}
+		require.Empty(t, disowned, "%s comes after a disowned resource", r.ID())
+	}
+	return disowned
+}
+
+// assertWritten checks that a feature writes something matching pattern,
+// and that what it writes passes d's filters, or it would go unreported once
+// the feature's turned off.
+func assertWritten(t *testing.T, rs host.ResourceList, d host.Disowned, pattern string) {
+	t.Helper()
+	written := 0
+	for _, r := range rs {
+		p, ok := writtenPath(r)
+		if match, _ := filepath.Match(pattern, p); !ok || !match {
+			continue
+		}
+		written++
+		if f, ok := r.(host.File); ok && d.Header != "" {
+			assert.True(t, strings.HasPrefix(f.Content, d.Header), "%s doesn't start with %q", p, d.Header)
+		}
+		if l, ok := r.(host.Symlink); ok && d.Target != "" {
+			assert.Equal(t, d.Target, l.Target)
+		}
+	}
+	assert.NotZero(t, written, "nothing writes %s", pattern)
+}
+
+func writtenPath(r host.Resource) (string, bool) {
+	switch r := r.(type) {
+	case host.File:
+		return r.Path, true
+	case host.Symlink:
+		return r.Path, true
+	case host.GitCheckout:
+		return r.Path, true
+	case host.Download:
+		return r.Path, true
+	default:
+		return "", false
+	}
+}
+
+func TestResources_disownedReloadsSSHD(t *testing.T) {
+	for osFamily, unit := range map[string]string{archLinux: "sshd", debian: "ssh"} {
+		h := testHost(osFamily)
+		h.Config.AUR.Packages = nil
+		rs, err := Resources(h)
+		require.NoError(t, err)
+
+		d, ok := find[host.Disowned](rs, "disowned:sshd")
+		require.True(t, ok)
+		assert.Equal(t, host.ResourceList{host.ServiceAction{Name: unit, Action: "reload"}}, d.Notify)
+	}
 }

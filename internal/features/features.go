@@ -3,6 +3,7 @@ package features
 import (
 	"fmt"
 	"maps"
+	"path"
 	"reflect"
 	"slices"
 	"strings"
@@ -68,6 +69,8 @@ func Resources(h Host) (host.ResourceList, error) {
 		// After everything that writes sudoers files or adds apt repos.
 		sudoersCleanUp,
 		aptCleanUp,
+		// Last, so it sees every path the others declare.
+		disowned,
 	}
 
 	var out host.ResourceList
@@ -169,11 +172,49 @@ func access(h Host) ([]host.Resource, error) {
 	return rs, nil
 }
 
+// disowned reports the files features write that nothing declares any more,
+// for prune to remove. Unlike the clean-ups, it's only a warning, as the host
+// may still rely on them.
+func disowned(h Host) ([]host.Resource, error) {
+	inHomes := func(name string) []string {
+		return []string{path.Join(home("root"), name), path.Join(home("*"), name)}
+	}
+	rs := []host.Resource{
+		host.Disowned{
+			Name:   "sshd",
+			Paths:  append([]string{sshdDropIn}, inHomes(".ssh/authorized_keys")...),
+			Header: managedMark,
+			Notify: host.ResourceList{host.ServiceAction{Name: sshdService(h), Action: "reload"}},
+		},
+		host.Disowned{Name: "zsh", Paths: inHomes(".zshrc"), Header: managedMark},
+		host.Disowned{Name: "oh-my-zsh", Paths: []string{ohMyZshPath}},
+		host.Disowned{Name: "pam_rssh", Paths: []string{sudoersKeys}, Header: managedMark},
+		host.Disowned{Name: "tailscale", Paths: []string{tailscaleSysctl}, Header: managedMark},
+		// Docker reads its settings only when it starts, and restarting it
+		// would stop the containers, so it's left to pick up the change.
+		host.Disowned{Name: "docker", Paths: []string{dockerDaemonFile, dockerClientFile}},
+	}
+	switch h.Facts.OSFamily {
+	case debian:
+		rs = append(rs, host.Disowned{Name: "pam_rssh package", Paths: []string{pamRSSHDebGlob}})
+	case archLinux:
+		links := make([]string, len(vimLinks))
+		for i, n := range vimLinks {
+			links[i] = vimLinkDir + "/" + n
+		}
+		rs = append(rs, host.Disowned{Name: "vim", Paths: links, Target: vimBinary})
+	}
+	return rs, nil
+}
+
 func sudoersCleanUp(Host) ([]host.Resource, error) {
 	return []host.Resource{host.OwnedDir{Path: sudoersDir}}, nil
 }
 
-const managedHeader = "# Managed by sensible. Local changes will be overwritten.\n"
+// managedMark starts every file sensible writes with a comment header.
+const managedMark = "# Managed by sensible."
+
+const managedHeader = managedMark + " Local changes will be overwritten.\n"
 
 func managedLines(lines []string) string {
 	var b strings.Builder
@@ -198,14 +239,14 @@ func sudoersFile(name string, lines []string) host.File {
 	}
 }
 
-func sysctl(name string, settings map[string]string) []host.Resource {
+func sysctl(file string, settings map[string]string) []host.Resource {
 	lines := make([]string, 0, len(settings))
 	for _, k := range slices.Sorted(maps.Keys(settings)) {
 		lines = append(lines, k+" = "+settings[k])
 	}
 	return []host.Resource{
 		host.File{
-			Path:    "/etc/sysctl.d/" + name + ".conf",
+			Path:    file,
 			Content: managedLines(lines),
 			Owner:   "root",
 			Group:   "root",

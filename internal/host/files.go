@@ -175,6 +175,78 @@ func (r Absent) Apply(ctx context.Context, sys Sys) error {
 	return nil
 }
 
+func (r Disowned) Check(ctx context.Context, sys Sys) (Change, error) {
+	extra, err := r.Leftovers(ctx, sys)
+	if err != nil || len(extra) == 0 {
+		return Change{InSync: true}, err
+	}
+	return Change{
+		InSync:  true,
+		Warning: strings.Join(extra, "\n") + "\nno longer managed; run `sensible prune` to remove them once they're not needed\n",
+	}, nil
+}
+
+func (r Disowned) Apply(context.Context, Sys) error {
+	return nil
+}
+
+func (r Disowned) Leftovers(ctx context.Context, sys Sys) ([]string, error) {
+	declared := state(ctx).declared
+	var extra []string
+	for _, pattern := range r.Paths {
+		matches, err := sys.Glob(pattern)
+		if err != nil {
+			return nil, err
+		}
+		for _, path := range matches {
+			if declared[path] || slices.Contains(extra, path) {
+				continue
+			}
+			ok, err := r.matches(sys, path)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				extra = append(extra, path)
+			}
+		}
+	}
+	return extra, nil
+}
+
+func (r Disowned) matches(sys Sys, path string) (bool, error) {
+	if r.Header == "" && r.Target == "" {
+		return true, nil
+	}
+	info, err := sys.Lstat(path)
+	if err != nil {
+		return false, err
+	}
+	switch {
+	case r.Header != "" && info.IsRegular():
+		content, err := sys.ReadFile(path)
+		return err == nil && strings.HasPrefix(string(content), r.Header), err
+	case r.Target != "" && info.IsSymlink():
+		target, err := sys.Readlink(path)
+		return err == nil && target == r.Target, err
+	default:
+		return false, nil
+	}
+}
+
+// Prune runs Notify itself, as handlers only follow an apply.
+func (r Disowned) Prune(ctx context.Context, sys Sys, item string) error {
+	if err := sys.RemoveAll(item); err != nil {
+		return err
+	}
+	for _, h := range r.Notify {
+		if err := h.Apply(ctx, sys); err != nil {
+			return fmt.Errorf("removed, but %s failed: %w", h.ID(), err)
+		}
+	}
+	return nil
+}
+
 func (r Symlink) Check(ctx context.Context, sys Sys) (Change, error) {
 	info, err := sys.Lstat(r.Path)
 	if errors.Is(err, fs.ErrNotExist) {

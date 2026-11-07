@@ -132,6 +132,15 @@ func aurPackages(h Host, names ...string) ([]host.Resource, error) {
 	return rs, nil
 }
 
+const (
+	vimBinary = "/usr/bin/vim"
+	// vimLinkDir comes first in PATH, so the links don't clash with packages'
+	// files.
+	vimLinkDir = "/usr/local/bin"
+)
+
+var vimLinks = []string{"edit", "ex", "vedit", "vi", "view"}
+
 func vim(h Host) ([]host.Resource, error) {
 	if h.Config.Vim == nil {
 		return nil, nil
@@ -141,10 +150,8 @@ func vim(h Host) ([]host.Resource, error) {
 	if h.Facts.OSFamily != archLinux {
 		return rs, nil
 	}
-	// In /usr/local/bin, which comes first in PATH, so they don't clash with
-	// packages' files.
-	for _, n := range []string{"edit", "ex", "vedit", "vi", "view"} {
-		rs = append(rs, host.Symlink{Path: "/usr/local/bin/" + n, Target: "/usr/bin/vim"})
+	for _, n := range vimLinks {
+		rs = append(rs, host.Symlink{Path: vimLinkDir + "/" + n, Target: vimBinary})
 	}
 	return rs, nil
 }
@@ -152,6 +159,10 @@ func vim(h Host) ([]host.Resource, error) {
 const (
 	pamRSSHRelease    = "v1.2.2-rc2"
 	pamRSSHDebVersion = "1.2.2-1"
+	// pamRSSHDebGlob matches the packages of every release.
+	pamRSSHDebGlob = "/var/cache/debian-*-pam-rssh_*.deb"
+	// sudoersKeys are the keys that may authenticate sudo.
+	sudoersKeys = "/etc/sudoers.keys"
 )
 
 var pamRSSHDebChecksums = map[string]string{
@@ -172,9 +183,8 @@ func pamRSSH(h Host) ([]host.Resource, error) {
 	}
 	rs = append(
 		rs,
-		// The keys that may authenticate sudo.
 		host.File{
-			Path:    "/etc/sudoers.keys",
+			Path:    sudoersKeys,
 			Content: managedLines(h.Config.PamRSSH.Keys),
 			Owner:   "root",
 			Group:   "root",
@@ -195,7 +205,7 @@ func pamRSSH(h Host) ([]host.Resource, error) {
 			host.LineInFile{
 				Path:         "/etc/pam.d/" + service,
 				Regexp:       `^\s*auth\s+\S+\s+\S*pam_rssh\.so`,
-				Line:         "auth sufficient " + module + " auth_key_file=/etc/sudoers.keys",
+				Line:         "auth sufficient " + module + " auth_key_file=" + sudoersKeys,
 				InsertBefore: `^\s*(auth\s|@include\s+common-auth)`,
 			},
 		)
@@ -230,6 +240,8 @@ func installPAMRSSH(h Host) ([]host.Resource, string, error) {
 	}, "/lib/" + h.Facts.Arch + "-linux-gnu/security/libpam_rssh.so", nil
 }
 
+const tailscaleSysctl = "/etc/sysctl.d/99-tailscale.conf"
+
 func tailscale(h Host) ([]host.Resource, error) {
 	if h.Config.Tailscale == nil {
 		return nil, nil
@@ -260,13 +272,18 @@ func tailscale(h Host) ([]host.Resource, error) {
 		rs = append(
 			rs,
 			sysctl(
-				"99-tailscale",
+				tailscaleSysctl,
 				map[string]string{"net.ipv4.ip_forward": "1", "net.ipv6.conf.all.forwarding": "1"},
 			)...,
 		)
 	}
 	return append(rs, host.TailscaleSet{Settings: settings}), nil
 }
+
+const (
+	dockerDaemonFile = "/etc/docker/daemon.json"
+	dockerClientFile = "/root/.docker/config.json"
+)
 
 func docker(h Host) ([]host.Resource, error) {
 	c := h.Config.Docker
@@ -367,7 +384,7 @@ func dockerDaemonConfig(settings map[string]any) ([]host.Resource, error) {
 		return nil, err
 	}
 	file := host.File{
-		Path:     "/etc/docker/daemon.json",
+		Path:     dockerDaemonFile,
 		Content:  string(content) + "\n",
 		Owner:    "root",
 		Group:    "root",
@@ -375,7 +392,7 @@ func dockerDaemonConfig(settings map[string]any) ([]host.Resource, error) {
 		Validate: []string{"dockerd", "--validate", "--config-file", "%s"},
 	}
 	return []host.Resource{
-		host.Dir{Path: "/etc/docker", Owner: "root", Group: "root", Mode: 0o755},
+		host.Dir{Path: filepath.Dir(dockerDaemonFile), Owner: "root", Group: "root", Mode: 0o755},
 		file,
 		host.ServiceRestart{Name: "docker", Watch: []string{file.ID()}},
 	}, nil
@@ -400,9 +417,9 @@ func dockerClientConfig(auths map[string]string) ([]host.Resource, error) {
 		return nil, err
 	}
 	return []host.Resource{
-		host.Dir{Path: "/root/.docker", Owner: "root", Group: "root", Mode: 0o700},
+		host.Dir{Path: filepath.Dir(dockerClientFile), Owner: "root", Group: "root", Mode: 0o700},
 		host.File{
-			Path:    "/root/.docker/config.json",
+			Path:    dockerClientFile,
 			Content: string(content) + "\n",
 			Owner:   "root",
 			Group:   "root",

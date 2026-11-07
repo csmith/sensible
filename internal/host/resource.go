@@ -79,6 +79,7 @@ var resourceTypes = registry(
 	File{},
 	Dir{},
 	Absent{},
+	Disowned{},
 	Symlink{},
 	Package{},
 	AptRepo{},
@@ -147,6 +148,24 @@ type Dir struct {
 // Absent removes whatever is at a path, recursively.
 type Absent struct {
 	Path string `json:"path"`
+}
+
+// Disowned warns about what's at Paths that nothing earlier in the same run
+// declares, such as files a feature wrote before it was turned off.
+// Applying never removes them, but pruning does.
+type Disowned struct {
+	// Name says what wrote them, e.g. "docker", and identifies the resource.
+	Name string `json:"name"`
+	// Paths may be glob patterns.
+	Paths []string `json:"paths"`
+	// Header, if set, limits it to regular files that start with it, so
+	// files written by hand are left alone.
+	Header string `json:"header,omitempty"`
+	// Target, if set, limits it to symlinks to Target.
+	Target string `json:"target,omitempty"`
+	// Notify is applied after each item is pruned, e.g. to reload a service
+	// that read it.
+	Notify ResourceList `json:"notify,omitempty"`
 }
 
 type Symlink struct {
@@ -379,6 +398,8 @@ func (r File) Notifies() ResourceList { return r.Notify }
 func (r Dir) ID() string { return "dir:" + r.Path }
 
 func (r Absent) ID() string { return "absent:" + r.Path }
+
+func (r Disowned) ID() string { return "disowned:" + r.Name }
 
 func (r Symlink) ID() string { return "symlink:" + r.Path }
 

@@ -231,9 +231,9 @@ func isCleanUp(r Resource) bool {
 
 // runState is shared by the resources in one check or apply.
 type runState struct {
-	// declared holds the paths of every File, Dir, ComposeStack, Migration,
-	// CertRecord and apt source and key seen so far, for the clean-up
-	// resources.
+	// declared holds the paths of every File, Dir, Symlink, GitCheckout,
+	// Download, ComposeStack, Migration, CertRecord and apt source and key
+	// seen so far, for the clean-up resources.
 	declared map[string]bool
 	// modified holds the IDs of resources that changed earlier in an apply,
 	// or that a check found would change.
@@ -271,6 +271,12 @@ func (s *runState) declare(r Resource) {
 	case File:
 		s.declared[r.Path] = true
 	case Dir:
+		s.declared[r.Path] = true
+	case Symlink:
+		s.declared[r.Path] = true
+	case GitCheckout:
+		s.declared[r.Path] = true
+	case Download:
 		s.declared[r.Path] = true
 	case ComposeStack:
 		s.declared[r.Dir] = true

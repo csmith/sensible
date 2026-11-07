@@ -165,6 +165,92 @@ func TestAbsent_RemovesTree(t *testing.T) {
 	assert.False(t, sys.exists("/home/alice/.oh-my-zsh"))
 }
 
+func TestDisowned_WarnsAboutUndeclaredWithoutRemoving(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/home/alice/.zshrc", "# Managed\nalice")
+	sys.write("/home/bob/.zshrc", "# Managed\nbob")
+	sys.write("/home/carol/.zshrc", "by hand")
+	sys.write("/root/.zshrc", "# Managed\nroot")
+	st := newRunState()
+	st.declare(File{Path: "/home/bob/.zshrc"})
+	ctx := withRunState(context.Background(), st)
+	r := Disowned{
+		Name:   "zsh",
+		Paths:  []string{"/root/.zshrc", "/home/*/.zshrc", "/home/alice/.zshrc"},
+		Header: "# Managed",
+	}
+
+	change, err := r.Check(ctx, sys)
+	require.NoError(t, err)
+	assert.True(t, change.InSync)
+	assert.Equal(
+		t,
+		"/root/.zshrc\n/home/alice/.zshrc\n"+
+			"no longer managed; run `sensible prune` to remove them once they're not needed\n",
+		change.Warning,
+	)
+
+	require.NoError(t, r.Apply(ctx, sys))
+	assert.True(t, sys.exists("/home/alice/.zshrc"))
+	assert.True(t, sys.exists("/root/.zshrc"))
+}
+
+func TestDisowned_TargetLimitsToSymlinks(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/usr/local/bin/view", "binary")
+	require.NoError(t, sys.Symlink("/usr/bin/vim", "/usr/local/bin/vi"))
+	require.NoError(t, sys.Symlink("/usr/bin/nvim", "/usr/local/bin/ex"))
+	r := Disowned{Name: "vim", Paths: []string{"/usr/local/bin/*"}, Target: "/usr/bin/vim"}
+
+	got, err := r.Leftovers(context.Background(), sys)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"/usr/local/bin/vi"}, got)
+}
+
+func TestDisowned_SkipsWhatOtherResourcesDeclare(t *testing.T) {
+	sys := newTestSys(t)
+	for _, path := range []string{"/usr/local/bin/vi", "/usr/share/oh-my-zsh/oh-my-zsh.sh", "/var/cache/pam-rssh.deb"} {
+		sys.write(path, "")
+	}
+	st := newRunState()
+	st.declare(Symlink{Path: "/usr/local/bin/vi"})
+	st.declare(GitCheckout{Path: "/usr/share/oh-my-zsh"})
+	st.declare(Download{Path: "/var/cache/pam-rssh.deb"})
+	r := Disowned{Name: "all", Paths: []string{"/usr/local/bin/vi", "/usr/share/oh-my-zsh", "/var/cache/*.deb"}}
+
+	got, err := r.Leftovers(withRunState(context.Background(), st), sys)
+
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestDisowned_NothingWhenAbsent(t *testing.T) {
+	r := Disowned{Name: "docker", Paths: []string{"/etc/docker/daemon.json"}}
+
+	change, err := r.Check(context.Background(), newTestSys(t))
+
+	require.NoError(t, err)
+	assert.Equal(t, Change{InSync: true}, change)
+}
+
+func TestDisowned_PruneRemovesThenNotifies(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/etc/ssh/sshd_config.d/10-sensible.conf", "# Managed\n")
+	sys.on("systemctl show --property=LoadState,ActiveState ssh", "LoadState=loaded\nActiveState=active\n", 0)
+	sys.on("systemctl reload ssh", "", 0)
+	r := Disowned{
+		Name:   "sshd",
+		Paths:  []string{"/etc/ssh/sshd_config.d/10-sensible.conf"},
+		Notify: ResourceList{ServiceAction{Name: "ssh", Action: "reload"}},
+	}
+
+	require.NoError(t, r.Prune(context.Background(), sys, "/etc/ssh/sshd_config.d/10-sensible.conf"))
+
+	assert.False(t, sys.exists("/etc/ssh/sshd_config.d/10-sensible.conf"))
+	assert.Equal(t, "systemctl reload ssh", sys.ran[len(sys.ran)-1])
+}
+
 func TestSymlink_CreatesAndRetargets(t *testing.T) {
 	sys := newTestSys(t)
 	sys.write("/usr/local/bin/.keep", "")

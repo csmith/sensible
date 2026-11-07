@@ -134,7 +134,10 @@ func sshdService(h Host) string {
 	return "sshd"
 }
 
-const sshdConfig = "/etc/ssh/sshd_config"
+const (
+	sshdConfig = "/etc/ssh/sshd_config"
+	sshdDropIn = "/etc/ssh/sshd_config.d/10-sensible.conf"
+)
 
 func sshd(h Host) ([]host.Resource, error) {
 	c := h.Config.SSHD
@@ -158,7 +161,7 @@ func sshd(h Host) ([]host.Resource, error) {
 		// distributions' sshd_config includes sshd_config.d before setting
 		// anything itself.
 		host.File{
-			Path:     "/etc/ssh/sshd_config.d/10-sensible.conf",
+			Path:     sshdDropIn,
 			Content:  managedLines(lines),
 			Owner:    "root",
 			Group:    "root",
