@@ -80,7 +80,7 @@ func TestMigration_RunsAroundAChange(t *testing.T) {
 
 	_, _, err = migrate(t, sys, "database-17")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"dump", "restore"}, sys.ran)
+	assert.Equal(t, []string{"cd /srv/compose/web && dump", "cd /srv/compose/web && restore"}, sys.ran)
 	require.Len(t, cmds, 2)
 	work := "/var/lib/sensible/migrations/web/major/work"
 	for _, c := range cmds {
@@ -111,7 +111,7 @@ func TestMigration_FailedAfterIsRetriedAlone(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, before)
 	assert.Equal(t, "finish migrating a → b\n", after)
-	assert.Equal(t, []string{"restore"}, sys.ran)
+	assert.Equal(t, []string{"cd /srv/compose/web && restore"}, sys.ran)
 }
 
 func TestMigration_FailedBeforeIsRetried(t *testing.T) {
@@ -129,7 +129,7 @@ func TestMigration_FailedBeforeIsRetried(t *testing.T) {
 	before, _, err := migrate(t, sys, "b")
 	require.NoError(t, err)
 	assert.Equal(t, "migrate a → b\n", before)
-	assert.Equal(t, []string{"dump", "restore"}, sys.ran)
+	assert.Equal(t, []string{"cd /srv/compose/web && dump", "cd /srv/compose/web && restore"}, sys.ran)
 }
 
 func TestMigration_SecretIsntShownOrKept(t *testing.T) {

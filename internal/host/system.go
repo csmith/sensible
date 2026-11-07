@@ -634,7 +634,7 @@ func (r GitCheckout) current(ctx context.Context, sys Sys) (gitState, error) {
 }
 
 func (r GitCheckout) git(args ...string) Cmd {
-	return Cmd{Argv: append([]string{"git", "-C", r.Path}, args...), User: r.Owner}
+	return Cmd{Argv: append([]string{"git"}, args...), User: r.Owner, Dir: r.Path}
 }
 
 func (r Command) Check(ctx context.Context, sys Sys) (Change, error) {

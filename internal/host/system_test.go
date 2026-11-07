@@ -346,10 +346,10 @@ func TestGitCheckout_Clones(t *testing.T) {
 	assert.Equal(
 		t,
 		[]string{
-			"git -C /usr/share/oh-my-zsh init --quiet",
-			"git -C /usr/share/oh-my-zsh remote add origin https://example.com/omz.git",
-			"git -C /usr/share/oh-my-zsh fetch --quiet --depth 1 origin abc123",
-			"git -C /usr/share/oh-my-zsh checkout --quiet --force --detach abc123",
+			"cd /usr/share/oh-my-zsh && git init --quiet",
+			"cd /usr/share/oh-my-zsh && git remote add origin https://example.com/omz.git",
+			"cd /usr/share/oh-my-zsh && git fetch --quiet --depth 1 origin abc123",
+			"cd /usr/share/oh-my-zsh && git checkout --quiet --force --detach abc123",
 		},
 		sys.ran,
 	)
@@ -358,8 +358,8 @@ func TestGitCheckout_Clones(t *testing.T) {
 func TestGitCheckout_MovesExisting(t *testing.T) {
 	sys := newTestSys(t)
 	sys.write("/srv/repo/.git/HEAD", "")
-	sys.on("git -C /srv/repo rev-parse --verify --quiet HEAD", "old\n", 0)
-	sys.on("git -C /srv/repo config --get remote.origin.url", "https://example.com/old.git\n", 0)
+	sys.on("git rev-parse --verify --quiet HEAD", "old\n", 0)
+	sys.on("git config --get remote.origin.url", "https://example.com/old.git\n", 0)
 	sys.on("git *", "", 0)
 	r := GitCheckout{Path: "/srv/repo", Repo: "https://example.com/new.git", Commit: "new", Owner: "alice"}
 
@@ -374,13 +374,13 @@ func TestGitCheckout_MovesExisting(t *testing.T) {
 	}
 	sys.ran = nil
 	require.NoError(t, r.Apply(context.Background(), sys))
-	assert.Contains(t, sys.ran, "git -C /srv/repo remote set-url origin https://example.com/new.git")
-	assert.Contains(t, sys.ran, "git -C /srv/repo checkout --quiet --force --detach new")
+	assert.Contains(t, sys.ran, "cd /srv/repo && git remote set-url origin https://example.com/new.git")
+	assert.Contains(t, sys.ran, "cd /srv/repo && git checkout --quiet --force --detach new")
 	assert.Equal(t, []string{"alice", "alice", "alice"}, users)
 }
 
 func TestGitCheckout_RecoversFailedFetch(t *testing.T) {
-	const prefix = "git -C /srv/repo remote "
+	const prefix = "cd /srv/repo && git remote "
 	for _, tc := range []struct {
 		name   string
 		origin string
@@ -395,8 +395,8 @@ func TestGitCheckout_RecoversFailedFetch(t *testing.T) {
 			func(t *testing.T) {
 				sys := newTestSys(t)
 				sys.write("/srv/repo/.git/HEAD", "")
-				sys.on("git -C /srv/repo rev-parse --verify --quiet HEAD", "", 1)
-				sys.on("git -C /srv/repo config --get remote.origin.url", tc.origin, 0)
+				sys.on("git rev-parse --verify --quiet HEAD", "", 1)
+				sys.on("git config --get remote.origin.url", tc.origin, 0)
 				sys.on("git *", "", 0)
 				r := GitCheckout{Path: "/srv/repo", Repo: "https://example.com/omz.git", Commit: "abc123"}
 
@@ -407,14 +407,14 @@ func TestGitCheckout_RecoversFailedFetch(t *testing.T) {
 				sys.ran = nil
 				require.NoError(t, r.Apply(context.Background(), sys))
 				want := []string{
-					"git -C /srv/repo rev-parse --verify --quiet HEAD",
-					"git -C /srv/repo config --get remote.origin.url",
+					"cd /srv/repo && git rev-parse --verify --quiet HEAD",
+					"cd /srv/repo && git config --get remote.origin.url",
 				}
 				want = append(want, tc.remote...)
 				want = append(
 					want,
-					"git -C /srv/repo fetch --quiet --depth 1 origin abc123",
-					"git -C /srv/repo checkout --quiet --force --detach abc123",
+					"cd /srv/repo && git fetch --quiet --depth 1 origin abc123",
+					"cd /srv/repo && git checkout --quiet --force --detach abc123",
 				)
 				assert.Equal(t, want, sys.ran)
 			},

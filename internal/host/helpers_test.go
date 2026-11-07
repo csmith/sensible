@@ -37,7 +37,11 @@ func newTestSys(t *testing.T) *testSys {
 		root: t.TempDir(),
 		runner: func(_ context.Context, cmd Cmd) (Result, error) {
 			line := strings.Join(cmd.Argv, " ")
-			s.ran = append(s.ran, line)
+			if cmd.Dir != "" {
+				s.ran = append(s.ran, "cd "+cmd.Dir+" && "+line)
+			} else {
+				s.ran = append(s.ran, line)
+			}
 			if fn, ok := s.commands[line]; ok {
 				return fn(cmd), nil
 			}
