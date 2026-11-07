@@ -228,7 +228,7 @@ func disowned(h Host) ([]host.Resource, error) {
 }
 
 func sudoersCleanUp(Host) ([]host.Resource, error) {
-	return []host.Resource{host.OwnedDir{Path: sudoersDir}}, nil
+	return []host.Resource{host.OwnedDir{Path: sudoersDir, Header: managedMark}}, nil
 }
 
 // managedMark starts every file sensible writes with a comment header.

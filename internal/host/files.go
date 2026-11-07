@@ -290,8 +290,7 @@ func (r Disowned) matches(sys Sys, path string) (bool, error) {
 	}
 	switch {
 	case r.Header != "" && info.IsRegular():
-		content, err := sys.ReadFile(path)
-		return err == nil && strings.HasPrefix(string(content), r.Header), err
+		return hasHeader(sys, path, r.Header)
 	case r.Recorded && info.IsRegular():
 		return isRecorded(sys, path)
 	case r.Target != "" && info.IsSymlink():
@@ -300,6 +299,16 @@ func (r Disowned) matches(sys Sys, path string) (bool, error) {
 	default:
 		return false, nil
 	}
+}
+
+// hasHeader reports whether path is a regular file that starts with header.
+func hasHeader(sys Sys, path, header string) (bool, error) {
+	info, err := sys.Lstat(path)
+	if err != nil || !info.IsRegular() {
+		return false, err
+	}
+	content, err := sys.ReadFile(path)
+	return err == nil && strings.HasPrefix(string(content), header), err
 }
 
 // Prune runs Notify itself, as handlers only follow an apply.
@@ -569,23 +578,25 @@ func (r Download) Apply(ctx context.Context, sys Sys) error {
 }
 
 func (r OwnedDir) Check(ctx context.Context, sys Sys) (Change, error) {
-	extra, err := r.undeclared(ctx, sys)
+	remove, keep, err := r.undeclared(ctx, sys)
 	if err != nil {
 		return Change{}, err
 	}
+	change := leftoverWarning(keep, "sensible didn't write these")
 	var diff strings.Builder
-	for _, path := range extra {
+	for _, path := range remove {
 		diff.WriteString("remove " + path + "\n")
 	}
-	return Change{InSync: len(extra) == 0, Diff: diff.String()}, nil
+	change.InSync, change.Diff = len(remove) == 0, diff.String()
+	return change, nil
 }
 
 func (r OwnedDir) Apply(ctx context.Context, sys Sys) error {
-	extra, err := r.undeclared(ctx, sys)
+	remove, _, err := r.undeclared(ctx, sys)
 	if err != nil {
 		return err
 	}
-	for _, path := range extra {
+	for _, path := range remove {
 		if err := sys.RemoveAll(path); err != nil {
 			return err
 		}
@@ -593,8 +604,43 @@ func (r OwnedDir) Apply(ctx context.Context, sys Sys) error {
 	return nil
 }
 
-func (r OwnedDir) undeclared(ctx context.Context, sys Sys) ([]string, error) {
-	return undeclaredIn(sys, state(ctx).declared, r.Path, r.Recursive)
+func (r OwnedDir) Leftovers(ctx context.Context, sys Sys) ([]string, error) {
+	_, keep, err := r.undeclared(ctx, sys)
+	return keep, err
+}
+
+// Prune runs Notify itself, as handlers only follow an apply.
+func (r OwnedDir) Prune(ctx context.Context, sys Sys, item string) error {
+	if err := sys.RemoveAll(item); err != nil {
+		return err
+	}
+	for _, h := range r.Notify {
+		if err := h.Apply(ctx, sys); err != nil {
+			return fmt.Errorf("removed, but %s failed: %w", h.ID(), err)
+		}
+	}
+	return nil
+}
+
+// undeclared splits the undeclared entries into those apply removes, and
+// those that don't start with Header, which it keeps.
+func (r OwnedDir) undeclared(ctx context.Context, sys Sys) (remove, keep []string, err error) {
+	extra, err := undeclaredIn(sys, state(ctx).declared, r.Path, r.Recursive)
+	if err != nil || r.Header == "" {
+		return extra, nil, err
+	}
+	for _, path := range extra {
+		ok, err := hasHeader(sys, path, r.Header)
+		if err != nil {
+			return nil, nil, err
+		}
+		if ok {
+			remove = append(remove, path)
+		} else {
+			keep = append(keep, path)
+		}
+	}
+	return remove, keep, nil
 }
 
 // undeclaredIn lists the entries in dir that aren't declared, looking inside

@@ -1048,6 +1048,25 @@ func TestResources_ntpRestartsOnChange(t *testing.T) {
 	d, ok := find[host.OwnedDir](rs, "owned-dir:"+timesyncdConfDir)
 	require.True(t, ok)
 	assert.Equal(t, restart, d.Notify)
+	require.NotEmpty(t, d.Header)
+	assert.True(t, strings.HasPrefix(f.Content, d.Header), "the drop-in would be left for prune")
+}
+
+func TestResources_sudoersCleanUpRemovesOnlyItsOwnFiles(t *testing.T) {
+	rs, err := Resources(testHost(archLinux))
+	require.NoError(t, err)
+
+	d, ok := find[host.OwnedDir](rs, "owned-dir:"+sudoersDir)
+	require.True(t, ok)
+	require.NotEmpty(t, d.Header)
+	var files int
+	for _, r := range rs {
+		if f, ok := r.(host.File); ok && strings.HasPrefix(f.Path, sudoersDir+"/") {
+			files++
+			assert.True(t, strings.HasPrefix(f.Content, d.Header), "%s would be left for prune", f.Path)
+		}
+	}
+	assert.NotZero(t, files)
 }
 
 func TestResources_jobs(t *testing.T) {

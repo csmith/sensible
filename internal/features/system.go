@@ -175,7 +175,7 @@ func ntp(h Host) ([]host.Resource, error) {
 	}
 	return append(
 		rs,
-		host.OwnedDir{Path: timesyncdConfDir, Notify: restart},
+		host.OwnedDir{Path: timesyncdConfDir, Header: managedMark, Notify: restart},
 		host.Service{Name: "systemd-timesyncd", Enabled: true, Running: true},
 	), nil
 }

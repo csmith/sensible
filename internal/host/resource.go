@@ -362,8 +362,13 @@ type Command struct {
 type OwnedDir struct {
 	Path string `json:"path"`
 	// Recursive also cleans the declared directories inside Path.
-	Recursive bool         `json:"recursive,omitempty"`
-	Notify    ResourceList `json:"notify,omitempty"`
+	Recursive bool `json:"recursive,omitempty"`
+	// Header, if set, limits removal to regular files that start with it.
+	// The other undeclared entries may be the distribution's, so they're
+	// only warned about, and left for pruning.
+	Header string `json:"header,omitempty"`
+	// Notify is applied after a change, and after each item is pruned.
+	Notify ResourceList `json:"notify,omitempty"`
 }
 
 // ComposeStack keeps a Docker Compose project's containers up. Dir holds its

@@ -717,6 +717,70 @@ func TestOwnedDir_RecursiveCleansDeclaredDirs(t *testing.T) {
 	assert.False(t, sys.exists("/srv/app/old"))
 }
 
+func TestOwnedDir_HeaderLeavesOtherEntriesForPrune(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/etc/sudoers.d/keep", "# Managed\nkeep\n")
+	sys.write("/etc/sudoers.d/old", "# Managed\nold\n")
+	sys.write("/etc/sudoers.d/90-cloud-init-users", "ubuntu ALL=(ALL) NOPASSWD:ALL\n")
+	sys.write("/etc/sudoers.d/dir/nested", "# Managed\n")
+	st := newRunState()
+	st.declare(File{Path: "/etc/sudoers.d/keep"})
+	ctx := withRunState(context.Background(), st)
+	r := OwnedDir{Path: "/etc/sudoers.d", Header: "# Managed"}
+
+	change, err := r.Check(ctx, sys)
+	require.NoError(t, err)
+	assert.False(t, change.InSync)
+	assert.Equal(t, "remove /etc/sudoers.d/old\n", change.Diff)
+	assert.Contains(t, change.Warning, "/etc/sudoers.d/90-cloud-init-users\n/etc/sudoers.d/dir\n")
+
+	require.NoError(t, r.Apply(ctx, sys))
+	names, err := sys.ReadDir("/etc/sudoers.d")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"90-cloud-init-users", "dir", "keep"}, names)
+
+	change, err = r.Check(ctx, sys)
+	require.NoError(t, err)
+	assert.True(t, change.InSync)
+	assert.NotEmpty(t, change.Warning)
+	leftovers, err := r.Leftovers(ctx, sys)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"/etc/sudoers.d/90-cloud-init-users", "/etc/sudoers.d/dir"}, leftovers)
+}
+
+func TestOwnedDir_WithoutHeaderLeavesNothingForPrune(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/etc/sudoers.d/stray", "")
+
+	leftovers, err := OwnedDir{Path: "/etc/sudoers.d"}.Leftovers(
+		withRunState(context.Background(), newRunState()),
+		sys,
+	)
+	require.NoError(t, err)
+	assert.Empty(t, leftovers)
+}
+
+func TestOwnedDir_PruneRemovesThenNotifies(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/etc/systemd/timesyncd.conf.d/local.conf", "[Time]\n")
+	sys.on(
+		"systemctl show --property=LoadState,ActiveState systemd-timesyncd",
+		"LoadState=loaded\nActiveState=active\n",
+		0,
+	)
+	sys.on("systemctl restart systemd-timesyncd", "", 0)
+	r := OwnedDir{
+		Path:   "/etc/systemd/timesyncd.conf.d",
+		Header: "# Managed",
+		Notify: ResourceList{ServiceAction{Name: "systemd-timesyncd", Action: "restart"}},
+	}
+
+	require.NoError(t, r.Prune(context.Background(), sys, "/etc/systemd/timesyncd.conf.d/local.conf"))
+
+	assert.False(t, sys.exists("/etc/systemd/timesyncd.conf.d/local.conf"))
+	assert.Equal(t, "systemctl restart systemd-timesyncd", sys.ran[len(sys.ran)-1])
+}
+
 func TestUnifiedDiff(t *testing.T) {
 	lines := func(n int, change map[int]string) string {
 		var b strings.Builder
