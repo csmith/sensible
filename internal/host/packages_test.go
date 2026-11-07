@@ -16,6 +16,7 @@ func newArchSys(t *testing.T) *testSys {
 	sys.write("/var/lib/pacman/local/ALPM_DB_VERSION", "9\n")
 	sys.write("/var/lib/pacman/local/vim-9.1-1/desc", "%NAME%\nvim\n\n%VERSION%\n9.1-1\n\n%PROVIDES%\nxxd\nvi=9.1\n\n")
 	sys.write("/var/lib/pacman/local/zsh-5.9-1/desc", "%NAME%\nzsh\n\n%VERSION%\n5.9-1\n\n")
+	sys.on("pacman -Sp *", "", 0)
 	return sys
 }
 
@@ -45,8 +46,58 @@ func TestPackage_Pacman(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, tt.inSync, change.InSync)
 				if !tt.inSync {
+					sys.ran = nil
 					require.NoError(t, tt.resource.Apply(ctx, sys))
 					assert.Equal(t, []string{tt.apply}, sys.ran)
+				}
+			},
+		)
+	}
+}
+
+func TestPackage_PacmanNotInSyncDatabase(t *testing.T) {
+	sys := newArchSys(t)
+	sys.commands["pacman -Sp --noconfirm --print-format %n git"] = func(Cmd) Result {
+		return Result{Stderr: "error: target not found: git\n", Code: 1}
+	}
+	_, err := Package{Name: "git"}.Check(withRunState(context.Background(), newRunState()), sys)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pacman -Syu")
+	assert.NotErrorIs(t, err, ErrNotYetCheckable)
+}
+
+func TestPackage_PacmanInstallFailures(t *testing.T) {
+	tests := []struct {
+		name    string
+		stderr  string
+		wantSyu bool
+	}{
+		{
+			name: "stale sync database",
+			stderr: "error: failed retrieving file 'git-2.0-1-x86_64.pkg.tar.zst' from mirror : " +
+				"The requested URL returned error: 404\nerror: failed to commit transaction (failed to retrieve some files)\n",
+			wantSyu: true,
+		},
+		{
+			name:   "something else",
+			stderr: "error: failed to commit transaction (conflicting files)\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				sys := newArchSys(t)
+				sys.commands["pacman -S --needed --noconfirm git"] = func(Cmd) Result {
+					return Result{Stderr: tt.stderr, Code: 1}
+				}
+				err := Package{Name: "git"}.Apply(withRunState(context.Background(), newRunState()), sys)
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "failed to commit transaction")
+				if tt.wantSyu {
+					assert.Contains(t, err.Error(), "pacman -Syu")
+				} else {
+					assert.NotContains(t, err.Error(), "pacman -Syu")
 				}
 			},
 		)

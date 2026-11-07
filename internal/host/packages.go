@@ -39,8 +39,13 @@ func (r Package) Apply(ctx context.Context, sys Sys) error {
 	if family == familyArch {
 		if r.Absent {
 			_, err = runOK(ctx, sys, argv("pacman", "-R", "--noconfirm", r.Name))
-		} else {
-			_, err = runOK(ctx, sys, argv("pacman", "-S", "--needed", "--noconfirm", r.Name))
+			return err
+		}
+		res, err := runOK(ctx, sys, argv("pacman", "-S", "--needed", "--noconfirm", r.Name))
+		// Mirrors only keep current versions, so a stale sync database
+		// names files they've deleted.
+		if out := output(res); err != nil && strings.Contains(out, "failed retrieving file") && strings.Contains(out, "404") {
+			return fmt.Errorf("%w\npacman's sync database is out of date; run pacman -Syu on the host", err)
 		}
 		return err
 	}
@@ -83,10 +88,26 @@ func (r Package) checkPacman(ctx context.Context, sys Sys) (Change, error) {
 	case r.Absent && db.installed[r.Name]:
 		return drift("remove package\n"), nil
 	case !r.Absent && !db.satisfied[r.Name]:
-		return drift("install package\n"), nil
+		return r.checkPacmanSync(ctx, sys)
 	default:
 		return Change{InSync: true}, nil
 	}
+}
+
+// checkPacmanSync looks for the package, or a group or package providing
+// it, in pacman's sync database.
+func (r Package) checkPacmanSync(ctx context.Context, sys Sys) (Change, error) {
+	res, err := runOK(ctx, sys, argv("pacman", "-Sp", "--noconfirm", "--print-format", "%n", r.Name))
+	if err != nil && strings.Contains(res.Stderr, "target not found") {
+		return Change{}, fmt.Errorf(
+			"%s isn't in pacman's sync database; if it's a new package, run pacman -Syu on the host",
+			r.Name,
+		)
+	}
+	if err != nil {
+		return Change{}, err
+	}
+	return drift("install package\n"), nil
 }
 
 func (r Package) checkApt(ctx context.Context, sys Sys) (Change, error) {
