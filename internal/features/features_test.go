@@ -305,7 +305,7 @@ func TestResources_featuresTurnOff(t *testing.T) {
 			name:    "no stacks",
 			modify:  func(h *Host) { h.Config.Stacks = nil },
 			absent:  []string{"dir:/srv/compose", "dir:/srv/volumes"},
-			present: []string{"compose-projects:/srv/compose"},
+			present: []string{"compose-projects:/srv/compose", "volumes:/srv/volumes"},
 		},
 		{
 			name:   "no tailscale",

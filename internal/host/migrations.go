@@ -242,29 +242,5 @@ func (r Migrations) Apply(ctx context.Context, sys Sys) error {
 // undeclared lists the stacks' directories in MigrationsDir with no
 // migrations declared, and the undeclared migrations in the rest.
 func (r Migrations) undeclared(ctx context.Context, sys Sys) ([]string, error) {
-	declared := state(ctx).declared
-	stacks, err := undeclaredIn(sys, declared, MigrationsDir, false)
-	if err != nil {
-		return nil, err
-	}
-	names, err := sys.ReadDir(MigrationsDir)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	extra := stacks
-	for _, name := range names {
-		path := filepath.Join(MigrationsDir, name)
-		if !declared[path] {
-			continue
-		}
-		inner, err := undeclaredIn(sys, declared, path, false)
-		if err != nil {
-			return nil, err
-		}
-		extra = append(extra, inner...)
-	}
-	return extra, nil
+	return undeclaredInGroups(sys, state(ctx).declared, MigrationsDir)
 }

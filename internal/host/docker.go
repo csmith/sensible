@@ -215,6 +215,21 @@ func (r ComposeProjects) Apply(ctx context.Context, sys Sys) error {
 	return nil
 }
 
+func (r Volumes) Check(ctx context.Context, sys Sys) (Change, error) {
+	extra, err := undeclaredInGroups(sys, state(ctx).declared, r.Path)
+	if err != nil || len(extra) == 0 {
+		return Change{InSync: true}, err
+	}
+	return Change{
+		InSync:  true,
+		Warning: strings.Join(extra, "\n") + "\nno role declares these; remove them by hand once they're not needed\n",
+	}, nil
+}
+
+func (r Volumes) Apply(context.Context, Sys) error {
+	return nil
+}
+
 // networkLabel marks the networks sensible created, which it may remove.
 const networkLabel = "sensible.managed=true"
 

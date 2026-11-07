@@ -245,6 +245,56 @@ func TestDockerNetwork_NotYetCheckableWithoutDocker(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotYetCheckable)
 }
 
+func TestVolumes_WarnsAboutUndeclaredWithoutRemoving(t *testing.T) {
+	sys := newTestSys(t)
+	for _, path := range []string{"web/database-16", "web/database-17", "old/data"} {
+		sys.write("/srv/volumes/"+path+"/PG_VERSION", "")
+	}
+	st := newRunState()
+	for _, path := range []string{"/srv/volumes", "/srv/volumes/web", "/srv/volumes/web/database-17"} {
+		st.declare(Dir{Path: path})
+	}
+	ctx := withRunState(context.Background(), st)
+	r := Volumes{Path: "/srv/volumes"}
+
+	change, err := r.Check(ctx, sys)
+	require.NoError(t, err)
+	assert.True(t, change.InSync)
+	assert.Empty(t, change.Diff)
+	assert.Equal(
+		t,
+		"/srv/volumes/old\n/srv/volumes/web/database-16\n"+
+			"no role declares these; remove them by hand once they're not needed\n",
+		change.Warning,
+	)
+
+	require.NoError(t, r.Apply(ctx, sys))
+	assert.True(t, sys.exists("/srv/volumes/old/data/PG_VERSION"))
+	assert.True(t, sys.exists("/srv/volumes/web/database-16/PG_VERSION"))
+	assert.Empty(t, sys.ran)
+}
+
+func TestVolumes_NoWarningWhenAllDeclared(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/srv/volumes/web/data/file", "")
+	st := newRunState()
+	for _, path := range []string{"/srv/volumes/web", "/srv/volumes/web/data"} {
+		st.declare(Dir{Path: path})
+	}
+
+	change, err := Volumes{Path: "/srv/volumes"}.Check(withRunState(context.Background(), st), sys)
+
+	require.NoError(t, err)
+	assert.Equal(t, Change{InSync: true}, change)
+}
+
+func TestVolumes_NoWarningWithoutVolumes(t *testing.T) {
+	change, err := Volumes{Path: "/srv/volumes"}.Check(context.Background(), newTestSys(t))
+
+	require.NoError(t, err)
+	assert.Equal(t, Change{InSync: true}, change)
+}
+
 func TestDockerNetworks_RemovesUndeclared(t *testing.T) {
 	sys := newTestSys(t)
 	sys.on(networkLs+"label=sensible.managed=true --format {{.Name}}", "web\nold\n", 0)

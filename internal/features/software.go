@@ -412,9 +412,6 @@ func dockerClientConfig(auths map[string]string) ([]host.Resource, error) {
 	}, nil
 }
 
-// stacks deploys the host's compose stacks, after the volumes they mount.
-// Each is recreated whenever its files change, and stacks no role declares
-// any more are taken down.
 // certs writes the host's certificates, ahead of the stacks that mount them.
 func certs(h Host) ([]host.Resource, error) {
 	var rs []host.Resource
@@ -443,6 +440,9 @@ func certsCleanUp(Host) ([]host.Resource, error) {
 	return []host.Resource{host.CertRecords{}}, nil
 }
 
+// stacks deploys the host's compose stacks, after the volumes they mount.
+// Each is recreated whenever its files change, and stacks no role declares
+// any more are taken down. Volumes no role declares are only reported.
 func stacks(h Host) ([]host.Resource, error) {
 	var rs []host.Resource
 	if len(h.Config.Volumes) > 0 {
@@ -463,7 +463,13 @@ func stacks(h Host) ([]host.Resource, error) {
 		rs = append(rs, stack(s)...)
 	}
 	// Networks are removed after the stacks that might use them.
-	return append(rs, host.ComposeProjects{Path: config.StacksDir}, host.DockerNetworks{}, host.Migrations{}), nil
+	return append(
+		rs,
+		host.ComposeProjects{Path: config.StacksDir},
+		host.DockerNetworks{},
+		host.Migrations{},
+		host.Volumes{Path: config.VolumesDir},
+	), nil
 }
 
 func stack(s config.Stack) []host.Resource {

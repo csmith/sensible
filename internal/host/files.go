@@ -434,6 +434,34 @@ func undeclaredIn(sys Sys, declared map[string]bool, dir string, recursive bool)
 	return extra, nil
 }
 
+// undeclaredInGroups lists the entries in dir that aren't declared, and the
+// undeclared entries in each declared directory in dir.
+func undeclaredInGroups(sys Sys, declared map[string]bool, dir string) ([]string, error) {
+	extra, err := undeclaredIn(sys, declared, dir, false)
+	if err != nil {
+		return nil, err
+	}
+	names, err := sys.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range names {
+		path := filepath.Join(dir, name)
+		if !declared[path] {
+			continue
+		}
+		inner, err := undeclaredIn(sys, declared, path, false)
+		if err != nil {
+			return nil, err
+		}
+		extra = append(extra, inner...)
+	}
+	return extra, nil
+}
+
 // ownership is a resolved owner and group, with -1 for those not managed.
 type ownership struct {
 	uid, gid int

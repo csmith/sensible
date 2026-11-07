@@ -82,6 +82,7 @@ var resourceTypes = registry(
 	OwnedDir{},
 	ComposeStack{},
 	ComposeProjects{},
+	Volumes{},
 	Migration{},
 	Migrations{},
 	CertRecord{},
@@ -294,6 +295,13 @@ type ComposeProjects struct {
 	Path string `json:"path"`
 }
 
+// Volumes warns about the volume directories in Path that no Dir earlier in
+// the same run declared, and about the stacks' directories in Path with none
+// declared. It never removes them.
+type Volumes struct {
+	Path string `json:"path"`
+}
+
 // DockerNetwork creates a Docker network, labelled as sensible's. An
 // existing network whose settings differ is left alone with a warning, as
 // changing them means recreating it, disconnecting every container.
@@ -382,6 +390,8 @@ func (r OwnedDir) Notifies() ResourceList { return r.Notify }
 func (r ComposeStack) ID() string { return "compose:" + r.Dir }
 
 func (r ComposeProjects) ID() string { return "compose-projects:" + r.Path }
+
+func (r Volumes) ID() string { return "volumes:" + r.Path }
 
 func (r DockerNetwork) ID() string { return "docker-network:" + r.Name }
 
