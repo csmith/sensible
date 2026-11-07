@@ -280,7 +280,7 @@ func (r *Repo) stackEnv(role string, values map[string]ast.Node, partials []map[
 		if isNull(partialEnv) {
 			continue
 		}
-		f := filler{values: partials[i], exact: func(v, _ ast.Node) (ast.Node, error) { return merge(nil, v), nil }}
+		f := filler{values: partials[i], exact: copyValue}
 		filled, _, err := f.fill(partialEnv)
 		if err == nil {
 			err = checkEnv(filled)
@@ -288,7 +288,7 @@ func (r *Repo) stackEnv(role string, values map[string]ast.Node, partials []map[
 		if err != nil {
 			return nil, fmt.Errorf("%s: compose.env: %w", r.path(file), err)
 		}
-		if err := checkConflicts(use.source(), filled, set); err != nil {
+		if err := checkConflicts(use.source, filled, set); err != nil {
 			return nil, fmt.Errorf("%s: compose.env: %w", r.path("roles", role), err)
 		}
 		merged = merge(merged, filled)

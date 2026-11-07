@@ -1,0 +1,10 @@
+params:
+  service: db
+  password: ~
+  level: ~
+partials:
+  - partial: password
+    service: "{service}"
+    password: "{password}"
+    user: "u-{service}"
+  - {partial: logging, level: "lvl-{level}"}

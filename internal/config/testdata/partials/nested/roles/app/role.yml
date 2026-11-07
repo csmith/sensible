@@ -1,0 +1,4 @@
+params:
+  level: ~
+partials:
+  - {partial: postgres, service: pg, password: !generated db, level: !param level}

@@ -1,0 +1,14 @@
+params:
+  service: db
+  password: ~
+  user: ~
+compose:
+  env:
+    PG_PASSWORD: "{password}"
+migrations:
+  "{service}-password":
+    on: "{password}"
+    after: [psql, -c, "ALTER USER {user}"]
+backups:
+  "{stack}-{service}":
+    command: [dump, "{service}"]

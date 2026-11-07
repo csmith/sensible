@@ -448,7 +448,7 @@ func (c *composeRenderer) partialsCompose(values []map[string]ast.Node) (*ast.Fi
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", file, err)
 		}
-		if err := checkConflicts(use.source(), pf.Docs[0].Body, set); err != nil {
+		if err := checkConflicts(use.source, pf.Docs[0].Body, set); err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", c.repo.path("roles", c.def.role), err)
 		}
 		if f == nil {

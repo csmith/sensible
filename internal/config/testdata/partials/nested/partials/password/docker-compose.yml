@@ -1,0 +1,4 @@
+services:
+  "{service}":
+    environment:
+      POSTGRES_PASSWORD: "{password}"

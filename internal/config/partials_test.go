@@ -150,6 +150,44 @@ func TestPartials_settingsOnly(t *testing.T) {
 	assert.Equal(t, map[string]UserConfig{"u7": {}}, c.Users)
 }
 
+func TestPartials_nested(t *testing.T) {
+	c, err := newTestRepo(t, readTestTree(t, "partials/nested")).open(t).HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	require.Len(t, c.Stacks, 1)
+	s := c.Stacks[0]
+	db := s.Generated["db"]
+	require.NotEmpty(t, db)
+
+	assert.Equal(
+		t,
+		map[string]any{
+			"services": map[string]any{
+				"pg": map[string]any{"image": "postgres", "environment": map[string]any{"POSTGRES_PASSWORD": db}},
+			},
+		},
+		normaliseYAML(t, stackFile(t, s, "docker-compose.yml").Content),
+	)
+	assert.Equal(t, "LOG_LEVEL='lvl-debug'\nPG_PASSWORD='"+db+"'\n", stackFile(t, s, ".env").Content)
+	assert.Equal(
+		t,
+		[]Migration{{Name: "pg-password", On: db, Secret: true, After: Command{"psql", "-c", "ALTER USER u-pg"}}},
+		s.Migrations,
+	)
+	assert.Equal(t, map[string]BackupConfig{"app-pg": {Command: Command{"dump", "pg"}}}, c.Backups)
+}
+
+func TestPartials_nestedDefaults(t *testing.T) {
+	files := map[string]string{
+		"hosts.d/hosts.yml":          "alpha:\n  roles: {tools: }\n",
+		"partials/inner/partial.yml": "params:\n  pkg: vim\npackages:\n  install: [\"{pkg}\"]\n",
+		"partials/outer/partial.yml": "params:\n  pkg: ~\npartials:\n  - {partial: inner, pkg: \"{pkg}\"}\n",
+		"roles/tools/role.yml":       "partials: [{partial: outer}]\n",
+	}
+	c, err := newTestRepo(t, files).open(t).HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	assert.Equal(t, Set{"vim"}, c.Packages.Install, "a null argument leaves the default")
+}
+
 func TestPartials_errors(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -243,6 +281,51 @@ func TestPartials_errors(t *testing.T) {
 			"volume from a role parameter",
 			map[string]string{
 				"roles/web/role.yml": "params: {v: a}\npartials: [{partial: tailscale-proxy, volume: !param v}]\n",
+			},
+			"volumes can't",
+		},
+		{
+			"nested partials conflict",
+			map[string]string{
+				"partials/x/partial.yml": "partials: [{partial: tailscale-proxy, upstream: x}]\n",
+				"roles/web/role.yml":     "partials: [{partial: x}, {partial: tailscale-proxy, upstream: y}]\n",
+			},
+			"partial x > tailscale-proxy and partial tailscale-proxy set services.thp.environment.UPSTREAM differently",
+		},
+		{
+			"include cycle",
+			map[string]string{
+				"partials/a/partial.yml": "partials: [{partial: b}]\n",
+				"partials/b/partial.yml": "partials: [{partial: c}]\n",
+				"partials/c/partial.yml": "partials: [{partial: a}]\n",
+			},
+			"partials/c/partial.yml: partials include each other: a > b > c > a",
+		},
+		{
+			"partial includes itself",
+			map[string]string{"partials/a/partial.yml": "partials: [{partial: a}]\n"},
+			"partials include each other: a > a",
+		},
+		{
+			"unknown included partial",
+			map[string]string{"partials/x/partial.yml": "partials: [{partial: nope}]\n"},
+			`partials/x/partial.yml: [1:12] partial "nope" isn't in`,
+		},
+		{
+			"unknown included argument",
+			map[string]string{"partials/x/partial.yml": "partials: [{partial: tailscale-proxy, colour: red}]\n"},
+			`partials/x/partial.yml: partial tailscale-proxy: [1:39] unknown parameter "colour"`,
+		},
+		{
+			"unknown placeholder in an included argument",
+			map[string]string{"partials/x/partial.yml": "partials: [{partial: tailscale-proxy, upstream: \"{nope}\"}]\n"},
+			"unknown placeholder {nope}",
+		},
+		{
+			"volume from a role parameter through a partial",
+			map[string]string{
+				"partials/x/partial.yml": "params: {v: ~}\npartials: [{partial: tailscale-proxy, volume: \"ts-{v}\"}]\n",
+				"roles/web/role.yml":     "params: {v: a}\npartials: [{partial: x, v: !param v}]\n",
 			},
 			"volumes can't",
 		},
