@@ -1,5 +1,5 @@
 set -eu
-trap {{q (print "rm -f " (q .AgentTmp))}} EXIT
+trap {{q (print "rm -f " (q .AgentTmp) " " (q (print .AgentPath ".new")))}} EXIT
 
 os=$(. /etc/os-release && printf ' %s %s ' "${ID:-}" "${ID_LIKE:-}")
 case $os in
@@ -40,9 +40,10 @@ chown root:root {{q .Home}}
 chmod 0755 {{q .Home}}
 printf '%s\n' {{q (print .User ":" .Password)}} | chpasswd
 
-printf '%s  %s\n' {{q .AgentHash}} {{q .AgentTmp}} | sha256sum -c - >/dev/null
+# The upload is checked once copied, as its owner could change it after.
 mkdir -p {{q .AgentDir}}
 install -o root -g root -m 0755 {{q .AgentTmp}} {{q (print .AgentPath ".new")}}
+printf '%s  %s\n' {{q .AgentHash}} {{q (print .AgentPath ".new")}} | sha256sum -c - >/dev/null
 mv -f {{q (print .AgentPath ".new")}} {{q .AgentPath}}
 
 mkdir -p /etc/ssh/authorized_keys
