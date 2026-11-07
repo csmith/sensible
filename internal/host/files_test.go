@@ -270,6 +270,51 @@ func TestSys_DoesNotChangeFilesHardLinkedIntoUserDirs(t *testing.T) {
 	assert.Equal(t, fs.FileMode(0o600), info.Mode.Perm())
 }
 
+func TestSys_WritesInPlaceKeepingTheFile(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/etc/hosts", "127.0.0.1 localhost old-name.example.com\n")
+	before, err := os.Stat(sys.path("/etc/hosts"))
+	require.NoError(t, err)
+
+	err = confinedErr(
+		sys.localSys,
+		"/etc/hosts",
+		lastAsIs,
+		func(f fileOps) error {
+			return f.writeInPlace(
+				[]byte("127.0.0.1 localhost\n"),
+				WriteOptions{UID: os.Getuid(), GID: os.Getgid(), Mode: 0o600},
+			)
+		},
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, "127.0.0.1 localhost\n", sys.read("/etc/hosts"))
+	after, err := os.Stat(sys.path("/etc/hosts"))
+	require.NoError(t, err)
+	assert.True(t, os.SameFile(before, after))
+	assert.Equal(t, fs.FileMode(0o600), after.Mode().Perm())
+}
+
+func TestSys_DoesNotWriteInPlaceToFilesHardLinkedIntoUserDirs(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/home/alice/.profile", "")
+	require.NoError(t, os.Chmod(sys.path("/home/alice"), 0o777))
+	require.NoError(t, os.Link(sys.path("/etc/shadow"), sys.path("/home/alice/.zshrc")))
+
+	err := confinedErr(
+		sys.localSys,
+		"/home/alice/.zshrc",
+		lastAsIs,
+		func(f fileOps) error {
+			return f.writeInPlace([]byte("x"), WriteOptions{UID: os.Getuid(), GID: os.Getgid(), Mode: 0o644})
+		},
+	)
+
+	require.ErrorIs(t, err, errHardLinked)
+	assert.NotEqual(t, "x", sys.read("/etc/shadow"))
+}
+
 func TestSys_DoesNotWaitOnFIFOs(t *testing.T) {
 	sys := newTestSys(t)
 	sys.write("/home/alice/.profile", "")

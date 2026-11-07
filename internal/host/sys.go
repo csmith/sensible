@@ -51,7 +51,7 @@ type FileReader interface {
 
 type FileWriter interface {
 	// WriteFile atomically replaces path, which must be in an existing
-	// directory.
+	// directory, or writes it in place if it's a mount point.
 	WriteFile(path string, data []byte, opts WriteOptions) error
 	// MkdirAll creates path and any missing parents, owned by whoever the
 	// agent runs as.
@@ -266,7 +266,11 @@ func (s *localSys) WriteFile(path string, data []byte, opts WriteOptions) error 
 			if err != nil {
 				return err
 			}
-			if err := f.rename(tmp, f.name); err != nil {
+			if err := f.rename(tmp, f.name); errors.Is(err, unix.EBUSY) {
+				// A bind mount, such as Docker's /etc/hosts, can't be
+				// replaced, only written to.
+				return f.writeInPlace(data, opts)
+			} else if err != nil {
 				return err
 			}
 			committed = true
@@ -299,6 +303,37 @@ func writeTemp(file *os.File, data []byte, opts WriteOptions) error {
 	// The validator runs as another process, so it's given the agent's
 	// descriptor for the file rather than a path that could be redirected.
 	return opts.Validate(fmt.Sprintf("/proc/%d/fd/%d", os.Getpid(), file.Fd()))
+}
+
+func (f fileOps) writeInPlace(data []byte, opts WriteOptions) error {
+	file, err := f.open(f.name, unix.O_WRONLY|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return f.err("write", f.name, errNotRegular)
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Nlink > 1 && !f.trusted {
+		return f.err("write", f.name, errHardLinked)
+	}
+	if err := file.Chown(opts.UID, opts.GID); err != nil {
+		return err
+	}
+	if err := file.Chmod(opts.Mode); err != nil {
+		return err
+	}
+	if _, err := file.WriteAt(data, 0); err != nil {
+		return err
+	}
+	if err := file.Truncate(int64(len(data))); err != nil {
+		return err
+	}
+	return file.Sync()
 }
 
 func syncDir(dir string) {
