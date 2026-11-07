@@ -39,7 +39,7 @@ func Prune(ctx context.Context, opts PruneOptions) error {
 	}
 	r := &Runner{
 		Out:     out,
-		Confirm: confirmOnTerminal,
+		Ask:     askOnTerminal,
 		Builds:  NewEmbeddedBuilds(),
 		Compile: compiler(repo),
 	}
@@ -52,6 +52,8 @@ type leftover struct {
 	// label says what's removed, e.g. a path.
 	label  string
 	remove func() error
+	// ignore, if set, records that it's meant to stay.
+	ignore func() error
 	// note, if set, warns what removing it may affect.
 	note string
 	// after, if set, must be removed first, or this is kept.
@@ -103,31 +105,55 @@ func (r *Runner) Prune(ctx context.Context, targets []target) error {
 	out.line("")
 	out.section("Pruning")
 	for _, l := range items {
-		if l.after != nil && !l.after.removed {
-			out.item(out.p.dim("- " + l.h.name + ": " + l.label + "  kept with " + l.after.label))
-			continue
-		}
-		prompt := fmt.Sprintf("Remove %s from %s? ", l.label, l.h.name)
-		if l.note != "" {
-			prompt += strings.ToUpper(l.note[:1]) + l.note[1:] + ". "
-		}
-		ok, err := r.Confirm(prompt + "[y/N] ")
+		ok, err := r.pruneOne(out, l)
 		if err != nil {
 			return errors.Join(err, failedErr(failed))
 		}
-		if !ok {
-			out.item(out.p.dim("- " + l.h.name + ": " + l.label + "  kept"))
-			continue
-		}
-		if err := l.remove(); err != nil {
-			failed = true
-			out.item(out.p.failure(l.h.name + ": " + l.label + ": " + err.Error())...)
-			continue
-		}
-		l.removed = true
-		out.item(out.p.ok("✓") + " " + l.h.name + ": " + l.label)
+		failed = failed || !ok
 	}
 	return failedErr(failed)
+}
+
+// pruneOne asks what to do with a leftover and does it, reporting whether
+// that succeeded. It only returns an error if the question couldn't be
+// asked.
+func (r *Runner) pruneOne(out *renderer, l *leftover) (bool, error) {
+	if l.after != nil && !l.after.removed {
+		out.item(out.p.dim("- " + l.h.name + ": " + l.label + "  kept with " + l.after.label))
+		return true, nil
+	}
+	prompt := fmt.Sprintf("Remove %s from %s? ", l.label, l.h.name)
+	if l.note != "" {
+		prompt += strings.ToUpper(l.note[:1]) + l.note[1:] + ". "
+	}
+	choices := "[y/N] "
+	if l.ignore != nil {
+		choices = "[y/N/i] "
+	}
+	answer, err := r.Ask(prompt + choices)
+	if err != nil {
+		return false, err
+	}
+	ignore := l.ignore != nil && (answer == "i" || answer == "ignore")
+	if !ignore && answer != "y" && answer != "yes" {
+		out.item(out.p.dim("- " + l.h.name + ": " + l.label + "  kept"))
+		return true, nil
+	}
+	act := l.remove
+	if ignore {
+		act = l.ignore
+	}
+	if err := act(); err != nil {
+		out.item(out.p.failure(l.h.name + ": " + l.label + ": " + err.Error())...)
+		return false, nil
+	}
+	if ignore {
+		out.item(out.p.dim("- " + l.h.name + ": " + l.label + "  ignored"))
+		return true, nil
+	}
+	l.removed = true
+	out.item(out.p.ok("✓") + " " + l.h.name + ": " + l.label)
+	return true, nil
 }
 
 func (h *hostRun) findLeftovers() {
@@ -142,10 +168,11 @@ func (h *hostRun) findLeftovers() {
 			h.unlisted = append(h.unlisted, f)
 		}
 		for _, item := range f.Items {
-			h.leftovers = append(
-				h.leftovers,
-				&leftover{h: h, label: item, remove: func() error { return h.agent.remove(f.ID, item) }},
-			)
+			l := &leftover{h: h, label: item, remove: func() error { return h.agent.remove(f.ID, item) }}
+			if h.ignore != nil {
+				l.ignore = func() error { return h.ignore(f.ID, item) }
+			}
+			h.leftovers = append(h.leftovers, l)
 		}
 	}
 	h.findUnusedSecrets()
@@ -156,10 +183,11 @@ func (h *hostRun) findLeftovers() {
 // directory may hold data that uses them, so they're only offered once it's
 // gone: they come after the host's other leftovers, and are kept unless the
 // directory is removed first. If the host's leftovers couldn't all be
-// listed, the directory may be there unlisted. A stack's own volumes are
-// still there, so its values come with a warning.
+// listed, or it's ignored, the directory may be there unlisted. A stack's
+// own volumes are still there, so its values come with a warning.
 func (h *hostRun) findUnusedSecrets() {
 	volumes := slices.Clone(h.leftovers)
+	ignoredVolumes := h.ignored[host.Volumes{Path: config.VolumesDir}.ID()]
 	for _, s := range h.unusedSecrets {
 		names := " (" + strings.Join(s.names, ", ") + ")"
 		if s.inUse {
@@ -177,12 +205,15 @@ func (h *hostRun) findUnusedSecrets() {
 		if len(h.unlisted) > 0 {
 			continue
 		}
+		dir := filepath.Join(config.VolumesDir, s.stack)
+		if slices.Contains(ignoredVolumes, dir) {
+			continue
+		}
 		l := &leftover{
 			h:      h,
 			label:  "generated secrets for " + s.stack + names,
 			remove: s.drop,
 		}
-		dir := filepath.Join(config.VolumesDir, s.stack)
 		if i := slices.IndexFunc(volumes, func(v *leftover) bool { return v.label == dir }); i >= 0 {
 			l.after = volumes[i]
 		}

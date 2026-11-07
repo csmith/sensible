@@ -181,7 +181,7 @@ func (r Disowned) Check(ctx context.Context, sys Sys) (Change, error) {
 	if err != nil {
 		return Change{}, err
 	}
-	change := leftoverWarning(extra, "no longer managed")
+	change := leftoverWarning(ctx, r.ID(), extra, "no longer managed")
 	stale, err := r.staleRecords(ctx, sys)
 	if err != nil {
 		return Change{}, err
@@ -582,7 +582,7 @@ func (r OwnedDir) Check(ctx context.Context, sys Sys) (Change, error) {
 	if err != nil {
 		return Change{}, err
 	}
-	change := leftoverWarning(keep, "sensible didn't write these")
+	change := leftoverWarning(ctx, r.ID(), keep, "sensible didn't write these")
 	var diff strings.Builder
 	for _, path := range remove {
 		diff.WriteString("remove " + path + "\n")

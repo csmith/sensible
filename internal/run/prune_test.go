@@ -13,11 +13,11 @@ var pruneResources = host.ResourceList{host.Package{Name: "zsh"}, host.Volumes{P
 
 func TestPrune_asksBeforeRemovingEachLeftover(t *testing.T) {
 	f := newRunnerFixture(t, pruneResources)
-	answers := map[string]bool{
-		"Remove /srv/volumes/old from acidburn? [y/N] ":   true,
-		"Remove /srv/volumes/older from acidburn? [y/N] ": false,
+	answers := map[string]string{
+		"Remove /srv/volumes/old from acidburn? [y/N] ":   "y",
+		"Remove /srv/volumes/older from acidburn? [y/N] ": "n",
 	}
-	f.runner.Confirm = func(prompt string) (bool, error) {
+	f.runner.Ask = func(prompt string) (string, error) {
 		f.confirmed = append(f.confirmed, prompt)
 		return answers[prompt], nil
 	}
@@ -29,6 +29,54 @@ func TestPrune_asksBeforeRemovingEachLeftover(t *testing.T) {
 	assert.Len(t, f.confirmed, 2)
 	assert.Equal(t, []string{"/srv/volumes/old"}, agent.removed)
 	assert.Contains(t, f.out.String(), "  ✓ acidburn: /srv/volumes/old\n  - acidburn: /srv/volumes/older  kept\n")
+}
+
+func TestPrune_ignoreAnswerRecordsTheLeftover(t *testing.T) {
+	f := newRunnerFixture(t, pruneResources)
+	var ignored []string
+	f.runner.Compile = func(target, host.Facts) (compiled, error) {
+		return compiled{
+			resources: pruneResources,
+			ignored:   map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/kept"}},
+			ignore: func(id, item string) error {
+				ignored = append(ignored, id+" "+item)
+				return nil
+			},
+		}, nil
+	}
+	f.runner.Ask = func(prompt string) (string, error) {
+		f.confirmed = append(f.confirmed, prompt)
+		return "i", nil
+	}
+	agent := &fakeAgent{leftovers: map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/old"}}}
+
+	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", agent)})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Remove /srv/volumes/old from acidburn? [y/N/i] "}, f.confirmed)
+	assert.Equal(t, []string{"volumes:/srv/volumes /srv/volumes/old"}, ignored)
+	assert.Empty(t, agent.removed)
+	assert.Equal(t, map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/kept"}}, agent.ignored)
+	assert.Contains(t, f.out.String(), "  - acidburn: /srv/volumes/old  ignored\n")
+}
+
+func TestPrune_keepsSecretsWhoseVolumeIsIgnored(t *testing.T) {
+	f := newRunnerFixture(t, nil)
+	f.runner.Compile = func(target, host.Facts) (compiled, error) {
+		return compiled{
+			resources: pruneResources,
+			ignored:   map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/app"}},
+			unusedSecrets: []savedSecrets{
+				{stack: "app", names: []string{"db"}, drop: func() error { return nil }},
+			},
+		}, nil
+	}
+
+	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", &fakeAgent{})})
+
+	require.NoError(t, err)
+	assert.Empty(t, f.confirmed)
+	assert.Contains(t, f.out.String(), "Nothing to prune\n")
 }
 
 func TestPrune_skipsHostsWithChangesToApply(t *testing.T) {
@@ -101,13 +149,13 @@ func withUnusedSecrets(f *runnerFixture, stacks ...string) *[]string {
 func TestPrune_offersSecretsOnceTheirVolumesAreRemoved(t *testing.T) {
 	f := newRunnerFixture(t, nil)
 	dropped := withUnusedSecrets(f, "app", "kept", "gone")
-	answers := map[string]bool{
-		"Remove /srv/volumes/app from acidburn? [y/N] ":                       true,
-		"Remove /srv/volumes/kept from acidburn? [y/N] ":                      false,
-		"Remove generated secrets for app (db, token) from acidburn? [y/N] ":  true,
-		"Remove generated secrets for gone (db, token) from acidburn? [y/N] ": true,
+	answers := map[string]string{
+		"Remove /srv/volumes/app from acidburn? [y/N] ":                       "y",
+		"Remove /srv/volumes/kept from acidburn? [y/N] ":                      "n",
+		"Remove generated secrets for app (db, token) from acidburn? [y/N] ":  "y",
+		"Remove generated secrets for gone (db, token) from acidburn? [y/N] ": "y",
 	}
-	f.runner.Confirm = func(prompt string) (bool, error) {
+	f.runner.Ask = func(prompt string) (string, error) {
 		f.confirmed = append(f.confirmed, prompt)
 		return answers[prompt], nil
 	}
@@ -176,9 +224,9 @@ func TestPrune_warnsAboutSecretsOfStacksStillThere(t *testing.T) {
 			}},
 		}, nil
 	}
-	f.runner.Confirm = func(prompt string) (bool, error) {
+	f.runner.Ask = func(prompt string) (string, error) {
 		f.confirmed = append(f.confirmed, prompt)
-		return true, nil
+		return "y", nil
 	}
 	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", &fakeAgent{})})
 

@@ -659,20 +659,24 @@ func indent(text, prefix string) []string {
 var errNoTerminal = errors.New("no terminal to ask on")
 
 func confirmOnTerminal(prompt string) (bool, error) {
+	answer, err := askOnTerminal(prompt)
+	return answer == "y" || answer == "yes", err
+}
+
+func askOnTerminal(prompt string) (string, error) {
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
-		return false, errNoTerminal
+		return "", errNoTerminal
 	}
 	defer func() { _ = tty.Close() }()
 	if _, err := fmt.Fprint(tty, prompt); err != nil {
-		return false, err
+		return "", err
 	}
 	line, err := bufio.NewReader(tty).ReadString('\n')
 	if err != nil && line == "" {
-		return false, err
+		return "", err
 	}
-	answer := strings.ToLower(strings.TrimSpace(line))
-	return answer == "y" || answer == "yes", nil
+	return strings.ToLower(strings.TrimSpace(line)), nil
 }
 
 func passwordFromTerminal(prompt string) (string, error) {

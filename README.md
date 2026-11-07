@@ -94,6 +94,10 @@ The machine sensible runs on is managed like any other host, over SSH to
 loopback. Bootstrap it without `--user`: it only needs sudo, and installs sshd
 if it's missing.
 
+Prune asks about each leftover. Answering `i` keeps it and stops apply and
+prune mentioning it again, by adding it under `ignored` in the host's
+`hosts.d/<host>.state.yml`. Delete the entry there to see it again.
+
 Run `sensible -h` for the other commands and flags.
 
 ## Licence

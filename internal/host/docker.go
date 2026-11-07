@@ -217,7 +217,7 @@ func (r ComposeProjects) Apply(ctx context.Context, sys Sys) error {
 
 func (r Volumes) Check(ctx context.Context, sys Sys) (Change, error) {
 	extra, err := r.Leftovers(ctx, sys)
-	return leftoverWarning(extra, "no role declares these"), err
+	return leftoverWarning(ctx, r.ID(), extra, "no role declares these"), err
 }
 
 func (r Volumes) Apply(context.Context, Sys) error {

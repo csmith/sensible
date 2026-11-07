@@ -104,7 +104,7 @@ func (s *session) handle(ctx context.Context, msg any) error {
 		}
 		return s.conn.Send(FactsReply{Facts: facts})
 	case Check:
-		s.resources = msg.Resources
+		s.resources, s.engine.ignored = msg.Resources, msg.Ignored
 		failedAt, err := s.engine.check(ctx, s.resources, func(c Checked) error { return s.conn.Send(c) })
 		s.checkFailedAt = failedAt
 		if err != nil {

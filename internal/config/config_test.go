@@ -753,6 +753,29 @@ func TestWriteCredentials_refusedWhenSetElsewhere(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(tr.dir, "hosts.d", "alpha.state.yml"))
 }
 
+func TestIgnoreLeftover_recordsEachItemOnceAlongsideOtherState(t *testing.T) {
+	key := testHostKey(t)
+	tr := newTestRepo(t, map[string]string{})
+	require.NoError(t, tr.open(t).AddHostKey("alpha", key.PublicKey))
+
+	r := tr.open(t)
+	require.NoError(t, r.IgnoreLeftover("alpha", "owned-dir:/etc/sudoers.d", "/etc/sudoers.d/README"))
+	require.NoError(t, r.IgnoreLeftover("alpha", "owned-dir:/etc/sudoers.d", "/etc/sudoers.d/README"))
+	require.NoError(t, r.IgnoreLeftover("alpha", "disowned-packages", "package odd: #name"))
+
+	entry := tr.open(t).Inventory().Hosts["alpha"]
+	assert.Equal(
+		t,
+		map[string][]string{
+			"owned-dir:/etc/sudoers.d": {"/etc/sudoers.d/README"},
+			"disowned-packages":        {"package odd: #name"},
+		},
+		entry.Ignored,
+	)
+	assert.Len(t, entry.HostKeys, 1)
+	assert.Empty(t, tr.open(t).Inventory().Hosts["beta"].Ignored)
+}
+
 func testHostKey(t *testing.T) HostKey {
 	t.Helper()
 	return HostKey{testPublicKey(t)}

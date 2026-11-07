@@ -13,13 +13,21 @@ import (
 type engine struct {
 	sys Sys
 	log io.Writer
+	// ignored are the leftovers from the last Check that are meant to stay.
+	ignored map[string][]string
+}
+
+func (e *engine) newRunState() *runState {
+	st := newRunState()
+	st.ignored = e.ignored
+	return st
 }
 
 // check reports each resource's state. Unlike apply, it carries on past
 // failures so the plan shows as much as possible, skipping only the
 // clean-ups. It returns the position of the first failure, or -1.
 func (e *engine) check(ctx context.Context, list ResourceList, send func(Checked) error) (int, error) {
-	st := newRunState()
+	st := e.newRunState()
 	ctx = withRunState(ctx, st)
 	failedAt, pending := -1, false
 	for i, r := range list {
@@ -67,7 +75,7 @@ func (e *engine) check(ctx context.Context, list ResourceList, send func(Checked
 // planned this apply, or -1; the clean-ups after it are skipped, as the
 // check skipped them.
 func (e *engine) apply(ctx context.Context, list ResourceList, checkFailedAt int, send func(any) error) (bool, error) {
-	st := newRunState()
+	st := e.newRunState()
 	ctx = withRunState(ctx, st)
 	var (
 		failed   bool
@@ -165,7 +173,7 @@ func (e *engine) applyOne(
 // leftovers lists each Pruner's leftovers. Like check, it doesn't stop at
 // failures.
 func (e *engine) leftovers(ctx context.Context, list ResourceList, send func(Leftovers) error) (bool, error) {
-	st := newRunState()
+	st := e.newRunState()
 	ctx = withRunState(ctx, st)
 	failed := false
 	for _, r := range list {
@@ -175,7 +183,7 @@ func (e *engine) leftovers(ctx context.Context, list ResourceList, send func(Lef
 			continue
 		}
 		items, err := p.Leftovers(ctx, e.sys)
-		res := Leftovers{ID: r.ID(), Items: items}
+		res := Leftovers{ID: r.ID(), Items: st.unignored(r.ID(), items)}
 		if err != nil {
 			res.Error, failed = err.Error(), true
 		}
@@ -192,7 +200,7 @@ func (e *engine) leftovers(ctx context.Context, list ResourceList, send func(Lef
 // remove prunes one of the leftovers of the Pruner with the given ID, as
 // long as it still lists the item.
 func (e *engine) remove(ctx context.Context, list ResourceList, id, item string) error {
-	st := newRunState()
+	st := e.newRunState()
 	ctx = withRunState(ctx, st)
 	for _, r := range list {
 		st.declare(r)
@@ -270,6 +278,10 @@ type runState struct {
 
 	// containers is every container on the host, for ComposeStack.
 	containers []composeContainer
+
+	// ignored are leftovers that are meant to stay, as items by the ID of
+	// the Pruner that lists them.
+	ignored map[string][]string
 }
 
 func newRunState() *runState {
@@ -317,6 +329,16 @@ func (s *runState) declare(r Resource) {
 		s.declared[filepath.Join(CertRecordsDir, r.Name)] = true
 	default:
 	}
+}
+
+// unignored drops the items that are ignored for the Pruner with the given
+// ID.
+func (s *runState) unignored(id string, items []string) []string {
+	ignored := s.ignored[id]
+	if len(ignored) == 0 {
+		return items
+	}
+	return slices.DeleteFunc(slices.Clone(items), func(item string) bool { return slices.Contains(ignored, item) })
 }
 
 // changed drops cached package state, as any change may have installed or

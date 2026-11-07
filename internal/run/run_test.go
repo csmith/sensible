@@ -58,6 +58,8 @@ type fakeAgent struct {
 	upgrades [][]byte
 	checks   []host.ResourceList
 	removed  []string
+	// ignored is what the last Check said to ignore.
+	ignored map[string][]string
 }
 
 func (f *fakeAgent) serve(r io.ReadCloser, w io.WriteCloser) {
@@ -106,6 +108,9 @@ func (f *fakeAgent) serve(r io.ReadCloser, w io.WriteCloser) {
 			_ = conn.Send(host.FactsReply{Facts: f.facts})
 		case host.Check:
 			resources = m.Resources
+			f.mu.Lock()
+			f.ignored = m.Ignored
+			f.mu.Unlock()
 			checked = f.check(conn, resources)
 		case host.Apply:
 			f.apply(conn, resources, checked)
@@ -307,6 +312,13 @@ func newRunnerFixture(t *testing.T, resources host.ResourceList) *runnerFixture 
 		Confirm: func(prompt string) (bool, error) {
 			f.confirmed = append(f.confirmed, prompt)
 			return f.answer, nil
+		},
+		Ask: func(prompt string) (string, error) {
+			f.confirmed = append(f.confirmed, prompt)
+			if f.answer {
+				return "y", nil
+			}
+			return "n", nil
 		},
 		Builds: newFakeBuilds(t),
 		Compile: func(target, host.Facts) (compiled, error) {

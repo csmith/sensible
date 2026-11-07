@@ -350,6 +350,58 @@ func TestEngine_DisownedAptSourcesKeepsWhatApplyDoesNotDeclare(t *testing.T) {
 	assert.Equal(t, []string{AptKeyringsDir + "/debian.gpg", AptKeyringsDir + "/example.asc"}, leftovers())
 }
 
+func TestEngine_IgnoredLeftoversAreNeitherWarnedAboutNorListed(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/etc/sudoers.d/README", "")
+	sys.write("/etc/sudoers.d/stray", "")
+	sys.write("/etc/early.d/README", "")
+	e := newTestEngine()
+	e.sys = sys
+	// The same path under another resource is still a leftover.
+	e.ignored = map[string][]string{
+		"owned-dir:/etc/sudoers.d": {"/etc/sudoers.d/README"},
+		"owned-dir:/etc/other.d":   {"/etc/early.d/README"},
+	}
+	list := ResourceList{
+		OwnedDir{Path: "/etc/sudoers.d", Header: "# managed"},
+		OwnedDir{Path: "/etc/early.d", Header: "# managed"},
+	}
+
+	var checked []Checked
+	_, err := e.check(
+		context.Background(),
+		list,
+		func(c Checked) error {
+			checked = append(checked, c)
+			return nil
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, checked, 2)
+	assert.Contains(t, checked[0].Warning, "/etc/sudoers.d/stray")
+	assert.NotContains(t, checked[0].Warning, "README")
+	assert.Contains(t, checked[1].Warning, "/etc/early.d/README")
+
+	var found []Leftovers
+	_, err = e.leftovers(
+		context.Background(),
+		list,
+		func(l Leftovers) error {
+			found = append(found, l)
+			return nil
+		},
+	)
+	require.NoError(t, err)
+	assert.Equal(
+		t,
+		[]Leftovers{
+			{ID: "owned-dir:/etc/sudoers.d", Items: []string{"/etc/sudoers.d/stray"}},
+			{ID: "owned-dir:/etc/early.d", Items: []string{"/etc/early.d/README"}},
+		},
+		found,
+	)
+}
+
 func TestEngine_OwnedDirSeesFilesDeclaredEarlier(t *testing.T) {
 	sys := newTestSys(t)
 	sys.write("/etc/sudoers.d/keep", "x\n")

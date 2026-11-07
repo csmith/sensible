@@ -44,9 +44,10 @@ type Pruner interface {
 	Prune(ctx context.Context, sys Sys, item string) error
 }
 
-// leftoverWarning is the Change for a Pruner's Check, warning about its
-// leftovers without changing them.
-func leftoverWarning(leftovers []string, why string) Change {
+// leftoverWarning is the Change for the Check of the Pruner with the given
+// ID, warning about its leftovers that aren't ignored without changing them.
+func leftoverWarning(ctx context.Context, id string, leftovers []string, why string) Change {
+	leftovers = state(ctx).unignored(id, leftovers)
 	if len(leftovers) == 0 {
 		return Change{InSync: true}
 	}

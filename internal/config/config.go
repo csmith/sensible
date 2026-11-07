@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,6 +49,9 @@ type HostEntry struct {
 	Generated map[string]map[string]Secret `yaml:"generated"`
 	// Certs are the certificates issued to the host, by name.
 	Certs map[string]savedCert `yaml:"certs"`
+	// Ignored are leftovers that are meant to stay on the host, as items by
+	// the ID of the resource that lists them.
+	Ignored map[string][]string `yaml:"ignored"`
 }
 
 // HostKeys drops duplicate keys, as a key is often in both a hand-written
@@ -576,6 +580,26 @@ func (r *Repo) DropGenerated(name, stack string, keys []string) error {
 	)
 }
 
+// IgnoreLeftover records in the host's state file that the item the
+// resource with the given ID lists as a leftover is meant to stay.
+func (r *Repo) IgnoreLeftover(name, id, item string) error {
+	if err := r.checkHost(name); err != nil {
+		return err
+	}
+	return r.updateState(
+		name,
+		func(s *hostState) {
+			if slices.Contains(s.Ignored[id], item) {
+				return
+			}
+			if s.Ignored == nil {
+				s.Ignored = map[string][]string{}
+			}
+			s.Ignored[id] = append(s.Ignored[id], item)
+		},
+	)
+}
+
 // AddHostKey adds a key to the host's host_keys in its state file.
 func (r *Repo) AddHostKey(name string, key ssh.PublicKey) error {
 	if err := r.checkHost(name); err != nil {
@@ -659,6 +683,7 @@ type hostState struct {
 	HostKeys     []HostKey                    `yaml:"host_keys"`
 	Generated    map[string]map[string]Secret `yaml:"generated"`
 	Certs        map[string]savedCert         `yaml:"certs"`
+	Ignored      map[string][]string          `yaml:"ignored"`
 }
 
 // write adds the state to a state file, under its host's key.
@@ -693,6 +718,15 @@ func (s hostState) write(out *strings.Builder) {
 			out.WriteString("    " + cert + ":\n" + s.Certs[cert].yaml("      "))
 		}
 	}
+	if len(s.Ignored) > 0 {
+		out.WriteString("  ignored:\n")
+		for _, id := range slices.Sorted(maps.Keys(s.Ignored)) {
+			out.WriteString("    " + strconv.Quote(id) + ":\n")
+			for _, item := range slices.Sorted(slices.Values(s.Ignored[id])) {
+				out.WriteString("      - " + strconv.Quote(item) + "\n")
+			}
+		}
+	}
 }
 
 func stateFile(host string) string {
@@ -718,7 +752,7 @@ func (r *Repo) updateState(name string, change func(*hostState)) error {
 	states[name] = s
 
 	var out strings.Builder
-	out.WriteString("# Managed by sensible. Local changes will be overwritten.\n")
+	out.WriteString("# Written by sensible. Edit with care: comments and formatting aren't kept.\n")
 	for _, host := range slices.Sorted(maps.Keys(states)) {
 		out.WriteString(host + ":\n")
 		states[host].write(&out)

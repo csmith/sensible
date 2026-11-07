@@ -10,7 +10,7 @@ import (
 // ProtocolVersion is bumped whenever a message or resource changes, so a
 // controller can refuse an agent built from older code. Hello and Upgrade
 // must never change shape, so any controller can upgrade any agent.
-const ProtocolVersion = 19
+const ProtocolVersion = 20
 
 // Hello is the first message an agent sends, and the first after it re-execs
 // following an Upgrade.
@@ -38,6 +38,10 @@ type FactsReply struct {
 // Checked per resource followed by Done.
 type Check struct {
 	Resources ResourceList `json:"resources"`
+	// Ignored are leftovers that are meant to stay, as items by the ID of
+	// the resource that lists them. They're neither warned about nor
+	// listed for Prune.
+	Ignored map[string][]string `json:"ignored,omitempty"`
 }
 
 type Checked struct {

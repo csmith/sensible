@@ -438,7 +438,7 @@ func (b *bootstrapper) rotate(ctx context.Context, signer ssh.Signer, password s
 	for _, f := range features.AccessFiles(b.creds.authorizedKey) {
 		resources = append(resources, f)
 	}
-	checked, err := a.check(resources)
+	checked, err := a.check(host.Check{Resources: resources})
 	if err != nil {
 		return err
 	}

@@ -445,7 +445,7 @@ func (r AptRepo) key(ctx context.Context, sys Sys) ([]byte, string, error) {
 
 func (r DisownedAptSources) Check(ctx context.Context, sys Sys) (Change, error) {
 	extra, err := r.Leftovers(ctx, sys)
-	return leftoverWarning(extra, "no apt repo declares these"), err
+	return leftoverWarning(ctx, r.ID(), extra, "no apt repo declares these"), err
 }
 
 func (r DisownedAptSources) Apply(context.Context, Sys) error { return nil }
@@ -560,7 +560,7 @@ func (r DisownedPackages) Check(ctx context.Context, sys Sys) (Change, error) {
 	if err != nil {
 		return Change{}, err
 	}
-	change := leftoverWarning(extra, "no longer managed")
+	change := leftoverWarning(ctx, r.ID(), extra, "no longer managed")
 	gone, err := r.goneRecords(ctx, sys)
 	if err != nil {
 		return Change{}, err

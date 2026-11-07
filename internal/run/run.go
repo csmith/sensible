@@ -91,6 +91,8 @@ func compiler(repo *config.Repo) func(target, host.Facts) (compiled, error) {
 			}
 		}
 		c.unusedSecrets = unusedSecrets(repo, t.name, cfg)
+		c.ignored = repo.Inventory().Hosts[t.name].Ignored
+		c.ignore = func(id, item string) error { return repo.IgnoreLeftover(t.name, id, item) }
 		return c, nil
 	}
 }
@@ -282,6 +284,10 @@ type compiled struct {
 	save func() error
 	// unusedSecrets are what prune offers to drop from the host's state.
 	unusedSecrets []savedSecrets
+	// ignored are the leftovers that are meant to stay, as items by the ID
+	// of the resource that lists them, and ignore records another.
+	ignored map[string][]string
+	ignore  func(id, item string) error
 }
 
 // savedSecrets are the generated values saved for one of a host's stacks.
@@ -297,8 +303,10 @@ type savedSecrets struct {
 // Runner plans and applies a set of targets. Its fields are the parts that
 // vary between real runs and tests.
 type Runner struct {
-	Out         io.Writer
-	Confirm     func(prompt string) (bool, error)
+	Out     io.Writer
+	Confirm func(prompt string) (bool, error)
+	// Ask returns the answer to a prompt, trimmed and in lower case.
+	Ask         func(prompt string) (string, error)
 	Builds      Builds
 	Compile     func(t target, facts host.Facts) (compiled, error)
 	DNS         func(settings config.DNSSettings) (dnsProvider, error)
@@ -317,8 +325,10 @@ type hostRun struct {
 	facts     host.Facts
 	resources host.ResourceList
 	save      func() error
-	// unusedSecrets are kept from compiling for prune.
+	// unusedSecrets, ignored and ignore are kept from compiling for prune.
 	unusedSecrets []savedSecrets
+	ignored       map[string][]string
+	ignore        func(id, item string) error
 	checked       []host.Checked
 	failed        bool
 	// leftovers are what prune offers to remove, and unlisted the
@@ -467,6 +477,7 @@ func (r *Runner) checkAll(runs []*hostRun) {
 			continue
 		}
 		h.resources, h.save, h.unusedSecrets = c.resources, c.save, c.unusedSecrets
+		h.ignored, h.ignore = c.ignored, c.ignore
 		go func() {
 			defer close(h.done)
 			h.check()
@@ -475,7 +486,7 @@ func (r *Runner) checkAll(runs []*hostRun) {
 }
 
 func (h *hostRun) check() {
-	checked, err := h.agent.check(h.resources)
+	checked, err := h.agent.check(host.Check{Resources: h.resources, Ignored: h.ignored})
 	if err != nil {
 		h.err = err
 		return
@@ -707,8 +718,9 @@ func (a *agent) facts() (host.Facts, error) {
 	return reply.Facts, err
 }
 
-func (a *agent) check(resources host.ResourceList) ([]host.Checked, error) {
-	if err := a.conn.Send(host.Check{Resources: resources}); err != nil {
+func (a *agent) check(msg host.Check) ([]host.Checked, error) {
+	resources := msg.Resources
+	if err := a.conn.Send(msg); err != nil {
 		return nil, err
 	}
 	var checked []host.Checked
