@@ -850,6 +850,48 @@ func TestTruncate(t *testing.T) {
 	assert.Equal(t, "⠋ a\x1b[0m", truncate("⠋ abc", 3))
 }
 
+func TestPrintable(t *testing.T) {
+	tests := map[string]struct{ in, want string }{
+		"plain text":       {"export PATH=~/bin:$PATH", "export PATH=~/bin:$PATH"},
+		"newlines and tab": {"a\n\tb\n", "a\n\tb\n"},
+		"other unicode":    {"⠋ café �", "⠋ café �"},
+		"escape sequence":  {"\x1b[2J\x1b]52;c;aGk=\a", `\x1b[2J\x1b]52;c;aGk=\a`},
+		"carriage return":  {"real\rfake", `real\rfake`},
+		"delete":           {"a\x7fb", `a\x7fb`},
+		"c1 control":       {"a\u009b2Jb", `a\u009b2Jb`},
+		"invalid utf-8":    {"a\x9b2J\xffb", `a\x9b2J\xffb`},
+	}
+	for name, tt := range tests {
+		t.Run(
+			name,
+			func(t *testing.T) {
+				assert.Equal(t, tt.want, printable(tt.in))
+			},
+		)
+	}
+}
+
+func TestConnect_makesAgentTextPrintable(t *testing.T) {
+	builds := newFakeBuilds(t)
+	fake := &fakeAgent{
+		hash:  builds["amd64"].Hash,
+		facts: host.Facts{OSFamily: "debian\x1b[2J"},
+	}
+	a, _, err := connect(t.Context(), pipeTransport{fake}, builds)
+	require.NoError(t, err)
+	defer a.bye()
+
+	facts, err := a.facts()
+	require.NoError(t, err)
+	assert.Equal(t, `debian\x1b[2J`, facts.OSFamily)
+}
+
+func TestConnect_makesAgentErrorsPrintable(t *testing.T) {
+	fake := &fakeAgent{hash: "stale", upgradeError: "disk\rfull"}
+	_, _, err := connect(t.Context(), pipeTransport{fake}, newFakeBuilds(t))
+	assert.ErrorContains(t, err, `disk\rfull`)
+}
+
 type writeRecorder struct{ writes []string }
 
 func (w *writeRecorder) Write(p []byte) (int, error) {

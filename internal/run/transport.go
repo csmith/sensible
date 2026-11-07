@@ -161,7 +161,7 @@ type agentStderr struct {
 
 func (w *agentStderr) Write(p []byte) (int, error) {
 	for line := range strings.SplitSeq(strings.TrimRight(string(p), "\n"), "\n") {
-		debugf("%s agent: %s", w.host, line)
+		debugf("%s agent: %s", w.host, printable(line))
 	}
 	return len(p), nil
 }

@@ -7,9 +7,12 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 
@@ -307,6 +310,32 @@ func (r *renderer) width() int {
 		}
 	}
 	return 80
+}
+
+// printable replaces control characters other than newlines and tabs, and
+// bytes that aren't UTF-8, with Go escapes such as \x1b, so text from a host
+// is shown rather than acted on by the terminal.
+func printable(s string) string {
+	if utf8.ValidString(s) && !strings.ContainsFunc(s, isUnprintable) {
+		return s
+	}
+	var b strings.Builder
+	for i, c := range s {
+		switch {
+		case c == utf8.RuneError && !strings.HasPrefix(s[i:], string(utf8.RuneError)):
+			fmt.Fprintf(&b, `\x%02x`, s[i])
+		case isUnprintable(c):
+			q := strconv.QuoteRune(c)
+			b.WriteString(q[1 : len(q)-1])
+		default:
+			b.WriteRune(c)
+		}
+	}
+	return b.String()
+}
+
+func isUnprintable(c rune) bool {
+	return unicode.IsControl(c) && c != '\n' && c != '\t'
 }
 
 // truncate cuts s to width visible characters, skipping colour codes.

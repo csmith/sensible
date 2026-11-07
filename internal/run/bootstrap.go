@@ -374,7 +374,7 @@ func runRemote(client *ssh.Client, command string, stdin io.Reader, forwardAgent
 	session.Stdout = &stdout
 	session.Stderr = &stderr
 	if err := session.Run(command); err != nil {
-		return "", fmt.Errorf("%w\n%s", err, strings.TrimSpace(stderr.String()+stdout.String()))
+		return "", fmt.Errorf("%w\n%s", err, printable(strings.TrimSpace(stderr.String()+stdout.String())))
 	}
 	return stdout.String(), nil
 }

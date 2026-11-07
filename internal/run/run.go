@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net"
 	"os"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -708,16 +709,43 @@ func (a *agent) bye() {
 }
 
 // receive reads the next message, turning an Error from the agent into an
-// error.
+// error. Every string in it has its control characters made visible, as
+// they can carry anything from the host, such as a file's content in a diff.
 func (a *agent) receive() (any, error) {
 	msg, err := a.conn.Receive()
 	if err != nil {
 		return nil, err
 	}
+	msg = printableStrings(msg)
 	if e, ok := msg.(host.Error); ok {
 		return nil, agentError(e.Message)
 	}
 	return msg, nil
+}
+
+func printableStrings(msg any) any {
+	v := reflect.New(reflect.TypeOf(msg)).Elem()
+	v.Set(reflect.ValueOf(msg))
+	makePrintable(v)
+	return v.Interface()
+}
+
+func makePrintable(v reflect.Value) {
+	switch v.Kind() {
+	case reflect.String:
+		if v.CanSet() {
+			v.SetString(printable(v.String()))
+		}
+	case reflect.Struct:
+		for _, field := range v.Fields() {
+			makePrintable(field)
+		}
+	case reflect.Slice, reflect.Array:
+		for i := range v.Len() {
+			makePrintable(v.Index(i))
+		}
+	default:
+	}
 }
 
 type agentError string
