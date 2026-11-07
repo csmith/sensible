@@ -937,6 +937,39 @@ func TestHostPlanLines_showsWarnings(t *testing.T) {
 	)
 }
 
+func TestHostPlanLines_indentsMultiLineErrors(t *testing.T) {
+	h := &hostRun{
+		resources: host.ResourceList{host.DockerNetwork{Name: "web"}},
+		checked: []host.Checked{
+			{ID: "docker-network:web", Status: host.StatusFailed, Error: "inspecting:\n✓ file /etc/x\n"},
+		},
+	}
+
+	assert.Equal(t, []string{"✗ docker-network web: inspecting:", "  ✓ file /etc/x"}, hostPlanLines(h, false))
+}
+
+func TestRendererIndentsMultiLineApplyErrors(t *testing.T) {
+	var buf bytes.Buffer
+	r := newRenderer(&buf)
+	h := &hostRun{name: "acidburn"}
+
+	r.applied(h, host.Applied{ID: "command:x", Status: host.StatusFailed, Error: "exit 1\n✓ file /etc/x", Output: "out"})
+	r.applyError(h, errors.New("lost\n> Applying changes on smarts"))
+	r.applyDone(h)
+
+	assert.Equal(
+		t,
+		"> Applying changes on acidburn\n"+
+			"  ✗ command x: exit 1\n    ✓ file /etc/x\n    out\n"+
+			"  ✗ lost\n    > Applying changes on smarts\n",
+		buf.String(),
+	)
+}
+
+func TestPaletteFailureColoursEachLine(t *testing.T) {
+	assert.Equal(t, []string{"\x1b[31m✗ a\x1b[0m", "\x1b[31m  b\x1b[0m"}, palette(true).failure("a\nb"))
+}
+
 func TestExecute_savesGeneratedValuesBeforeApplying(t *testing.T) {
 	tests := []struct {
 		name         string

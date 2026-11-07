@@ -121,7 +121,7 @@ func (r *Runner) Prune(ctx context.Context, targets []target) error {
 		}
 		if err := l.remove(); err != nil {
 			failed = true
-			out.item(out.p.fail("✗ " + l.h.name + ": " + l.label + ": " + err.Error()))
+			out.item(out.p.failure(l.h.name + ": " + l.label + ": " + err.Error())...)
 			continue
 		}
 		l.removed = true
@@ -192,14 +192,14 @@ func (h *hostRun) findUnusedSecrets() {
 
 func leftoverLines(h *hostRun, p palette) []string {
 	if h.err != nil {
-		return []string{p.fail("✗ " + h.err.Error())}
+		return p.failure(h.err.Error())
 	}
 	var lines []string
 	pending := 0
 	for _, c := range h.checked {
 		switch c.Status {
 		case host.StatusFailed:
-			lines = append(lines, p.fail("✗ "+displayID(c.ID)+": "+c.Error))
+			lines = append(lines, p.failure(displayID(c.ID)+": "+c.Error)...)
 		case host.StatusDrifted, host.StatusDeferred:
 			pending++
 		default:
@@ -209,7 +209,7 @@ func leftoverLines(h *hostRun, p palette) []string {
 		lines = append(lines, p.change("! "+plural(pending, "change")+" to apply first"))
 	}
 	for _, f := range h.unlisted {
-		lines = append(lines, p.fail("✗ "+displayID(f.ID)+": "+f.Error))
+		lines = append(lines, p.failure(displayID(f.ID)+": "+f.Error)...)
 	}
 	for _, l := range h.leftovers {
 		line := p.change("-") + " " + l.label

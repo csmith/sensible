@@ -505,7 +505,7 @@ func saveGenerated(runs []*hostRun, out *renderer) {
 	for _, h := range saving {
 		if err := h.save(); err != nil {
 			h.err = err
-			out.item(out.p.fail("✗ " + h.name + ": " + err.Error()))
+			out.item(out.p.failure(h.name + ": " + err.Error())...)
 			continue
 		}
 		out.item(out.p.ok("✓") + " " + h.name)

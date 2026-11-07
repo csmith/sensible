@@ -51,6 +51,30 @@ func (p palette) handler(s string) string { return p.paint("36", s) }
 func (p palette) dim(s string) string     { return p.paint("2", s) }
 func (p palette) bold(s string) string    { return p.paint("1", s) }
 
+// failure marks an error with ✗, indenting any lines after the first under it
+// so text from a host can't pass for lines of sensible's own.
+func (p palette) failure(text string) []string {
+	return marked("✗", text, p.fail)
+}
+
+// warning marks a warning with !, indenting it like failure.
+func (p palette) warning(text string) []string {
+	return marked("!", text, p.change)
+}
+
+func marked(mark, text string, paint func(string) string) []string {
+	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	for i, l := range lines {
+		if i == 0 {
+			l = mark + " " + l
+		} else {
+			l = "  " + l
+		}
+		lines[i] = paint(l)
+	}
+	return lines
+}
+
 // diff indents a change description, colouring the unified diff parts of it.
 func (p palette) diff(text, prefix string) []string {
 	lines := indent(text, "")
@@ -132,15 +156,17 @@ func (r *renderer) section(title string) {
 
 const itemIndent = "  "
 
-// item writes a line under the current section's header.
-func (r *renderer) item(text string) {
-	r.line(itemIndent + text)
+// item writes lines under the current section's header.
+func (r *renderer) item(lines ...string) {
+	r.line(indentItems(lines)...)
 }
 
-func (r *renderer) line(text string) {
+func (r *renderer) line(lines ...string) {
 	r.lock()
 	defer r.unlock()
-	r.writeLocked(text)
+	for _, l := range lines {
+		r.writeLocked(l)
+	}
 }
 
 func (r *renderer) lock() {
@@ -369,7 +395,7 @@ func (r *renderer) agents(runs []*hostRun) {
 				<-h.done
 				switch {
 				case h.err != nil:
-					r.finish(t, itemIndent+r.p.fail("✗ "+h.name+": "+h.err.Error()))
+					r.finish(t, indentItems(r.p.failure(h.name+": "+h.err.Error()))...)
 				case h.upgraded:
 					r.finish(t, itemIndent+r.p.handler("↑")+" "+h.name+r.p.dim("  upgraded"))
 				default:
@@ -423,10 +449,10 @@ func (r *renderer) dnsLines(dns dnsPlan) []string {
 		}
 	}
 	for _, w := range dns.warnings {
-		lines = append(lines, r.p.change("! "+w))
+		lines = append(lines, r.p.warning(w)...)
 	}
 	for _, err := range dns.errs {
-		lines = append(lines, r.p.fail("✗ "+err.Error()))
+		lines = append(lines, r.p.failure(err.Error())...)
 	}
 	if dns.unchanged > 0 {
 		lines = append(lines, r.p.dim(fmt.Sprintf("✓ %d unchanged", dns.unchanged)))
@@ -436,7 +462,7 @@ func (r *renderer) dnsLines(dns dnsPlan) []string {
 
 func hostPlanLines(h *hostRun, p palette) []string {
 	if h.err != nil {
-		return []string{p.fail("✗ " + h.err.Error())}
+		return p.failure(h.err.Error())
 	}
 	var lines []string
 	unchanged := 0
@@ -458,7 +484,7 @@ func hostPlanLines(h *hostRun, p palette) []string {
 		case host.StatusSkipped:
 			lines = append(lines, p.dim("- "+name+"  skipped"))
 		default:
-			lines = append(lines, p.fail("✗ "+name+": "+c.Error))
+			lines = append(lines, p.failure(name+": "+c.Error)...)
 		}
 		if c.Warning != "" {
 			lines = append(lines, p.change("!")+" "+name)
@@ -520,8 +546,7 @@ func (r *renderer) applied(h *hostRun, a host.Applied) {
 	case host.StatusSkipped:
 		r.skipped[h]++
 	case host.StatusFailed:
-		r.applyLineLocked(h, r.p.fail("✗ "+name+": "+a.Error))
-		for _, l := range indent(a.Output, "  ") {
+		for _, l := range append(r.p.failure(name+": "+a.Error), indent(a.Output, "  ")...) {
 			r.applyLineLocked(h, l)
 		}
 	default:
@@ -532,7 +557,9 @@ func (r *renderer) applyError(h *hostRun, err error) {
 	r.lock()
 	defer r.unlock()
 	r.stopApplyingLocked(h)
-	r.applyLineLocked(h, r.p.fail("✗ "+err.Error()))
+	for _, l := range r.p.failure(err.Error()) {
+		r.applyLineLocked(h, l)
+	}
 }
 
 // applyLineLocked adds a line to h's apply section, which streams if h holds
@@ -605,7 +632,7 @@ func (r *renderer) dnsApply(c *dnsChange, apply func() error) error {
 	name := c.types() + " " + c.fqdn
 	t := r.beginItem(name)
 	if err := apply(); err != nil {
-		r.finish(t, itemIndent+r.p.fail(fmt.Sprintf("✗ %s: %v", name, err)))
+		r.finish(t, indentItems(r.p.failure(name+": "+err.Error()))...)
 		return err
 	}
 	r.finish(t, itemIndent+r.p.ok("✓")+" "+name)

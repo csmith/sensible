@@ -93,7 +93,7 @@ func Render(ctx context.Context, opts RenderOptions, out io.Writer) error {
 		}
 	}
 	stderr := newRenderer(os.Stderr)
-	repo.Preview(func(msg string) { stderr.line(stderr.p.change("! " + msg)) })
+	repo.Preview(func(msg string) { stderr.line(stderr.p.warning(msg)...) })
 	names, err := selectHosts(repo.Inventory(), opts.Hosts)
 	if err != nil {
 		return err
@@ -194,7 +194,7 @@ func (r *Runner) Render(
 			h.resources = c.resources
 		}
 		if h.err != nil {
-			status.line(status.p.fail("✗ " + h.name + ": " + h.err.Error()))
+			status.line(status.p.failure(h.name + ": " + h.err.Error())...)
 			continue
 		}
 		if asJSON {
