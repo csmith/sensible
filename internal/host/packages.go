@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -300,13 +301,7 @@ func dpkg(ctx context.Context, sys Sys) (map[string]dpkgPackage, error) {
 	}
 
 	installed := map[string]dpkgPackage{}
-	for stanza := range strings.SplitSeq(string(data), "\n\n") {
-		fields := map[string]string{}
-		for line := range strings.Lines(stanza) {
-			if k, v, ok := strings.Cut(line, ":"); ok && !strings.HasPrefix(line, " ") {
-				fields[k] = strings.TrimSpace(v)
-			}
-		}
+	for _, fields := range controlStanzas(string(data)) {
 		if status := strings.Fields(fields["Status"]); len(status) == 3 && status[2] == "installed" {
 			installed[fields["Package"]] = dpkgPackage{version: fields["Version"]}
 		}
@@ -315,10 +310,29 @@ func dpkg(ctx context.Context, sys Sys) (map[string]dpkgPackage, error) {
 	return installed, nil
 }
 
+// controlStanzas splits a file of dpkg control stanzas, such as dpkg's
+// status file, into the fields of each. Continuation lines are skipped.
+func controlStanzas(data string) []map[string]string {
+	var stanzas []map[string]string
+	for stanza := range strings.SplitSeq(data, "\n\n") {
+		fields := map[string]string{}
+		for line := range strings.Lines(stanza) {
+			if k, v, ok := strings.Cut(line, ":"); ok && !strings.HasPrefix(line, " ") {
+				fields[k] = strings.TrimSpace(v)
+			}
+		}
+		stanzas = append(stanzas, fields)
+	}
+	return stanzas
+}
+
 type pacmanDB struct {
 	installed map[string]bool
 	// satisfied includes what installed packages provide.
 	satisfied map[string]bool
+	// explicit holds what each package installed explicitly, rather than
+	// as a dependency, provides, including its own name.
+	explicit map[string][]string
 }
 
 const pacmanLocalDB = "/var/lib/pacman/local"
@@ -335,7 +349,7 @@ func pacman(ctx context.Context, sys Sys) (*pacmanDB, error) {
 		return nil, err
 	}
 
-	db := &pacmanDB{installed: map[string]bool{}, satisfied: map[string]bool{}}
+	db := &pacmanDB{installed: map[string]bool{}, satisfied: map[string]bool{}, explicit: map[string][]string{}}
 	for _, entry := range entries {
 		desc, err := sys.ReadFile(filepath.Join(pacmanLocalDB, entry, "desc"))
 		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
@@ -344,7 +358,8 @@ func pacman(ctx context.Context, sys Sys) (*pacmanDB, error) {
 		if err != nil {
 			return nil, err
 		}
-		section := ""
+		section, pkg, dependency := "", "", false
+		var provides []string
 		scanner := bufio.NewScanner(strings.NewReader(string(desc)))
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -354,12 +369,19 @@ func pacman(ctx context.Context, sys Sys) (*pacmanDB, error) {
 			case line == "":
 				section = ""
 			case section == "%NAME%":
+				pkg = line
 				db.installed[line] = true
 				db.satisfied[line] = true
 			case section == "%PROVIDES%":
 				name, _, _ := strings.Cut(line, "=")
 				db.satisfied[name] = true
+				provides = append(provides, name)
+			case section == "%REASON%":
+				dependency = line == "1"
 			}
+		}
+		if pkg != "" && !dependency {
+			db.explicit[pkg] = append([]string{pkg}, provides...)
 		}
 	}
 	st.pacman = db
@@ -560,7 +582,7 @@ func (r DisownedPackages) Check(ctx context.Context, sys Sys) (Change, error) {
 	if err != nil {
 		return Change{}, err
 	}
-	change := leftoverWarning(ctx, r.ID(), extra, "no longer managed")
+	change := leftoverWarning(ctx, r.ID(), extra, "nothing declares these")
 	gone, err := r.goneRecords(ctx, sys)
 	if err != nil {
 		return Change{}, err
@@ -587,8 +609,8 @@ func (r DisownedPackages) Apply(ctx context.Context, sys Sys) error {
 	return nil
 }
 
-// Leftovers lists each undeclared, recorded and installed package as
-// "package <name>".
+// Leftovers lists each undeclared package that's installed and either
+// recorded or installed by hand, as "package <name>".
 func (r DisownedPackages) Leftovers(ctx context.Context, sys Sys) ([]string, error) {
 	var extra []string
 	err := eachRecorded(
@@ -600,7 +622,79 @@ func (r DisownedPackages) Leftovers(ctx context.Context, sys Sys) ([]string, err
 			}
 		},
 	)
-	return extra, err
+	if err != nil {
+		return nil, err
+	}
+	manual, err := manualPackages(ctx, sys)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range manual {
+		if item := "package " + name; !slices.Contains(extra, item) {
+			extra = append(extra, item)
+		}
+	}
+	return extra, nil
+}
+
+// manualPackages lists the installed packages that nothing earlier in the
+// run declares, and that were installed explicitly rather than as a
+// dependency: those `apt-mark showmanual` or `pacman -Qqe` list. On Arch, a
+// package that provides a declared name counts as declared.
+func manualPackages(ctx context.Context, sys Sys) ([]string, error) {
+	family, err := osFamily(ctx, sys)
+	if err != nil {
+		return nil, err
+	}
+	declared := state(ctx).packages
+	var manual []string
+	if family == familyArch {
+		db, err := pacman(ctx, sys)
+		if err != nil {
+			return nil, err
+		}
+		for name, provides := range db.explicit {
+			if !slices.ContainsFunc(provides, func(p string) bool { return declared[p] }) {
+				manual = append(manual, name)
+			}
+		}
+		slices.Sort(manual)
+		return manual, nil
+	}
+	installed, err := dpkg(ctx, sys)
+	if err != nil {
+		return nil, err
+	}
+	auto, err := aptAutoInstalled(sys)
+	if err != nil {
+		return nil, err
+	}
+	for name := range installed {
+		if !declared[name] && !auto[name] {
+			manual = append(manual, name)
+		}
+	}
+	slices.Sort(manual)
+	return manual, nil
+}
+
+// aptAutoInstalled returns the packages apt marks as installed
+// automatically, as dependencies.
+func aptAutoInstalled(sys Sys) (map[string]bool, error) {
+	data, err := sys.ReadFile("/var/lib/apt/extended_states")
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	auto := map[string]bool{}
+	for _, fields := range controlStanzas(string(data)) {
+		if fields["Auto-Installed"] == "1" {
+			auto[fields["Package"]] = true
+		}
+	}
+	return auto, nil
 }
 
 func (r DisownedPackages) Prune(ctx context.Context, sys Sys, item string) error {

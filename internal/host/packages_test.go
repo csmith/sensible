@@ -454,7 +454,7 @@ func TestDisownedPackages(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, change.InSync)
 	assert.Equal(t, "forget record of package gone\n", change.Diff)
-	assert.Contains(t, change.Warning, "package vim\nno longer managed")
+	assert.Contains(t, change.Warning, "package vim\nnothing declares these")
 
 	require.NoError(t, r.Apply(ctx, sys))
 	assert.False(t, sys.exists(packageRecordPath("gone")))
@@ -467,11 +467,39 @@ func TestDisownedPackages(t *testing.T) {
 	assert.True(t, sys.exists(packageRecordPath("zsh")))
 }
 
-func TestDisownedPackages_NothingRecorded(t *testing.T) {
+func TestDisownedPackages_NothingLeftOver(t *testing.T) {
 	sys := newArchSys(t)
-	change, err := DisownedPackages{}.Check(withRunState(context.Background(), newRunState()), sys)
+	st := newRunState()
+	st.declare(Package{Name: "vim"})
+	st.declare(Package{Name: "zsh"})
+	change, err := DisownedPackages{}.Check(withRunState(context.Background(), st), sys)
 	require.NoError(t, err)
 	assert.Equal(t, Change{InSync: true}, change)
+}
+
+func TestDisownedPackages_ListsPackagesInstalledByHandOnPacman(t *testing.T) {
+	sys := newArchSys(t)
+	sys.write("/var/lib/pacman/local/htop-3.4-1/desc", "%NAME%\nhtop\n\n")
+	sys.write("/var/lib/pacman/local/ncurses-6.5-1/desc", "%NAME%\nncurses\n\n%REASON%\n1\n\n")
+	sys.write("/var/lib/pacman/local/cronie-1.7-1/desc", "%NAME%\ncronie\n\n%PROVIDES%\ncron\n\n")
+	sys.write("/var/lib/pacman/local/tmux-3.5-1/desc", "%NAME%\ntmux\n\n")
+	sys.write("/var/lib/pacman/local/paru-2.0-1/desc", "%NAME%\nparu\n\n")
+	st := newRunState()
+	st.declare(Package{Name: "zsh"})
+	st.declare(Package{Name: "cron"})
+	st.declare(AURPackage{Name: "tmux"})
+	st.declare(Command{Name: "install paru", Packages: []string{"paru"}})
+	st.ignored = map[string][]string{"disowned-packages": {"package vim"}}
+	ctx := withRunState(context.Background(), st)
+	r := DisownedPackages{}
+
+	got, err := r.Leftovers(ctx, sys)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"package htop", "package vim"}, got)
+
+	change, err := r.Check(ctx, sys)
+	require.NoError(t, err)
+	assert.Contains(t, change.Warning, "package htop\nnothing declares these")
 }
 
 func TestDisownedPackages_Apt(t *testing.T) {
@@ -483,8 +511,41 @@ func TestDisownedPackages_Apt(t *testing.T) {
 
 	got, err := r.Leftovers(ctx, sys)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"package pam-rssh"}, got)
+	assert.Equal(t, []string{"package pam-rssh", "package zsh"}, got)
 
 	require.NoError(t, r.Prune(ctx, sys, "package pam-rssh"))
 	assert.False(t, sys.exists(packageRecordPath("pam-rssh")))
+}
+
+func TestDisownedPackages_ListsPackagesInstalledByHandOnApt(t *testing.T) {
+	sys := newDebianSys(t)
+	sys.write(
+		"/var/lib/dpkg/status",
+		"Package: zsh\nStatus: install ok installed\nVersion: 5.9-8\n\n"+
+			"Package: htop\nStatus: install ok installed\nVersion: 3.4\n\n"+
+			"Package: git\nStatus: install ok installed\nVersion: 2.47\n\n"+
+			"Package: libpcre2\nStatus: install ok installed\nVersion: 10.45\n\n"+
+			"Package: old\nStatus: deinstall ok config-files\nVersion: 1\n",
+	)
+	sys.write(
+		"/var/lib/apt/extended_states",
+		"Package: libpcre2\nArchitecture: amd64\nAuto-Installed: 1\n\n"+
+			"Package: git\nArchitecture: amd64\nAuto-Installed: 0\n",
+	)
+	st := newRunState()
+	st.declare(Package{Name: "zsh"})
+	st.ignored = map[string][]string{"disowned-packages": {"package git"}}
+	ctx := withRunState(context.Background(), st)
+
+	got, err := DisownedPackages{}.Leftovers(ctx, sys)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"package git", "package htop"}, got)
+
+	change, err := DisownedPackages{}.Check(ctx, sys)
+	require.NoError(t, err)
+	assert.Equal(
+		t,
+		"package htop\nnothing declares these; run `sensible prune` to remove them once they're not needed\n",
+		change.Warning,
+	)
 }

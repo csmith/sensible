@@ -263,7 +263,7 @@ type runState struct {
 	// users holds the names of every User seen so far that isn't Absent.
 	users map[string]bool
 	// packages holds the names of every Package seen so far that isn't
-	// Absent, and every AURPackage.
+	// Absent, every AURPackage, and those Commands install.
 	packages map[string]bool
 
 	osFamily string
@@ -322,6 +322,10 @@ func (s *runState) declare(r Resource) {
 		}
 	case AURPackage:
 		s.packages[r.Name] = true
+	case Command:
+		for _, name := range r.Packages {
+			s.packages[name] = true
+		}
 	case Migration:
 		s.declared[filepath.Dir(r.dir())] = true
 		s.declared[r.dir()] = true

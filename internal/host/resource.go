@@ -356,6 +356,8 @@ type Command struct {
 	User string `json:"user,omitempty"`
 	// Env is added to both commands' environment.
 	Env map[string]string `json:"env,omitempty"`
+	// Packages are installed by ApplyArgv, so they count as declared.
+	Packages []string `json:"packages,omitempty"`
 }
 
 // OwnedDir removes every entry in Path that no File, Dir or AptRepo earlier

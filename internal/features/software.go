@@ -114,6 +114,8 @@ func aurPackages(h Host, names ...string) ([]host.Resource, error) {
 			Name:      "install paru",
 			CheckArgv: []string{"paru", "--version"},
 			ApplyArgv: []string{"sh", "-c", paruInstallScript},
+			// makepkg also builds a debug package, and installs both.
+			Packages: []string{"paru", "paru-debug"},
 		},
 	)
 	for _, n := range names {
