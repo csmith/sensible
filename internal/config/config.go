@@ -348,11 +348,12 @@ func (c *ResticConfig) reveal() error {
 	return nil
 }
 
-// DNSSettings are the DNS provider's API credentials and the records each
-// vhost gets.
+// DNSSettings are the DNS provider, its settings, and the records each vhost
+// gets.
 type DNSSettings struct {
-	AuthUser Secret `yaml:"auth_user"`
-	AuthKey  Secret `yaml:"auth_key"`
+	// Provider names the DNS provider. Its settings are under its name.
+	Provider  string            `yaml:"provider"`
+	MyDNSHost MyDNSHostSettings `yaml:"mydnshost"`
 	// Vhosts are the records a vhost gets for each host serving it, with
 	// "{host}" in their content replaced by the host's dns_name. Empty leaves
 	// vhosts' DNS alone.
@@ -362,6 +363,32 @@ type DNSSettings struct {
 type VhostRecord struct {
 	Type    string `yaml:"type"`
 	Content string `yaml:"content"`
+}
+
+type MyDNSHostSettings struct {
+	AuthUser Secret `yaml:"auth_user"`
+	AuthKey  Secret `yaml:"auth_key"`
+}
+
+func (s DNSSettings) check() error {
+	switch s.Provider {
+	case "":
+		if len(s.Vhosts) > 0 || !s.MyDNSHost.AuthUser.IsZero() || !s.MyDNSHost.AuthKey.IsZero() {
+			return errors.New("dns.provider isn't set")
+		}
+	case "mydnshost":
+		if s.MyDNSHost.AuthUser.IsZero() || s.MyDNSHost.AuthKey.IsZero() {
+			return errors.New("dns.mydnshost: needs an auth_user and auth_key")
+		}
+	default:
+		return fmt.Errorf("dns.provider: unknown provider %q", s.Provider)
+	}
+	for i, rec := range s.Vhosts {
+		if rec.Type == "" || rec.Content == "" {
+			return fmt.Errorf("dns.vhosts[%d]: needs a type and content", i)
+		}
+	}
+	return nil
 }
 
 // Repo is a configuration directory.

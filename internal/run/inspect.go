@@ -379,8 +379,8 @@ func ListSecrets(configDir, file string, out io.Writer) error {
 }
 
 // ShowSecret decrypts the !age value at a dotted path in a config file,
-// e.g. "dns.auth_key" in "sensible.yml". Relative files are in the
-// config directory.
+// e.g. "dns.mydnshost.auth_key" in "sensible.yml". Relative files are in
+// the config directory.
 func ShowSecret(configDir, file, path string, out io.Writer) error {
 	repo, err := config.Open(configDir, nil)
 	if err != nil {

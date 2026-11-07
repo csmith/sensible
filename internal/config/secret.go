@@ -369,10 +369,10 @@ func (r *Repo) readSettings() error {
 		}
 	}
 	r.identityCommand = s.Secrets.IdentityCommand
+	if err := s.DNS.check(); err != nil {
+		return fmt.Errorf("%s: %w", file, err)
+	}
 	for i, rec := range s.DNS.Vhosts {
-		if rec.Type == "" || rec.Content == "" {
-			return fmt.Errorf("%s: dns.vhosts[%d]: needs a type and content", file, i)
-		}
 		s.DNS.Vhosts[i].Type = strings.ToUpper(rec.Type)
 	}
 	r.dns = s.DNS

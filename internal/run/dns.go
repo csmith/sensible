@@ -9,17 +9,49 @@ import (
 	"slices"
 	"strings"
 
-	api "github.com/mydnshost/mydnshost-go-api"
+	"chameth.com/sensible/internal/config"
 )
 
-type dnsClient interface {
-	Domains(ctx context.Context) (map[string]api.AccessLevel, error)
-	Records(ctx context.Context, domain string) (*api.RecordsResponse, error)
-	ModifyRecords(ctx context.Context, domain string, ops ...api.RecordOperation) (*api.ModifyRecordsResponse, error)
+// dnsProvider is an account with a DNS provider.
+type dnsProvider interface {
+	// Zones maps each zone on the account to whether the account can change
+	// its records.
+	Zones(ctx context.Context) (map[string]bool, error)
+	Records(ctx context.Context, zone string) ([]dnsRecord, error)
+	// Apply makes the changes to a zone's records, removals first so a CNAME
+	// can replace other records.
+	Apply(ctx context.Context, zone string, changes dnsRecordChanges) error
 }
 
-func newDNSClient(user, key string) dnsClient {
-	return &api.Client{Authenticator: &api.ApiKeyAuthenticator{User: user, Key: key}}
+// dnsRecord is a record in a zone. Its name is relative to the zone, "" for
+// the apex, though providers may also give "@" or a fully qualified name
+// ending in a dot. Its id is whatever the provider identifies it by.
+type dnsRecord struct {
+	id      string
+	name    string
+	rtype   string
+	content string
+	ttl     int
+}
+
+// dnsRecordChanges are changes to a zone's records. Updates are existing
+// records with a new TTL. Adds have no id, and a zero TTL gives them the
+// zone's default.
+type dnsRecordChanges struct {
+	remove []dnsRecord
+	update []dnsRecord
+	add    []dnsRecord
+}
+
+func newDNSProvider(s config.DNSSettings) (dnsProvider, error) {
+	switch s.Provider {
+	case "mydnshost":
+		return newMyDNSHost(s.MyDNSHost)
+	case "":
+		return nil, errors.New("sensible.yml: dns.provider isn't set")
+	default:
+		return nil, fmt.Errorf("sensible.yml: dns.provider: unknown provider %q", s.Provider)
+	}
 }
 
 // dnsPlan is the DNS changes for a run, with how many sets of records are
@@ -132,12 +164,12 @@ func (r *Runner) planDNS(ctx context.Context, names []managedName, warnings []st
 	if len(names) == 0 {
 		return p
 	}
-	client, err := r.dnsClient()
+	provider, err := r.DNS(r.DNSSettings)
 	if err != nil {
 		p.errs = append(p.errs, err)
 		return p
 	}
-	z := &dnsZones{client: client, records: map[string][]api.ExistingRecord{}}
+	z := &dnsZones{provider: provider, records: map[string][]dnsRecord{}}
 	z.planNames(ctx, names, &p)
 	return p
 }
@@ -178,18 +210,6 @@ func (p dnsPlan) step() crossHostStep {
 	}
 }
 
-func (r *Runner) dnsClient() (dnsClient, error) {
-	user, err := r.DNSSettings.AuthUser.Reveal()
-	if err != nil {
-		return nil, fmt.Errorf("sensible.yml: dns.auth_user: %w", err)
-	}
-	key, err := r.DNSSettings.AuthKey.Reveal()
-	if err != nil {
-		return nil, fmt.Errorf("sensible.yml: dns.auth_key: %w", err)
-	}
-	return r.DNS(user, key), nil
-}
-
 func dnsAddress(rtype, fact string) (string, bool) {
 	addr, err := netip.ParseAddr(fact)
 	if err != nil || addr.Zone() != "" || addr.Is4In6() || !addr.IsGlobalUnicast() {
@@ -201,12 +221,12 @@ func dnsAddress(rtype, fact string) (string, bool) {
 	return addr.String(), true
 }
 
-// dnsZones caches an account's domains, with its access to each, and their
-// records.
+// dnsZones caches an account's zones, with whether it can change each, and
+// their records.
 type dnsZones struct {
-	client  dnsClient
-	domains map[string]api.AccessLevel
-	records map[string][]api.ExistingRecord
+	provider dnsProvider
+	writable map[string]bool
+	records  map[string][]dnsRecord
 }
 
 var (
@@ -216,11 +236,11 @@ var (
 
 // dnsChange is a planned change to one name's records.
 type dnsChange struct {
-	client dnsClient
-	domain string
-	fqdn   string
-	diffs  []dnsDiff
-	ops    []api.RecordOperation
+	provider dnsProvider
+	zone     string
+	fqdn     string
+	diffs    []dnsDiff
+	records  dnsRecordChanges
 }
 
 // dnsDiff is a change to the records of one type.
@@ -234,47 +254,45 @@ type dnsDiff struct {
 // leaving TTLs alone. It also returns how many types with values need no
 // change.
 func (z *dnsZones) plan(ctx context.Context, fqdn string, types map[string][]string) (*dnsChange, int, error) {
-	if z.domains == nil {
-		domains, err := z.client.Domains(ctx)
+	if z.writable == nil {
+		zones, err := z.provider.Zones(ctx)
 		if err != nil {
 			return nil, 0, err
 		}
-		z.domains = map[string]api.AccessLevel{}
-		for d, level := range domains {
-			z.domains[normaliseDomain(d)] = level
+		z.writable = map[string]bool{}
+		for zone, writable := range zones {
+			z.writable[normaliseDomain(zone)] = writable
 		}
 	}
-	// The most specific domain is the zone the name is served from, even if
-	// the account can't change it.
-	domain := findDomain(slices.Collect(maps.Keys(z.domains)), fqdn)
-	if domain == "" {
+	// The most specific zone is the one the name is served from, even if the
+	// account can't change it.
+	zone := findDomain(slices.Collect(maps.Keys(z.writable)), fqdn)
+	if zone == "" {
 		return nil, 0, errNoDomain
 	}
-	if level := z.domains[domain]; level != api.LevelOwner && level != api.LevelAdmin && level != api.LevelWrite {
-		return nil, 0, fmt.Errorf("%w %s", errReadOnly, domain)
+	if !z.writable[zone] {
+		return nil, 0, fmt.Errorf("%w %s", errReadOnly, zone)
 	}
-	name, err := relativeName(fqdn, domain)
+	name, err := relativeName(fqdn, zone)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	records, ok := z.records[domain]
+	records, ok := z.records[zone]
 	if !ok {
-		res, err := z.client.Records(ctx, domain)
+		records, err = z.provider.Records(ctx, zone)
 		if err != nil {
 			return nil, 0, err
 		}
-		records = res.Records
-		z.records[domain] = records
+		z.records[zone] = records
 	}
 
-	c := &dnsChange{client: z.client, domain: domain, fqdn: normaliseDomain(fqdn)}
-	var removes, adds []api.RecordOperation
+	c := &dnsChange{provider: z.provider, zone: zone, fqdn: normaliseDomain(fqdn)}
 	unchanged := 0
 	for _, rtype := range slices.Sorted(maps.Keys(types)) {
-		var existing []api.ExistingRecord
+		var existing []dnsRecord
 		for _, rec := range records {
-			if n, err := relativeName(rec.Name, domain); err == nil && n == name && strings.EqualFold(rec.Type, rtype) {
+			if n, err := relativeName(rec.name, zone); err == nil && n == name && strings.EqualFold(rec.rtype, rtype) {
 				existing = append(existing, rec)
 			}
 		}
@@ -286,15 +304,14 @@ func (z *dnsZones) plan(ctx context.Context, fqdn string, types map[string][]str
 			continue
 		}
 		c.diffs = append(c.diffs, dnsDiff{rtype: rtype, before: contents(existing), after: p.predict(existing)})
-		// Removals go first, so a CNAME can replace other records.
-		ops := p.operations(name, rtype, nil)
-		removes = append(removes, ops[:len(p.remove)]...)
-		adds = append(adds, ops[len(p.remove):]...)
+		changes := p.changes(name, rtype, nil)
+		c.records.remove = append(c.records.remove, changes.remove...)
+		c.records.update = append(c.records.update, changes.update...)
+		c.records.add = append(c.records.add, changes.add...)
 	}
 	if len(c.diffs) == 0 {
 		return nil, unchanged, nil
 	}
-	c.ops = append(removes, adds...)
 	return c, unchanged, nil
 }
 
@@ -324,23 +341,22 @@ func (c *dnsChange) types() string {
 }
 
 func (c *dnsChange) apply(ctx context.Context) error {
-	_, err := c.client.ModifyRecords(ctx, c.domain, c.ops...)
-	return err
+	return c.provider.Apply(ctx, c.zone, c.records)
 }
 
 // recordPlan is what has to change for one name and type: values to add,
 // existing records whose TTL needs changing, and records to remove.
 type recordPlan struct {
 	add    []string
-	update []api.ExistingRecord
-	remove []api.ExistingRecord
+	update []dnsRecord
+	remove []dnsRecord
 }
 
 // planRecords compares existing records with the wanted values. A nil ttl
 // leaves existing TTLs alone and gives new records the domain's default.
 // With exclusive, every record not matching a value is removed, as are
 // duplicates.
-func planRecords(rtype string, existing []api.ExistingRecord, values []string, ttl *int, exclusive bool) recordPlan {
+func planRecords(rtype string, existing []dnsRecord, values []string, ttl *int, exclusive bool) recordPlan {
 	wanted := map[string]bool{}
 	var desired []string
 	for _, v := range values {
@@ -351,10 +367,10 @@ func planRecords(rtype string, existing []api.ExistingRecord, values []string, t
 		}
 	}
 
-	byKey := map[string][]api.ExistingRecord{}
+	byKey := map[string][]dnsRecord{}
 	var order []string
 	for _, rec := range existing {
-		k := normaliseContent(rtype, rec.Content)
+		k := normaliseContent(rtype, rec.content)
 		if _, ok := byKey[k]; !ok {
 			order = append(order, k)
 		}
@@ -368,7 +384,7 @@ func planRecords(rtype string, existing []api.ExistingRecord, values []string, t
 			p.add = append(p.add, v)
 			continue
 		}
-		if ttl != nil && recs[0].TTL != *ttl {
+		if ttl != nil && recs[0].ttl != *ttl {
 			p.update = append(p.update, recs[0])
 		}
 		if exclusive {
@@ -389,46 +405,40 @@ func (p recordPlan) empty() bool {
 	return len(p.add) == 0 && len(p.update) == 0 && len(p.remove) == 0
 }
 
-func (p recordPlan) operations(name, rtype string, ttl *int) []api.RecordOperation {
-	ops := make([]api.RecordOperation, 0, len(p.remove)+len(p.update)+len(p.add))
-	for _, rec := range p.remove {
-		ops = append(ops, api.DeleteRecord(rec.Id))
-	}
+func (p recordPlan) changes(name, rtype string, ttl *int) dnsRecordChanges {
+	c := dnsRecordChanges{remove: p.remove}
 	for _, rec := range p.update {
-		ops = append(ops, api.ModifyRecord(rec.Id, api.Record{TTL: *ttl}))
-	}
-	if name == "" {
-		// An empty name would be left out, and the API reads "@" as the apex.
-		name = "@"
+		rec.ttl = *ttl
+		c.update = append(c.update, rec)
 	}
 	for _, v := range p.add {
-		rec := api.Record{Name: name, Type: rtype, Content: v}
+		rec := dnsRecord{name: name, rtype: rtype, content: v}
 		if ttl != nil {
-			rec.TTL = *ttl
+			rec.ttl = *ttl
 		}
-		ops = append(ops, api.CreateRecord(rec))
+		c.add = append(c.add, rec)
 	}
-	return ops
+	return c
 }
 
-func (p recordPlan) predict(existing []api.ExistingRecord) []string {
-	removed := map[int]bool{}
+func (p recordPlan) predict(existing []dnsRecord) []string {
+	removed := map[string]bool{}
 	for _, rec := range p.remove {
-		removed[rec.Id] = true
+		removed[rec.id] = true
 	}
 	var result []string
 	for _, rec := range existing {
-		if !removed[rec.Id] {
-			result = append(result, rec.Content)
+		if !removed[rec.id] {
+			result = append(result, rec.content)
 		}
 	}
 	return append(result, p.add...)
 }
 
-func contents(records []api.ExistingRecord) []string {
+func contents(records []dnsRecord) []string {
 	out := make([]string, len(records))
 	for i, rec := range records {
-		out[i] = rec.Content
+		out[i] = rec.content
 	}
 	return out
 }

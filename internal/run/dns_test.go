@@ -12,73 +12,57 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type modification struct {
-	domain string
-	ops    []map[string]any
+type appliedChanges struct {
+	zone    string
+	changes dnsRecordChanges
 }
 
 type fakeDNS struct {
-	domains  []string
-	records  []api.ExistingRecord
-	modified []modification
+	zones   map[string]bool
+	records []dnsRecord
+	applied []appliedChanges
 }
 
-func (f *fakeDNS) Domains(context.Context) (map[string]api.AccessLevel, error) {
-	m := map[string]api.AccessLevel{}
-	for _, d := range f.domains {
-		m[d] = api.LevelOwner
-	}
-	return m, nil
+func (f *fakeDNS) Zones(context.Context) (map[string]bool, error) {
+	return f.zones, nil
 }
 
-func (f *fakeDNS) Records(context.Context, string) (*api.RecordsResponse, error) {
-	return &api.RecordsResponse{Records: f.records}, nil
+func (f *fakeDNS) Records(context.Context, string) ([]dnsRecord, error) {
+	return f.records, nil
 }
 
-func (f *fakeDNS) ModifyRecords(
-	_ context.Context,
-	domain string,
-	ops ...api.RecordOperation,
-) (*api.ModifyRecordsResponse, error) {
-	m := modification{domain: domain}
-	for _, op := range ops {
-		var v map[string]any
-		if err := json.Unmarshal(op, &v); err != nil {
-			return nil, err
-		}
-		m.ops = append(m.ops, v)
-	}
-	f.modified = append(f.modified, m)
-	return &api.ModifyRecordsResponse{}, nil
+func (f *fakeDNS) Apply(_ context.Context, zone string, changes dnsRecordChanges) error {
+	f.applied = append(f.applied, appliedChanges{zone: zone, changes: changes})
+	return nil
 }
 
-func record(id int, content string, ttl int) api.ExistingRecord {
-	return api.ExistingRecord{Id: id, Name: "www", Type: "A", Content: content, TTL: ttl}
+func record(id, content string, ttl int) dnsRecord {
+	return dnsRecord{id: id, name: "www", rtype: "A", content: content, ttl: ttl}
 }
 
-func ids(records []api.ExistingRecord) []int {
-	out := make([]int, len(records))
+func ids(records []dnsRecord) []string {
+	out := make([]string, len(records))
 	for i, r := range records {
-		out[i] = r.Id
+		out[i] = r.id
 	}
 	return out
 }
 
 func TestPlanRecords_exclusiveRemovesOthersAndDuplicates(t *testing.T) {
-	existing := []api.ExistingRecord{record(1, "192.0.2.1", 60), record(2, "192.0.2.2", 60), record(3, "192.0.2.1", 60)}
+	existing := []dnsRecord{record("1", "192.0.2.1", 60), record("2", "192.0.2.2", 60), record("3", "192.0.2.1", 60)}
 
 	p := planRecords("A", existing, []string{"192.0.2.1", "192.0.2.9"}, nil, true)
 
 	assert.Equal(t, []string{"192.0.2.9"}, p.add)
 	assert.Empty(t, p.update)
-	assert.Equal(t, []int{3, 2}, ids(p.remove))
+	assert.Equal(t, []string{"3", "2"}, ids(p.remove))
 	assert.Equal(t, []string{"192.0.2.1", "192.0.2.9"}, p.predict(existing))
 }
 
 func TestPlanRecords_inclusiveKeepsOthers(t *testing.T) {
 	p := planRecords(
 		"A",
-		[]api.ExistingRecord{record(1, "192.0.2.1", 60), record(2, "192.0.2.2", 60)},
+		[]dnsRecord{record("1", "192.0.2.1", 60), record("2", "192.0.2.2", 60)},
 		[]string{"192.0.2.1"},
 		nil,
 		false,
@@ -88,29 +72,35 @@ func TestPlanRecords_inclusiveKeepsOthers(t *testing.T) {
 }
 
 func TestPlanRecords_ttl(t *testing.T) {
-	existing := []api.ExistingRecord{record(1, "192.0.2.1", 60), record(2, "192.0.2.2", 300)}
+	existing := []dnsRecord{record("1", "192.0.2.1", 60), record("2", "192.0.2.2", 300)}
 	ttl := 300
 
 	p := planRecords("A", existing, []string{"192.0.2.1", "192.0.2.2", "192.0.2.3"}, &ttl, true)
 
-	assert.Equal(t, []int{1}, ids(p.update))
-	ops := p.operations("www", "A", &ttl)
-	require.Len(t, ops, 2)
-	assert.JSONEq(t, `{"id":1,"ttl":300}`, string(ops[0]))
-	assert.JSONEq(t, `{"name":"www","type":"A","content":"192.0.2.3","ttl":300}`, string(ops[1]))
+	assert.Equal(t, []string{"1"}, ids(p.update))
+	assert.Equal(
+		t,
+		dnsRecordChanges{
+			update: []dnsRecord{record("1", "192.0.2.1", 300)},
+			add:    []dnsRecord{{name: "www", rtype: "A", content: "192.0.2.3", ttl: 300}},
+		},
+		p.changes("www", "A", &ttl),
+	)
 }
 
 func TestPlanRecords_nilTTLLeavesTTLsAlone(t *testing.T) {
-	p := planRecords("A", []api.ExistingRecord{record(1, "192.0.2.1", 60)}, []string{"192.0.2.1", "192.0.2.3"}, nil, false)
+	p := planRecords("A", []dnsRecord{record("1", "192.0.2.1", 60)}, []string{"192.0.2.1", "192.0.2.3"}, nil, false)
 
 	assert.Empty(t, p.update)
-	ops := p.operations("www", "A", nil)
-	require.Len(t, ops, 1)
-	assert.JSONEq(t, `{"name":"www","type":"A","content":"192.0.2.3"}`, string(ops[0]))
+	assert.Equal(
+		t,
+		dnsRecordChanges{add: []dnsRecord{{name: "www", rtype: "A", content: "192.0.2.3"}}},
+		p.changes("www", "A", nil),
+	)
 }
 
 func TestPlanRecords_comparesAddressesCanonically(t *testing.T) {
-	existing := []api.ExistingRecord{{Id: 1, Type: "AAAA", Content: "2001:0db8:0000::0001"}}
+	existing := []dnsRecord{{id: "1", rtype: "AAAA", content: "2001:0db8:0000::0001"}}
 
 	assert.True(t, planRecords("AAAA", existing, []string{"2001:db8::1"}, nil, true).empty())
 }
@@ -172,15 +162,15 @@ func TestDNSAddress(t *testing.T) {
 }
 
 func TestZonesPlan(t *testing.T) {
-	client := &fakeDNS{
-		domains: []string{"example.com", "other.org"},
-		records: []api.ExistingRecord{
-			{Id: 7, Name: "host", Type: "A", Content: "192.0.2.1"},
-			{Id: 8, Name: "host", Type: "AAAA", Content: "2001:db8::1"},
-			{Id: 9, Name: "elsewhere", Type: "A", Content: "192.0.2.1"},
+	provider := &fakeDNS{
+		zones: map[string]bool{"Example.com.": true, "other.org": true},
+		records: []dnsRecord{
+			{id: "7", name: "host", rtype: "A", content: "192.0.2.1"},
+			{id: "8", name: "host.example.com.", rtype: "AAAA", content: "2001:db8::1"},
+			{id: "9", name: "elsewhere", rtype: "A", content: "192.0.2.1"},
 		},
 	}
-	z := &dnsZones{client: client, records: map[string][]api.ExistingRecord{}}
+	z := &dnsZones{provider: provider, records: map[string][]dnsRecord{}}
 
 	change, unchanged, err := z.plan(
 		t.Context(),
@@ -194,14 +184,14 @@ func TestZonesPlan(t *testing.T) {
 	require.NoError(t, change.apply(t.Context()))
 	assert.Equal(
 		t,
-		[]modification{{
-			domain: "example.com",
-			ops: []map[string]any{
-				{"id": float64(7), "delete": true},
-				{"name": "host", "type": "A", "content": "192.0.2.2"},
+		[]appliedChanges{{
+			zone: "example.com",
+			changes: dnsRecordChanges{
+				remove: []dnsRecord{provider.records[0]},
+				add:    []dnsRecord{{name: "host", rtype: "A", content: "192.0.2.2"}},
 			},
 		}},
-		client.modified,
+		provider.applied,
 	)
 
 	none, _, err := z.plan(t.Context(), "host.example.com", map[string][]string{"AAAA": {"2001:db8::1"}})
@@ -217,15 +207,15 @@ func TestZonesPlan(t *testing.T) {
 }
 
 func TestZonesPlan_replacesOtherTypesInOneChange(t *testing.T) {
-	client := &fakeDNS{
-		domains: []string{"example.com"},
-		records: []api.ExistingRecord{
-			{Id: 1, Name: "", Type: "A", Content: "192.0.2.1"},
-			{Id: 2, Name: "", Type: "MX", Content: "mail.example.com"},
-			{Id: 3, Name: "", Type: "RRCLONE", Content: "(A,AAAA)  Old.example.net."},
+	provider := &fakeDNS{
+		zones: map[string]bool{"example.com": true},
+		records: []dnsRecord{
+			{id: "1", name: "", rtype: "A", content: "192.0.2.1"},
+			{id: "2", name: "", rtype: "MX", content: "mail.example.com"},
+			{id: "3", name: "@", rtype: "RRCLONE", content: "(A,AAAA)  Old.example.net."},
 		},
 	}
-	z := &dnsZones{client: client, records: map[string][]api.ExistingRecord{}}
+	z := &dnsZones{provider: provider, records: map[string][]dnsRecord{}}
 
 	change, _, err := z.plan(
 		t.Context(),
@@ -245,40 +235,29 @@ func TestZonesPlan_replacesOtherTypesInOneChange(t *testing.T) {
 	require.NoError(t, change.apply(t.Context()))
 	assert.Equal(
 		t,
-		[]map[string]any{
-			{"id": float64(1), "delete": true},
-			{"name": "@", "type": "RRCLONE", "content": "(A,AAAA) new.example.net"},
+		dnsRecordChanges{
+			remove: []dnsRecord{provider.records[0]},
+			add:    []dnsRecord{{name: "", rtype: "RRCLONE", content: "(A,AAAA) new.example.net"}},
 		},
-		client.modified[0].ops,
+		provider.applied[0].changes,
 	)
 }
 
-func TestZonesPlan_onlyWritableDomains(t *testing.T) {
-	client := &levelDNS{
-		levels: map[string]api.AccessLevel{"example.com": api.LevelRead, "sub.example.com": api.LevelWrite},
-	}
-	z := &dnsZones{client: client, records: map[string][]api.ExistingRecord{}}
+func TestZonesPlan_onlyWritableZones(t *testing.T) {
+	provider := &fakeDNS{zones: map[string]bool{"example.com": false, "sub.example.com": true}}
+	z := &dnsZones{provider: provider, records: map[string][]dnsRecord{}}
 
 	_, _, err := z.plan(t.Context(), "www.example.com", map[string][]string{"A": {"192.0.2.1"}})
 	require.ErrorIs(t, err, errReadOnly)
 	change, _, err := z.plan(t.Context(), "www.sub.example.com", map[string][]string{"A": {"192.0.2.1"}})
 	require.NoError(t, err)
-	assert.Equal(t, "sub.example.com", change.domain)
+	assert.Equal(t, "sub.example.com", change.zone)
 
 	// A writable parent doesn't stand in for a read-only zone within it.
-	client.levels = map[string]api.AccessLevel{"example.com": api.LevelWrite, "sub.example.com": api.LevelRead}
-	z = &dnsZones{client: client, records: map[string][]api.ExistingRecord{}}
+	provider.zones = map[string]bool{"example.com": true, "sub.example.com": false}
+	z = &dnsZones{provider: provider, records: map[string][]dnsRecord{}}
 	_, _, err = z.plan(t.Context(), "www.sub.example.com", map[string][]string{"A": {"192.0.2.1"}})
 	assert.ErrorIs(t, err, errReadOnly)
-}
-
-type levelDNS struct {
-	fakeDNS
-	levels map[string]api.AccessLevel
-}
-
-func (l *levelDNS) Domains(context.Context) (map[string]api.AccessLevel, error) {
-	return l.levels, nil
 }
 
 func TestManagedNames_vhosts(t *testing.T) {
@@ -324,7 +303,7 @@ func TestManagedNames_vhosts(t *testing.T) {
 }
 
 func TestPlanNames_vhostOutsideAccountWarns(t *testing.T) {
-	z := &dnsZones{client: &fakeDNS{domains: []string{"example.com"}}, records: map[string][]api.ExistingRecord{}}
+	z := &dnsZones{provider: &fakeDNS{zones: map[string]bool{"example.com": true}}, records: map[string][]dnsRecord{}}
 	var p dnsPlan
 
 	z.planNames(
@@ -343,4 +322,99 @@ func TestPlanNames_vhostOutsideAccountWarns(t *testing.T) {
 	)
 	require.Len(t, p.errs, 1)
 	assert.ErrorIs(t, p.errs[0], errNoDomain)
+}
+
+func TestNewDNSProvider_needsAKnownProvider(t *testing.T) {
+	_, err := newDNSProvider(config.DNSSettings{})
+	require.ErrorContains(t, err, "dns.provider isn't set")
+
+	_, err = newDNSProvider(config.DNSSettings{Provider: "nope"})
+	require.ErrorContains(t, err, `unknown provider "nope"`)
+
+	_, err = newDNSProvider(config.DNSSettings{Provider: "mydnshost"})
+	assert.ErrorContains(t, err, "dns.mydnshost.auth_user")
+}
+
+type fakeMyDNSHost struct {
+	levels   map[string]api.AccessLevel
+	records  []api.ExistingRecord
+	modified []map[string]any
+}
+
+func (f *fakeMyDNSHost) Domains(context.Context) (map[string]api.AccessLevel, error) {
+	return f.levels, nil
+}
+
+func (f *fakeMyDNSHost) Records(context.Context, string) (*api.RecordsResponse, error) {
+	return &api.RecordsResponse{Records: f.records}, nil
+}
+
+func (f *fakeMyDNSHost) ModifyRecords(
+	_ context.Context,
+	_ string,
+	ops ...api.RecordOperation,
+) (*api.ModifyRecordsResponse, error) {
+	for _, op := range ops {
+		var v map[string]any
+		if err := json.Unmarshal(op, &v); err != nil {
+			return nil, err
+		}
+		f.modified = append(f.modified, v)
+	}
+	return &api.ModifyRecordsResponse{}, nil
+}
+
+func TestMyDNSHost_zonesAreWritableWithWriteAccess(t *testing.T) {
+	m := &myDNSHost{client: &fakeMyDNSHost{levels: map[string]api.AccessLevel{
+		"owned.com": api.LevelOwner,
+		"admin.com": api.LevelAdmin,
+		"write.com": api.LevelWrite,
+		"read.com":  api.LevelRead,
+	}}}
+
+	zones, err := m.Zones(t.Context())
+
+	require.NoError(t, err)
+	assert.Equal(t, map[string]bool{"owned.com": true, "admin.com": true, "write.com": true, "read.com": false}, zones)
+}
+
+func TestMyDNSHost_records(t *testing.T) {
+	m := &myDNSHost{client: &fakeMyDNSHost{records: []api.ExistingRecord{
+		{Id: 7, Name: "www", Type: "A", Content: "192.0.2.1", TTL: 60},
+	}}}
+
+	records, err := m.Records(t.Context(), "example.com")
+
+	require.NoError(t, err)
+	assert.Equal(t, []dnsRecord{{id: "7", name: "www", rtype: "A", content: "192.0.2.1", ttl: 60}}, records)
+}
+
+func TestMyDNSHost_apply(t *testing.T) {
+	client := &fakeMyDNSHost{}
+	m := &myDNSHost{client: client}
+
+	err := m.Apply(
+		t.Context(),
+		"example.com",
+		dnsRecordChanges{
+			remove: []dnsRecord{{id: "1"}},
+			update: []dnsRecord{{id: "2", ttl: 300}},
+			add: []dnsRecord{
+				{name: "", rtype: "RRCLONE", content: "(A,AAAA) host.example.net"},
+				{name: "www", rtype: "A", content: "192.0.2.3", ttl: 60},
+			},
+		},
+	)
+
+	require.NoError(t, err)
+	assert.Equal(
+		t,
+		[]map[string]any{
+			{"id": float64(1), "delete": true},
+			{"id": float64(2), "ttl": float64(300)},
+			{"name": "@", "type": "RRCLONE", "content": "(A,AAAA) host.example.net"},
+			{"name": "www", "type": "A", "content": "192.0.2.3", "ttl": float64(60)},
+		},
+		client.modified,
+	)
 }

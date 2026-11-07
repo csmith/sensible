@@ -560,7 +560,22 @@ func TestOpen(t *testing.T) {
 		},
 		{"bad recipient", map[string]string{"sensible.yml": "secrets:\n  recipients: [nope]\n"}, "recipients"},
 		{"unknown settings key", map[string]string{"sensible.yml": "identity: op://x\n"}, "identity"},
-		{"plain DNS secret", map[string]string{"sensible.yml": "dns:\n  auth_key: hunter2\n"}, "encrypt"},
+		{
+			"plain DNS secret",
+			map[string]string{"sensible.yml": "dns:\n  provider: mydnshost\n  mydnshost:\n    auth_key: hunter2\n"},
+			"encrypt",
+		},
+		{
+			"DNS without a provider",
+			map[string]string{"sensible.yml": "dns:\n  vhosts:\n    - {type: CNAME, content: '{host}'}\n"},
+			"sensible.yml: dns.provider isn't set",
+		},
+		{"unknown DNS provider", map[string]string{"sensible.yml": "dns:\n  provider: nope\n"}, `unknown provider "nope"`},
+		{
+			"MyDNSHost without credentials",
+			map[string]string{"sensible.yml": "dns:\n  provider: mydnshost\n"},
+			"dns.mydnshost: needs an auth_user and auth_key",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(
@@ -764,14 +779,14 @@ func TestSecrets_encryptAndReveal(t *testing.T) {
 
 	settings, err := os.ReadFile(filepath.Join(tr.dir, "sensible.yml"))
 	require.NoError(t, err)
-	writeFile(t, tr.dir, "sensible.yml", string(settings)+"dns:\n  auth_user: "+nest(user)+"\n  auth_key: "+nest(key)+"\n")
+	writeFile(t, tr.dir, "sensible.yml", string(settings)+myDNSHostSettings(user, key))
 	r = tr.open(t)
 	assert.Equal(t, 0, tr.fetches)
 
-	got, err := r.DNS().AuthUser.Reveal()
+	got, err := r.DNS().MyDNSHost.AuthUser.Reveal()
 	require.NoError(t, err)
 	assert.Equal(t, "alice", got)
-	got, err = r.DNS().AuthKey.Reveal()
+	got, err = r.DNS().MyDNSHost.AuthKey.Reveal()
 	require.NoError(t, err)
 	assert.Equal(t, "hunter2\nwith newline\n", got)
 	assert.Equal(t, 1, tr.fetches)
@@ -781,7 +796,7 @@ func TestSecrets_identityErrorIsCached(t *testing.T) {
 	tr := newTestRepo(t, map[string]string{})
 	enc, err := tr.open(t).Encrypt("x")
 	require.NoError(t, err)
-	writeFile(t, tr.dir, "sensible.yml", "dns:\n  auth_key: "+nest(enc)+"\n  auth_user: "+nest(enc)+"\n")
+	writeFile(t, tr.dir, "sensible.yml", myDNSHostSettings(enc, enc))
 
 	calls := 0
 	r, err := Open(
@@ -792,9 +807,9 @@ func TestSecrets_identityErrorIsCached(t *testing.T) {
 		},
 	)
 	require.NoError(t, err)
-	_, err = r.DNS().AuthKey.Reveal()
+	_, err = r.DNS().MyDNSHost.AuthKey.Reveal()
 	require.ErrorContains(t, err, "locked")
-	_, err = r.DNS().AuthUser.Reveal()
+	_, err = r.DNS().MyDNSHost.AuthUser.Reveal()
 	require.ErrorContains(t, err, "locked")
 	assert.Equal(t, 1, calls)
 }
@@ -803,11 +818,11 @@ func TestSecrets_wrongIdentity(t *testing.T) {
 	tr := newTestRepo(t, map[string]string{})
 	enc, err := tr.open(t).Encrypt("x")
 	require.NoError(t, err)
-	writeFile(t, tr.dir, "sensible.yml", "dns:\n  auth_key: "+nest(enc)+"\n")
+	writeFile(t, tr.dir, "sensible.yml", myDNSHostSettings(enc, enc))
 
 	tr.identity, err = age.GenerateX25519Identity()
 	require.NoError(t, err)
-	_, err = tr.open(t).DNS().AuthKey.Reveal()
+	_, err = tr.open(t).DNS().MyDNSHost.AuthKey.Reveal()
 	assert.Error(t, err)
 }
 
@@ -817,29 +832,35 @@ func TestPreview_secretsWithoutIdentityArePlaceholders(t *testing.T) {
 	require.NoError(t, err)
 	key, err := tr.open(t).Encrypt("hunter2")
 	require.NoError(t, err)
-	writeFile(t, tr.dir, "sensible.yml", "dns:\n  auth_user: "+nest(user)+"\n  auth_key: "+nest(key)+"\n")
+	writeFile(t, tr.dir, "sensible.yml", myDNSHostSettings(user, key))
 
 	r, err := Open(tr.dir, func() (age.Identity, error) { return nil, errors.New("locked") })
 	require.NoError(t, err)
 	var warnings []string
 	r.Preview(func(msg string) { warnings = append(warnings, msg) })
 
-	gotUser, err := r.DNS().AuthUser.Reveal()
+	gotUser, err := r.DNS().MyDNSHost.AuthUser.Reveal()
 	require.NoError(t, err)
-	gotKey, err := r.DNS().AuthKey.Reveal()
+	gotKey, err := r.DNS().MyDNSHost.AuthKey.Reveal()
 	require.NoError(t, err)
 	assert.Regexp(t, `^<age:[0-9a-f]{8}>$`, gotUser)
-	assert.Equal(t, r.DNS().AuthUser.Placeholder(), gotUser)
+	assert.Equal(t, r.DNS().MyDNSHost.AuthUser.Placeholder(), gotUser)
 	assert.NotEqual(t, gotUser, gotKey)
 	require.Len(t, warnings, 1)
 	assert.Contains(t, warnings[0], "locked")
 
 	// The same ciphertext written elsewhere, differently indented, has the
 	// same placeholder.
-	writeFile(t, tr.dir, "sensible.yml", "dns:\n    auth_user: "+indent(user, "      ")+"\n")
+	writeFile(
+		t,
+		tr.dir,
+		"sensible.yml",
+		"dns:\n    provider: mydnshost\n    mydnshost:\n        auth_user: "+indent(user, "          ")+
+			"\n        auth_key: "+indent(key, "          ")+"\n",
+	)
 	again, err := Open(tr.dir, func() (age.Identity, error) { return nil, errors.New("locked") })
 	require.NoError(t, err)
-	assert.Equal(t, gotUser, again.DNS().AuthUser.Placeholder())
+	assert.Equal(t, gotUser, again.DNS().MyDNSHost.AuthUser.Placeholder())
 }
 
 func TestPreview_secretsForAnotherIdentityArePlaceholders(t *testing.T) {
@@ -852,20 +873,20 @@ func TestPreview_secretsForAnotherIdentityArePlaceholders(t *testing.T) {
 	require.NoError(t, err)
 	mine, err := tr.open(t).Encrypt("mine")
 	require.NoError(t, err)
-	writeFile(t, tr.dir, "sensible.yml", "dns:\n  auth_user: "+nest(foreign)+"\n  auth_key: "+nest(mine)+"\n")
+	writeFile(t, tr.dir, "sensible.yml", myDNSHostSettings(foreign, mine))
 
 	r = tr.open(t)
 	var warnings []string
 	r.Preview(func(msg string) { warnings = append(warnings, msg) })
 
-	got, err := r.DNS().AuthUser.Reveal()
+	got, err := r.DNS().MyDNSHost.AuthUser.Reveal()
 	require.NoError(t, err)
-	assert.Equal(t, r.DNS().AuthUser.Placeholder(), got)
-	got, err = r.DNS().AuthKey.Reveal()
+	assert.Equal(t, r.DNS().MyDNSHost.AuthUser.Placeholder(), got)
+	got, err = r.DNS().MyDNSHost.AuthKey.Reveal()
 	require.NoError(t, err)
 	assert.Equal(t, "mine", got)
 	require.Len(t, warnings, 1)
-	assert.Contains(t, warnings[0], r.DNS().AuthUser.Placeholder())
+	assert.Contains(t, warnings[0], r.DNS().MyDNSHost.AuthUser.Placeholder())
 }
 
 func TestSecret_zeroReveal(t *testing.T) {
@@ -913,6 +934,11 @@ func writeFile(t *testing.T, dir, name, content string) {
 
 func nest(yaml string) string {
 	return strings.ReplaceAll(yaml, "\n", "\n  ")
+}
+
+func myDNSHostSettings(user, key string) string {
+	return "dns:\n  provider: mydnshost\n  mydnshost:\n    auth_user: " + indent(user, "    ") +
+		"\n    auth_key: " + indent(key, "    ") + "\n"
 }
 
 func TestHostConfig_dockerNetworks(t *testing.T) {
@@ -1049,15 +1075,18 @@ func TestHostConfig_resticErrors(t *testing.T) {
 }
 
 func TestDNSVhostRecords(t *testing.T) {
-	tr := newTestRepo(
-		t,
-		map[string]string{"sensible.yml": "dns:\n  vhosts:\n    - {type: rrclone, content: '(A,AAAA) {host}'}\n"},
-	)
+	tr := newTestRepo(t, map[string]string{})
+	enc, err := tr.open(t).Encrypt("x")
+	require.NoError(t, err)
+	settings, err := os.ReadFile(filepath.Join(tr.dir, "sensible.yml"))
+	require.NoError(t, err)
+	dns := string(settings) + myDNSHostSettings(enc, enc)
 
+	writeFile(t, tr.dir, "sensible.yml", dns+"  vhosts:\n    - {type: rrclone, content: '(A,AAAA) {host}'}\n")
 	assert.Equal(t, []VhostRecord{{Type: "RRCLONE", Content: "(A,AAAA) {host}"}}, tr.open(t).DNS().Vhosts)
 
-	writeFile(t, tr.dir, "sensible.yml", "dns:\n  vhosts:\n    - {type: CNAME}\n")
-	_, err := tr.tryOpen()
+	writeFile(t, tr.dir, "sensible.yml", dns+"  vhosts:\n    - {type: CNAME}\n")
+	_, err = tr.tryOpen()
 	assert.ErrorContains(t, err, "dns.vhosts[0]: needs a type and content")
 }
 

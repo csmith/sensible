@@ -61,6 +61,25 @@ A role's files can use `{host}`, the host's name in `hosts.d`, and `{stack}`,
 the role's stack name, e.g. `TASK_QUEUE: queue-{host}`. Write `{{host}}` for
 the text itself.
 
+### DNS
+
+A host with a `dns_name` gets A and AAAA records for its addresses. With
+`dns.vhosts`, each vhost gets those records for every host serving it, with
+`{host}` replaced by the host's `dns_name`. The provider must be set, with its
+settings under its name. MyDNSHost is supported.
+
+```yaml
+# sensible.yml
+dns:
+  provider: mydnshost
+  mydnshost:
+    auth_user: !age ...   # From `sensible secret encrypt`
+    auth_key: !age ...
+  vhosts:
+    - type: CNAME
+      content: "{host}"
+```
+
 ## Using
 
 ```sh

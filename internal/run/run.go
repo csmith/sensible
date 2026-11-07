@@ -54,7 +54,7 @@ func Run(ctx context.Context, opts Options) error {
 		Confirm:     confirmOnTerminal,
 		Builds:      builder,
 		Compile:     compiler(repo),
-		DNS:         newDNSClient,
+		DNS:         newDNSProvider,
 		DNSSettings: repo.DNS(),
 		Vhosts:      repo.Vhosts(),
 		DNSNames:    dnsNames(repo.Inventory()),
@@ -301,7 +301,7 @@ type Runner struct {
 	Confirm     func(prompt string) (bool, error)
 	Builds      Builds
 	Compile     func(t target, facts host.Facts) (compiled, error)
-	DNS         func(user, key string) dnsClient
+	DNS         func(settings config.DNSSettings) (dnsProvider, error)
 	DNSSettings config.DNSSettings
 	// Vhosts maps each vhost to the hosts serving it, and DNSNames each
 	// host to its dns_name, for all hosts, not just those in the run.

@@ -20,7 +20,6 @@ import (
 	"unicode/utf8"
 
 	"filippo.io/age"
-	api "github.com/mydnshost/mydnshost-go-api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -541,7 +540,7 @@ func writeFile(t *testing.T, path, content string) {
 }
 
 func TestExecute_dnsIsPlannedFromFactsAndAppliedAfterHosts(t *testing.T) {
-	f, client, account := dnsFixture(t)
+	f, provider, opened := dnsFixture(t)
 	acidburn := f.target(
 		"acidburn",
 		&fakeAgent{
@@ -554,7 +553,10 @@ func TestExecute_dnsIsPlannedFromFactsAndAppliedAfterHosts(t *testing.T) {
 	err := f.runner.Execute(t.Context(), []target{acidburn, f.target("smarts", &fakeAgent{})}, true)
 
 	require.NoError(t, err)
-	assert.Equal(t, []string{"me@example.com", "key"}, *account)
+	assert.Equal(t, "mydnshost", opened.Provider)
+	user, err := opened.MyDNSHost.AuthUser.Reveal()
+	require.NoError(t, err)
+	assert.Equal(t, "me@example.com", user)
 	out := f.out.String()
 	assert.Contains(
 		t,
@@ -568,12 +570,12 @@ func TestExecute_dnsIsPlannedFromFactsAndAppliedAfterHosts(t *testing.T) {
 		strings.Index(out, "> Applying DNS changes\n  ✓ A acidburn.example.com\n"),
 		strings.Index(out, "✓ service docker"),
 	)
-	require.Len(t, client.modified, 1)
-	assert.Equal(t, "example.com", client.modified[0].domain)
+	require.Len(t, provider.applied, 1)
+	assert.Equal(t, "example.com", provider.applied[0].zone)
 }
 
 func TestExecute_dnsIsHeldBackWhenAHostFailsToPlan(t *testing.T) {
-	f, client, _ := dnsFixture(t)
+	f, provider, _ := dnsFixture(t)
 	acidburn := f.target("acidburn", &fakeAgent{status: deferDocker, facts: host.Facts{DefaultIPv4: "203.0.113.2"}})
 	acidburn.dnsName = "acidburn.example.com"
 
@@ -589,12 +591,12 @@ func TestExecute_dnsIsHeldBackWhenAHostFailsToPlan(t *testing.T) {
 	assert.Contains(t, out, "! DNS changes won't be applied, as not every host could be planned")
 	assert.Contains(t, out, "✓ service docker")
 	assert.NotContains(t, out, "Applying DNS changes")
-	assert.Empty(t, client.modified)
+	assert.Empty(t, provider.applied)
 }
 
 // dnsFixture is a runner whose DNS account is a fake holding acidburn's
-// records, and the credentials it was opened with.
-func dnsFixture(t *testing.T) (*runnerFixture, *fakeDNS, *[]string) {
+// records, and the account's settings once it's opened.
+func dnsFixture(t *testing.T) (*runnerFixture, *fakeDNS, *config.DNSSettings) {
 	t.Helper()
 	repo, dir, source := testRepo(t)
 	user, err := repo.Encrypt("me@example.com")
@@ -606,26 +608,27 @@ func dnsFixture(t *testing.T) (*runnerFixture, *fakeDNS, *[]string) {
 	writeFile(
 		t,
 		filepath.Join(dir, "sensible.yml"),
-		string(settings)+"dns:\n  auth_user: "+indentYAML(user)+"\n  auth_key: "+indentYAML(key)+"\n",
+		string(settings)+"dns:\n  provider: mydnshost\n  mydnshost:\n    auth_user: "+indentYAML(indentYAML(user))+
+			"\n    auth_key: "+indentYAML(indentYAML(key))+"\n",
 	)
 	repo, err = config.Open(dir, source)
 	require.NoError(t, err)
 
 	f := newRunnerFixture(t, testResources)
 	f.runner.DNSSettings = repo.DNS()
-	client := &fakeDNS{
-		domains: []string{"example.com"},
-		records: []api.ExistingRecord{
-			{Id: 1, Name: "acidburn", Type: "A", Content: "203.0.113.1"},
-			{Id: 2, Name: "acidburn", Type: "AAAA", Content: "2001:db8::1"},
+	provider := &fakeDNS{
+		zones: map[string]bool{"example.com": true},
+		records: []dnsRecord{
+			{id: "1", name: "acidburn", rtype: "A", content: "203.0.113.1"},
+			{id: "2", name: "acidburn", rtype: "AAAA", content: "2001:db8::1"},
 		},
 	}
-	var account []string
-	f.runner.DNS = func(user, key string) dnsClient {
-		account = []string{user, key}
-		return client
+	var opened config.DNSSettings
+	f.runner.DNS = func(s config.DNSSettings) (dnsProvider, error) {
+		opened = s
+		return provider, nil
 	}
-	return f, client, &account
+	return f, provider, &opened
 }
 
 func indentYAML(s string) string {
