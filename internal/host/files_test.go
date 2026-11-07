@@ -189,14 +189,59 @@ func TestFile_DoesNotWriteThroughSwappedLink(t *testing.T) {
 	assert.False(t, sys.exists("/etc/sudoers.d/authorized_keys"))
 }
 
-func TestFile_FollowsLinksInUserDirsThatStayInside(t *testing.T) {
+func TestFile_DoesNotFollowLinksInUserDirs(t *testing.T) {
 	sys := newTestSys(t)
 	userHome(t, sys, "dotfiles/ssh")
 	sys.write("/home/alice/dotfiles/ssh/.keep", "")
 
-	checkApply(t, sys, File{Path: "/home/alice/.ssh/authorized_keys", Content: "key\n"})
+	err := File{Path: "/home/alice/.ssh/authorized_keys", Content: "key\n"}.Apply(context.Background(), sys)
 
-	assert.Equal(t, "key\n", sys.read("/home/alice/dotfiles/ssh/authorized_keys"))
+	require.Error(t, err)
+	assert.False(t, sys.exists("/home/alice/dotfiles/ssh/authorized_keys"))
+}
+
+func TestDir_DoesNotChmodThroughLinkInsideUserDir(t *testing.T) {
+	sys := newTestSys(t)
+	userHome(t, sys, "secret")
+	sys.write("/home/alice/secret", "")
+	require.NoError(t, os.Chmod(sys.path("/home/alice/secret"), 0o600))
+
+	err := Dir{Path: "/home/alice/.ssh", Mode: 0o755}.Apply(context.Background(), sys)
+
+	require.Error(t, err)
+	info, err := os.Stat(sys.path("/home/alice/secret"))
+	require.NoError(t, err)
+	assert.Equal(t, fs.FileMode(0o600), info.Mode().Perm())
+}
+
+func TestFile_DoesNotFollowLinksIntoUserDirsWhereTheyChange(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/etc/sudoers.d/README", "")
+	userHome(t, sys, "../../etc/sudoers.d")
+	require.NoError(t, os.Symlink("../home/alice/.ssh", sys.path("/etc/ssh-keys")))
+
+	err := File{Path: "/etc/ssh-keys/authorized_keys", Content: "ALL ALL=(ALL) NOPASSWD: ALL\n"}.
+		Apply(context.Background(), sys)
+
+	require.Error(t, err)
+	assert.False(t, sys.exists("/etc/sudoers.d/authorized_keys"))
+}
+
+func TestSys_FollowsLastLinkTheAgentControls(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/usr/lib/os-release", "ID=debian\n")
+	require.NoError(t, os.Symlink("/usr/lib/os-release", sys.path("/etc/os-release")))
+
+	data, err := sys.ReadFile("/etc/os-release")
+	require.NoError(t, err)
+	assert.Equal(t, "ID=debian\n", string(data))
+	require.NoError(t, sys.Chmod("/etc/os-release", 0o600))
+	info, err := sys.Lstat("/usr/lib/os-release")
+	require.NoError(t, err)
+	assert.Equal(t, fs.FileMode(0o600), info.Mode.Perm())
+	info, err = sys.Lstat("/etc/os-release")
+	require.NoError(t, err)
+	assert.True(t, info.IsSymlink())
 }
 
 func TestFile_FollowsLinksTheAgentControls(t *testing.T) {
@@ -218,6 +263,19 @@ func TestAbsent_RemovesTree(t *testing.T) {
 
 	assert.Equal(t, "remove directory and its contents\n", change.Diff)
 	assert.False(t, sys.exists("/home/alice/.oh-my-zsh"))
+}
+
+func TestAbsent_RemovesLinksNotWhatTheyPointAt(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/home/alice/notes/x", "")
+	sys.write("/home/alice/.oh-my-zsh/lib/x.zsh", "")
+	require.NoError(t, os.Chmod(sys.path("/home/alice"), 0o777))
+	require.NoError(t, os.Symlink("../../notes", sys.path("/home/alice/.oh-my-zsh/lib/notes")))
+
+	checkApply(t, sys, Absent{Path: "/home/alice/.oh-my-zsh"})
+
+	assert.False(t, sys.exists("/home/alice/.oh-my-zsh"))
+	assert.True(t, sys.exists("/home/alice/notes/x"))
 }
 
 func TestDisowned_WarnsAboutUndeclaredWithoutRemoving(t *testing.T) {

@@ -18,9 +18,13 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Sys is the agent's view of the machine it runs on. Paths are absolute.
+// Links are only followed out of directories that only root or the agent
+// can change; anywhere else, following one is an error.
 type Sys interface {
 	FileReader
 	FileWriter
@@ -208,8 +212,14 @@ func (s *localSys) ReadFile(path string) ([]byte, error) {
 	return confined(
 		s,
 		path,
-		func(files fileOps, name string) ([]byte, error) {
-			return files.ReadFile(name)
+		followLast,
+		func(f fileOps) ([]byte, error) {
+			file, err := f.open(f.name, unix.O_RDONLY, 0)
+			if err != nil {
+				return nil, err
+			}
+			defer func() { _ = file.Close() }()
+			return io.ReadAll(file)
 		},
 	)
 }
@@ -218,49 +228,50 @@ func (s *localSys) WriteFile(path string, data []byte, opts WriteOptions) error 
 	return confinedErr(
 		s,
 		path,
-		func(files fileOps, name string) error {
-			tmp := tempName(name)
-			f, err := files.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		lastAsIs,
+		func(f fileOps) error {
+			tmp := tempName(f.name)
+			file, err := f.open(tmp, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL, 0o600)
 			if err != nil {
 				return err
 			}
 			committed := false
 			defer func() {
 				if !committed {
-					_ = files.Remove(tmp)
+					_ = unix.Unlinkat(f.dir, tmp, 0)
 				}
 			}()
 
-			if _, err := f.Write(data); err != nil {
-				_ = f.Close()
+			if _, err := file.Write(data); err != nil {
+				_ = file.Close()
 				return err
 			}
 			// Changing the owner can clear the mode's setuid bits, so it goes first.
-			if err := f.Chown(opts.UID, opts.GID); err != nil {
-				_ = f.Close()
+			if err := file.Chown(opts.UID, opts.GID); err != nil {
+				_ = file.Close()
 				return err
 			}
-			if err := f.Chmod(opts.Mode); err != nil {
-				_ = f.Close()
+			if err := file.Chmod(opts.Mode); err != nil {
+				_ = file.Close()
 				return err
 			}
-			if err := f.Sync(); err != nil {
-				_ = f.Close()
+			if err := file.Sync(); err != nil {
+				_ = file.Close()
 				return err
 			}
-			if err := f.Close(); err != nil {
+			if err := file.Close(); err != nil {
 				return err
 			}
 			if opts.Validate != nil {
-				if err := opts.Validate(filepath.Join(filepath.Dir(path), filepath.Base(tmp))); err != nil {
+				if err := opts.Validate(f.pathOf(tmp)); err != nil {
 					return err
 				}
 			}
-			if err := files.Rename(tmp, name); err != nil {
+			if err := f.rename(tmp, f.name); err != nil {
 				return err
 			}
 			committed = true
-			if d, err := files.Open(filepath.Dir(name)); err == nil {
+			if d, err := f.open(".", unix.O_RDONLY|unix.O_DIRECTORY, 0); err == nil {
 				_ = d.Sync()
 				_ = d.Close()
 			}
@@ -277,23 +288,11 @@ func syncDir(dir string) {
 }
 
 func (s *localSys) Stat(path string) (FileInfo, error) {
-	return confined(
-		s,
-		path,
-		func(files fileOps, name string) (FileInfo, error) {
-			return fileInfo(files.Stat(name))
-		},
-	)
+	return confined(s, path, followLast, fileOps.stat)
 }
 
 func (s *localSys) Lstat(path string) (FileInfo, error) {
-	return confined(
-		s,
-		path,
-		func(files fileOps, name string) (FileInfo, error) {
-			return fileInfo(files.Lstat(name))
-		},
-	)
+	return confined(s, path, lastAsIs, fileOps.stat)
 }
 
 func fileInfo(info fs.FileInfo, err error) (FileInfo, error) {
@@ -311,8 +310,9 @@ func (s *localSys) ReadDir(path string) ([]string, error) {
 	return confined(
 		s,
 		path,
-		func(files fileOps, name string) ([]string, error) {
-			d, err := files.Open(name)
+		followLast,
+		func(f fileOps) ([]string, error) {
+			d, err := f.open(f.name, unix.O_RDONLY|unix.O_DIRECTORY, 0)
 			if err != nil {
 				return nil, err
 			}
@@ -336,21 +336,38 @@ func (s *localSys) Glob(pattern string) ([]string, error) {
 }
 
 func (s *localSys) MkdirAll(path string, mode fs.FileMode) error {
-	return confinedErr(
-		s,
-		path,
-		func(files fileOps, name string) error {
-			return files.MkdirAll(name, mode)
-		},
-	)
+	parts := components(path)
+	for i := range parts {
+		err := confinedErr(
+			s,
+			"/"+strings.Join(parts[:i+1], "/"),
+			followLast,
+			func(f fileOps) error {
+				err := unix.Mkdirat(f.dir, f.name, uint32(mode.Perm()))
+				if !errors.Is(err, unix.EEXIST) {
+					return f.err("mkdir", f.name, err)
+				}
+				info, err := f.stat()
+				if err == nil && !info.IsDir() {
+					return f.err("mkdir", f.name, unix.ENOTDIR)
+				}
+				return err
+			},
+		)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *localSys) Chown(path string, uid, gid int) error {
 	return confinedErr(
 		s,
 		path,
-		func(files fileOps, name string) error {
-			return files.Lchown(name, uid, gid)
+		lastAsIs,
+		func(f fileOps) error {
+			return f.err("lchown", f.name, unix.Fchownat(f.dir, f.name, uid, gid, unix.AT_SYMLINK_NOFOLLOW))
 		},
 	)
 }
@@ -359,8 +376,27 @@ func (s *localSys) Chmod(path string, mode fs.FileMode) error {
 	return confinedErr(
 		s,
 		path,
-		func(files fileOps, name string) error {
-			return files.Chmod(name, mode)
+		followLast,
+		func(f fileOps) error {
+			// fchmod doesn't take an O_PATH descriptor, so the file is changed
+			// through /proc, which refers to the one opened rather than
+			// resolving its path again.
+			file, err := f.open(f.name, openPath, 0)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = file.Close() }()
+			info, err := file.Stat()
+			if err != nil {
+				return err
+			}
+			if info.Mode()&fs.ModeSymlink != 0 {
+				return f.err("chmod", f.name, errUntrustedLink)
+			}
+			if err := os.Chmod(fdPath(file), mode); err != nil {
+				return f.err("chmod", f.name, errors.Unwrap(err))
+			}
+			return nil
 		},
 	)
 }
@@ -369,13 +405,14 @@ func (s *localSys) Symlink(target, path string) error {
 	return confinedErr(
 		s,
 		path,
-		func(files fileOps, name string) error {
-			tmp := tempName(name)
-			if err := files.Symlink(target, tmp); err != nil {
-				return err
+		lastAsIs,
+		func(f fileOps) error {
+			tmp := tempName(f.name)
+			if err := unix.Symlinkat(target, f.dir, tmp); err != nil {
+				return f.err("symlink", tmp, err)
 			}
-			if err := files.Rename(tmp, name); err != nil {
-				_ = files.Remove(tmp)
+			if err := f.rename(tmp, f.name); err != nil {
+				_ = unix.Unlinkat(f.dir, tmp, 0)
 				return err
 			}
 			return nil
@@ -391,8 +428,10 @@ func (s *localSys) Readlink(path string) (string, error) {
 	return confined(
 		s,
 		path,
-		func(files fileOps, name string) (string, error) {
-			return files.Readlink(name)
+		lastAsIs,
+		func(f fileOps) (string, error) {
+			target, err := readlinkat(f.dir, f.name)
+			return target, f.err("readlink", f.name, err)
 		},
 	)
 }
@@ -401,163 +440,11 @@ func (s *localSys) RemoveAll(path string) error {
 	return confinedErr(
 		s,
 		path,
-		func(files fileOps, name string) error {
-			return files.RemoveAll(name)
+		lastAsIs,
+		func(f fileOps) error {
+			return f.err("unlinkat", f.name, removeAllAt(f.dir, f.name))
 		},
 	)
-}
-
-// fileOps does what the agent does to files, either directly or, when root
-// is set, through it.
-type fileOps struct {
-	root *os.Root
-}
-
-func (f fileOps) Open(name string) (*os.File, error) {
-	if f.root != nil {
-		return f.root.Open(name)
-	}
-	return os.Open(name)
-}
-
-func (f fileOps) OpenFile(name string, flag int, perm fs.FileMode) (*os.File, error) {
-	if f.root != nil {
-		return f.root.OpenFile(name, flag, perm)
-	}
-	return os.OpenFile(name, flag, perm)
-}
-
-func (f fileOps) ReadFile(name string) ([]byte, error) {
-	if f.root != nil {
-		return f.root.ReadFile(name)
-	}
-	return os.ReadFile(name)
-}
-
-func (f fileOps) Stat(name string) (fs.FileInfo, error) {
-	if f.root != nil {
-		return f.root.Stat(name)
-	}
-	return os.Stat(name)
-}
-
-func (f fileOps) Lstat(name string) (fs.FileInfo, error) {
-	if f.root != nil {
-		return f.root.Lstat(name)
-	}
-	return os.Lstat(name)
-}
-
-func (f fileOps) Readlink(name string) (string, error) {
-	if f.root != nil {
-		return f.root.Readlink(name)
-	}
-	return os.Readlink(name)
-}
-
-func (f fileOps) MkdirAll(name string, perm fs.FileMode) error {
-	if f.root != nil {
-		return f.root.MkdirAll(name, perm)
-	}
-	return os.MkdirAll(name, perm)
-}
-
-func (f fileOps) Lchown(name string, uid, gid int) error {
-	if f.root != nil {
-		return f.root.Lchown(name, uid, gid)
-	}
-	return os.Lchown(name, uid, gid)
-}
-
-func (f fileOps) Chmod(name string, mode fs.FileMode) error {
-	if f.root != nil {
-		return f.root.Chmod(name, mode)
-	}
-	return os.Chmod(name, mode)
-}
-
-func (f fileOps) Symlink(target, name string) error {
-	if f.root != nil {
-		return f.root.Symlink(target, name)
-	}
-	return os.Symlink(target, name)
-}
-
-func (f fileOps) Rename(from, to string) error {
-	if f.root != nil {
-		return f.root.Rename(from, to)
-	}
-	return os.Rename(from, to)
-}
-
-func (f fileOps) Remove(name string) error {
-	if f.root != nil {
-		return f.root.Remove(name)
-	}
-	return os.Remove(name)
-}
-
-func (f fileOps) RemoveAll(name string) error {
-	if f.root != nil {
-		return f.root.RemoveAll(name)
-	}
-	return os.RemoveAll(name)
-}
-
-func (f fileOps) Close() error {
-	if f.root != nil {
-		return f.root.Close()
-	}
-	return nil
-}
-
-// confined runs op on path. Once the path reaches a directory that someone
-// other than the agent could change, the rest of it is resolved inside that
-// directory, so links there can't lead anywhere else.
-func confined[T any](s *localSys, path string, op func(files fileOps, name string) (T, error)) (T, error) {
-	files, name, err := s.confine(path)
-	if err != nil {
-		var zero T
-		return zero, err
-	}
-	defer func() { _ = files.Close() }()
-	res, err := op(files, name)
-	if files.root != nil {
-		err = rootedError(files.root.Name(), err)
-	}
-	return res, err
-}
-
-func confinedErr(s *localSys, path string, op func(files fileOps, name string) error) error {
-	_, err := confined(
-		s,
-		path,
-		func(files fileOps, name string) (struct{}, error) {
-			return struct{}{}, op(files, name)
-		},
-	)
-	return err
-}
-
-// trustedDir reports whether only root or the agent could change what's in
-// the directory.
-func trustedDir(info fs.FileInfo) bool {
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || info.Mode().Perm()&0o022 != 0 {
-		return false
-	}
-	return st.Uid == 0 || int(st.Uid) == os.Geteuid()
-}
-
-// rootedError makes the paths in an os.Root's errors absolute.
-func rootedError(dir string, err error) error {
-	if pe, ok := errors.AsType[*fs.PathError](err); ok && !filepath.IsAbs(pe.Path) {
-		pe.Path = filepath.Join(dir, pe.Path)
-	}
-	if le, ok := errors.AsType[*os.LinkError](err); ok && !filepath.IsAbs(le.New) {
-		le.Old, le.New = filepath.Join(dir, le.Old), filepath.Join(dir, le.New)
-	}
-	return err
 }
 
 func (s *localSys) LookupUser(name string) (UserInfo, error) {
@@ -645,22 +532,279 @@ func (s *localSys) Now() time.Time {
 	return time.Now()
 }
 
-func (s *localSys) confine(path string) (fileOps, string, error) {
-	parts := strings.Split(strings.Trim(filepath.Clean("/"+path), "/"), "/")
-	dir := s.root
-	for i, part := range parts[:len(parts)-1] {
-		dir = filepath.Join(dir, part)
-		info, err := os.Stat(dir)
-		if err != nil || !info.IsDir() {
-			// Whatever's wrong is reported by the operation itself.
+// resolution says what confine does with a link at the end of a path.
+type resolution int
+
+const (
+	// lastAsIs leaves it for the operation to act on, e.g. to replace it.
+	lastAsIs resolution = iota
+	followLast
+)
+
+// confined runs op on path. Links are only followed out of directories that
+// only root or the agent could change, so someone else can't redirect the
+// agent anywhere, even to another of their own files.
+func confined[T any](s *localSys, path string, last resolution, op func(f fileOps) (T, error)) (T, error) {
+	f, err := s.confine(path, last)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	defer func() { _ = unix.Close(f.dir) }()
+	return op(f)
+}
+
+func confinedErr(s *localSys, path string, last resolution, op func(f fileOps) error) error {
+	_, err := confined(
+		s,
+		path,
+		last,
+		func(f fileOps) (struct{}, error) {
+			return struct{}{}, op(f)
+		},
+	)
+	return err
+}
+
+var errUntrustedLink = errors.New("won't follow a link someone else could change")
+
+// maxLinks is the most links confine follows for one path, as for the kernel.
+const maxLinks = 40
+
+// confine opens the directory that path's last component is in, one
+// component at a time and without following links in directories someone
+// else could change. Links in other directories are followed, including a
+// last one if last is followLast. A missing last component is left for the
+// operation to report.
+func (s *localSys) confine(path string, last resolution) (fileOps, error) {
+	w := &walker{sys: s, dir: -1, todo: components(path)}
+	err := w.restart()
+	for err == nil && len(w.todo) > 0 {
+		var done bool
+		if done, err = w.step(last); done {
 			break
 		}
-		if !trustedDir(info) {
-			r, err := os.OpenRoot(dir)
-			return fileOps{root: r}, filepath.Join(parts[i+1:]...), err
+	}
+	if err != nil {
+		if w.dir >= 0 {
+			_ = unix.Close(w.dir)
+		}
+		return fileOps{}, err
+	}
+
+	f := fileOps{dir: w.dir, name: ".", path: path}
+	if len(w.todo) > 0 {
+		f.name = w.todo[0]
+	}
+	return f, nil
+}
+
+// walker is confine's progress through a path.
+type walker struct {
+	sys     *localSys
+	dir     int
+	trusted bool
+	// at is dir's path, which contains no links.
+	at    string
+	todo  []string
+	links int
+}
+
+// step moves past the next component, and reports whether dir is now the
+// directory the last one is in.
+func (w *walker) step(last resolution) (bool, error) {
+	name, final := w.todo[0], len(w.todo) == 1
+	if final && last == lastAsIs {
+		return true, nil
+	}
+	fd, err := unix.Openat(w.dir, name, openPath|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		if final {
+			return true, nil
+		}
+		return false, w.fail(name, err)
+	}
+	var st unix.Stat_t
+	err = unix.Fstat(fd, &st)
+	kind := st.Mode & unix.S_IFMT
+	if err == nil && kind == unix.S_IFDIR && !final {
+		_ = unix.Close(w.dir)
+		w.dir, w.trusted = fd, w.trusted && trustedDir(&st)
+		w.at = filepath.Join(w.at, name)
+		w.todo = w.todo[1:]
+		return false, nil
+	}
+	_ = unix.Close(fd)
+	switch {
+	case err != nil:
+		return false, w.fail(name, err)
+	case kind == unix.S_IFLNK:
+		return false, w.follow(name)
+	case final:
+		return true, nil
+	default:
+		return false, w.fail(name, unix.ENOTDIR)
+	}
+}
+
+// follow replaces the link name with its target, resolved again from the
+// root.
+func (w *walker) follow(name string) error {
+	if !w.trusted {
+		return w.fail(name, errUntrustedLink)
+	}
+	if w.links++; w.links > maxLinks {
+		return w.fail(name, unix.ELOOP)
+	}
+	target, err := readlinkat(w.dir, name)
+	if err != nil {
+		return w.fail(name, err)
+	}
+	if !filepath.IsAbs(target) {
+		// at contains no links, so its .. is the same by name.
+		target = filepath.Join(w.at, target)
+	}
+	w.todo = append(components(target), w.todo[1:]...)
+	return w.restart()
+}
+
+func (w *walker) restart() error {
+	if w.dir >= 0 {
+		_ = unix.Close(w.dir)
+	}
+	var err error
+	w.dir, w.trusted, err = w.sys.openRoot()
+	w.at = "/"
+	return err
+}
+
+func (w *walker) fail(name string, err error) error {
+	return &fs.PathError{Op: "open", Path: filepath.Join(w.at, name), Err: err}
+}
+
+func (s *localSys) openRoot() (int, bool, error) {
+	fd, err := unix.Open(s.root, openPath|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, false, &fs.PathError{Op: "open", Path: "/", Err: err}
+	}
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		_ = unix.Close(fd)
+		return -1, false, &fs.PathError{Op: "stat", Path: "/", Err: err}
+	}
+	return fd, trustedDir(&st), nil
+}
+
+// trustedDir reports whether only root or the agent could change what's in
+// the directory.
+func trustedDir(st *unix.Stat_t) bool {
+	if st.Mode&0o022 != 0 {
+		return false
+	}
+	return st.Uid == 0 || int(st.Uid) == os.Geteuid()
+}
+
+func components(path string) []string {
+	clean := strings.Trim(filepath.Clean("/"+path), "/")
+	if clean == "" {
+		return nil
+	}
+	return strings.Split(clean, "/")
+}
+
+// fileOps acts on name in dir, which confine opened, without following a
+// link there.
+type fileOps struct {
+	dir  int
+	name string
+	// path is the path asked for, for errors.
+	path string
+}
+
+func (f fileOps) open(name string, flag int, perm uint32) (*os.File, error) {
+	fd, err := unix.Openat(f.dir, name, flag|unix.O_NOFOLLOW|unix.O_CLOEXEC, perm)
+	if err != nil {
+		return nil, f.err("open", name, err)
+	}
+	return os.NewFile(uintptr(fd), f.pathOf(name)), nil
+}
+
+func (f fileOps) stat() (FileInfo, error) {
+	file, err := f.open(f.name, openPath, 0)
+	if err != nil {
+		return FileInfo{}, err
+	}
+	defer func() { _ = file.Close() }()
+	return fileInfo(file.Stat())
+}
+
+func (f fileOps) rename(from, to string) error {
+	if err := unix.Renameat(f.dir, from, f.dir, to); err != nil {
+		return &os.LinkError{Op: "rename", Old: f.pathOf(from), New: f.pathOf(to), Err: err}
+	}
+	return nil
+}
+
+func (f fileOps) pathOf(name string) string {
+	if name == f.name {
+		return f.path
+	}
+	return filepath.Join(filepath.Dir(f.path), name)
+}
+
+// err returns nil if err is.
+func (f fileOps) err(op, name string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &fs.PathError{Op: op, Path: f.pathOf(name), Err: err}
+}
+
+func readlinkat(dir int, name string) (string, error) {
+	for size := 256; ; size *= 2 {
+		buf := make([]byte, size)
+		n, err := unix.Readlinkat(dir, name, buf)
+		if err != nil {
+			return "", err
+		}
+		if n < size {
+			return string(buf[:n]), nil
 		}
 	}
-	return fileOps{}, s.path(path), nil
+}
+
+func removeAllAt(dir int, name string) error {
+	err := unix.Unlinkat(dir, name, 0)
+	if err == nil || errors.Is(err, unix.ENOENT) {
+		return nil
+	}
+	if !errors.Is(err, unix.EISDIR) {
+		return err
+	}
+	fd, err := unix.Openat(dir, name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	d := os.NewFile(uintptr(fd), name)
+	names, err := d.Readdirnames(-1)
+	for _, n := range names {
+		if err == nil {
+			err = removeAllAt(fd, n)
+		}
+	}
+	_ = d.Close()
+	if err != nil {
+		return err
+	}
+	err = unix.Unlinkat(dir, name, unix.AT_REMOVEDIR)
+	if errors.Is(err, unix.ENOENT) {
+		return nil
+	}
+	return err
+}
+
+func fdPath(f *os.File) string {
+	return "/proc/self/fd/" + strconv.Itoa(int(f.Fd()))
 }
 
 func (s *localSys) path(p string) string {
