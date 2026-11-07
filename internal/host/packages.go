@@ -429,16 +429,16 @@ func osFamily(ctx context.Context, sys Sys) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	family, _, err := parseOSRelease(string(data))
+	facts, err := parseOSRelease(string(data))
 	if err != nil {
 		return "", err
 	}
-	st.osFamily = family
-	return family, nil
+	st.osFamily = facts.OSFamily
+	return facts.OSFamily, nil
 }
 
-// parseOSRelease returns the OS family and release codename.
-func parseOSRelease(data string) (string, string, error) {
+// parseOSRelease returns the facts that come from os-release.
+func parseOSRelease(data string) (Facts, error) {
 	fields := map[string]string{}
 	for line := range strings.Lines(data) {
 		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
@@ -450,10 +450,10 @@ func parseOSRelease(data string) (string, string, error) {
 	for _, id := range append([]string{fields["ID"]}, strings.Fields(fields["ID_LIKE"])...) {
 		switch id {
 		case familyArch:
-			return familyArch, "", nil
+			return Facts{OSFamily: familyArch, Distro: fields["ID"]}, nil
 		case familyDebian:
-			return familyDebian, fields["VERSION_CODENAME"], nil
+			return Facts{OSFamily: familyDebian, Distro: fields["ID"], Release: fields["VERSION_CODENAME"]}, nil
 		}
 	}
-	return "", "", fmt.Errorf("unsupported OS %q", fields["ID"])
+	return Facts{}, fmt.Errorf("unsupported OS %q", fields["ID"])
 }

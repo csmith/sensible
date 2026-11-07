@@ -189,7 +189,7 @@ func gatherFacts(ctx context.Context, sys Sys) (Facts, error) {
 	if err != nil {
 		return Facts{}, err
 	}
-	family, release, err := parseOSRelease(string(osRelease))
+	facts, err := parseOSRelease(string(osRelease))
 	if err != nil {
 		return Facts{}, err
 	}
@@ -197,13 +197,10 @@ func gatherFacts(ctx context.Context, sys Sys) (Facts, error) {
 	if err != nil {
 		return Facts{}, err
 	}
-	return Facts{
-		OSFamily:    family,
-		Release:     release,
-		Arch:        strings.TrimSpace(uname.Stdout),
-		DefaultIPv4: defaultSource(ctx, sys, "-4", "1.1.1.1"),
-		DefaultIPv6: defaultSource(ctx, sys, "-6", "2606:4700:4700::1111"),
-	}, nil
+	facts.Arch = strings.TrimSpace(uname.Stdout)
+	facts.DefaultIPv4 = defaultSource(ctx, sys, "-4", "1.1.1.1")
+	facts.DefaultIPv6 = defaultSource(ctx, sys, "-6", "2606:4700:4700::1111")
+	return facts, nil
 }
 
 // defaultSource returns the address the host would send from to reach dest,

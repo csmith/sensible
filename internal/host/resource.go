@@ -72,6 +72,8 @@ type Change struct {
 type Facts struct {
 	// OSFamily is "arch" or "debian".
 	OSFamily string `json:"os_family"`
+	// Distro is the os-release ID, e.g. "debian" or "ubuntu".
+	Distro string `json:"distro"`
 	// Release is the distribution's codename, e.g. "bookworm". Empty on Arch.
 	Release string `json:"release"`
 	// Arch is the machine as reported by uname, e.g. "x86_64" or "aarch64".

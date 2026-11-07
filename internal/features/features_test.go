@@ -49,6 +49,7 @@ func testHost(osFamily string) Host {
 		},
 		Facts: host.Facts{
 			OSFamily: osFamily,
+			Distro:   osFamily,
 			Release:  "trixie",
 			Arch:     "x86_64",
 		},
@@ -206,15 +207,18 @@ func indexAfter(ids []string, id string, after int) int {
 	return -1
 }
 
-func TestAptRepos_release(t *testing.T) {
+func TestAptRepos_placeholders(t *testing.T) {
 	h := testHost(debian)
 	h.Config.AUR.Packages = nil
+	h.Config.PamRSSH = nil
+	h.Facts.Distro = "ubuntu"
+	h.Facts.Release = "noble"
 	h.Config.AptRepos = map[string]config.AptRepoConfig{
 		"example": {
-			URIs:          []string{"https://pkgs.example.com/{release}"},
+			URIs:          []string{"https://pkgs.example.com/{distro}"},
 			Suites:        []string{"{release}", "{release}-updates"},
 			Components:    []string{"main"},
-			SigningKeyURL: "https://pkgs.example.com/{release}.gpg",
+			SigningKeyURL: "https://pkgs.example.com/{distro}/{release}.gpg",
 		},
 	}
 
@@ -222,9 +226,28 @@ func TestAptRepos_release(t *testing.T) {
 	require.NoError(t, err)
 	repo, ok := find[host.AptRepo](rs, "apt-repo:example")
 	require.True(t, ok)
-	assert.Equal(t, []string{"https://pkgs.example.com/trixie"}, repo.URIs)
-	assert.Equal(t, []string{"trixie", "trixie-updates"}, repo.Suites)
-	assert.Equal(t, "https://pkgs.example.com/trixie.gpg", repo.SigningKeyURL)
+	assert.Equal(t, []string{"https://pkgs.example.com/ubuntu"}, repo.URIs)
+	assert.Equal(t, []string{"noble", "noble-updates"}, repo.Suites)
+	assert.Equal(t, "https://pkgs.example.com/ubuntu/noble.gpg", repo.SigningKeyURL)
+}
+
+func TestVendorRepos_ubuntu(t *testing.T) {
+	h := testHost(debian)
+	h.Config.AUR.Packages = nil
+	h.Config.PamRSSH = nil
+	h.Facts.Distro = "ubuntu"
+	h.Facts.Release = "noble"
+
+	rs, err := Resources(h)
+	require.NoError(t, err)
+	docker, ok := find[host.AptRepo](rs, "apt-repo:docker")
+	require.True(t, ok)
+	assert.Equal(t, []string{"https://download.docker.com/linux/ubuntu"}, docker.URIs)
+	assert.Equal(t, "https://download.docker.com/linux/ubuntu/gpg", docker.SigningKeyURL)
+	tailscale, ok := find[host.AptRepo](rs, "apt-repo:tailscale")
+	require.True(t, ok)
+	assert.Equal(t, []string{"https://pkgs.tailscale.com/stable/ubuntu"}, tailscale.URIs)
+	assert.Equal(t, "https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg", tailscale.SigningKeyURL)
 }
 
 func TestResources_errors(t *testing.T) {
@@ -234,6 +257,17 @@ func TestResources_errors(t *testing.T) {
 	}{
 		{"unsupported OS", func(h *Host) { h.Facts.OSFamily = "redhat" }},
 		{"Debian without release", func(h *Host) { h.Facts.Release = "" }},
+		{"Docker on a Debian derivative", func(h *Host) {
+			h.Config.AUR.Packages = nil
+			h.Config.Tailscale = nil
+			h.Facts.Distro = "linuxmint"
+		}},
+		{"Tailscale on a Debian derivative", func(h *Host) {
+			h.Config.AUR.Packages = nil
+			h.Config.Docker = nil
+			h.Config.Stacks = nil
+			h.Facts.Distro = "linuxmint"
+		}},
 		{"AUR on Debian", func(h *Host) {}},
 		{"invalid hostname", func(h *Host) { h.Config.Hostname.Name = "bad_name" }},
 		{"unknown timezone", func(h *Host) { h.Config.Timezone.Zone = "Europe/Nowhere" }},

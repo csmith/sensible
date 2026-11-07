@@ -144,8 +144,9 @@ type Config struct {
 	IssuedCerts []Cert `yaml:"-"`
 }
 
-// AptRepoConfig is a deb822 apt source, named by its key. "{release}" in
-// any field is replaced by the host's release codename, e.g. "trixie".
+// AptRepoConfig is a deb822 apt source, named by its key. "{distro}" and
+// "{release}" in any field are replaced by the host's os-release ID and
+// release codename, e.g. "ubuntu" and "noble".
 type AptRepoConfig struct {
 	URIs          Set    `yaml:"uris"`
 	Suites        Set    `yaml:"suites"`

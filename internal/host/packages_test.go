@@ -291,24 +291,30 @@ func TestAURPackage(t *testing.T) {
 
 func TestParseOSRelease(t *testing.T) {
 	tests := []struct {
-		data, family, release string
-		wantErr               bool
+		data    string
+		want    Facts
+		wantErr bool
 	}{
-		{data: "ID=arch\n", family: "arch"},
-		{data: "ID=debian\nVERSION_CODENAME=bookworm\n", family: "debian", release: "bookworm"},
-		{data: "ID=ubuntu\nID_LIKE=debian\nVERSION_CODENAME=\"noble\"\n", family: "debian", release: "noble"},
-		{data: "ID=endeavouros\nID_LIKE=\"arch\"\n", family: "arch"},
+		{data: "ID=arch\n", want: Facts{OSFamily: "arch", Distro: "arch"}},
+		{
+			data: "ID=debian\nVERSION_CODENAME=bookworm\n",
+			want: Facts{OSFamily: "debian", Distro: "debian", Release: "bookworm"},
+		},
+		{
+			data: "ID=ubuntu\nID_LIKE=debian\nVERSION_CODENAME=\"noble\"\n",
+			want: Facts{OSFamily: "debian", Distro: "ubuntu", Release: "noble"},
+		},
+		{data: "ID=endeavouros\nID_LIKE=\"arch\"\n", want: Facts{OSFamily: "arch", Distro: "endeavouros"}},
 		{data: "ID=fedora\n", wantErr: true},
 	}
 	for _, tt := range tests {
-		family, release, err := parseOSRelease(tt.data)
+		facts, err := parseOSRelease(tt.data)
 		if tt.wantErr {
 			require.Error(t, err)
 			continue
 		}
 		require.NoError(t, err)
-		assert.Equal(t, tt.family, family)
-		assert.Equal(t, tt.release, release)
+		assert.Equal(t, tt.want, facts)
 	}
 }
 

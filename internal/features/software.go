@@ -33,11 +33,11 @@ func aptRepos(h Host) ([]host.Resource, error) {
 		case len(c.URIs) == 0 || len(c.Suites) == 0 || c.SigningKeyURL == "":
 			return nil, fmt.Errorf("host %s: apt repo %s needs uris, suites and signing_key_url", h.Name, name)
 		}
-		release := strings.NewReplacer("{release}", h.Facts.Release)
+		facts := strings.NewReplacer("{distro}", h.Facts.Distro, "{release}", h.Facts.Release)
 		replaceAll := func(items []string) []string {
 			out := make([]string, len(items))
 			for i, item := range items {
-				out[i] = release.Replace(item)
+				out[i] = facts.Replace(item)
 			}
 			return out
 		}
@@ -48,7 +48,7 @@ func aptRepos(h Host) ([]host.Resource, error) {
 				URIs:          replaceAll(c.URIs),
 				Suites:        replaceAll(c.Suites),
 				Components:    replaceAll(c.Components),
-				SigningKeyURL: release.Replace(c.SigningKeyURL),
+				SigningKeyURL: facts.Replace(c.SigningKeyURL),
 			},
 		)
 	}
@@ -250,14 +250,19 @@ func tailscale(h Host) ([]host.Resource, error) {
 
 	var rs []host.Resource
 	if h.Facts.OSFamily == debian {
+		distro, err := vendorDistro(h, "Tailscale")
+		if err != nil {
+			return nil, err
+		}
+		base := "https://pkgs.tailscale.com/stable/" + distro
 		rs = append(
 			rs,
 			host.AptRepo{
 				Name:          "tailscale",
-				URIs:          []string{"https://pkgs.tailscale.com/stable/debian"},
+				URIs:          []string{base},
 				Suites:        []string{h.Facts.Release},
 				Components:    []string{"main"},
-				SigningKeyURL: "https://pkgs.tailscale.com/stable/debian/" + h.Facts.Release + ".noarmor.gpg",
+				SigningKeyURL: base + "/" + h.Facts.Release + ".noarmor.gpg",
 			},
 			// The repository as added by Tailscale's installer.
 			host.Absent{Path: "/etc/apt/sources.list.d/tailscale.list"},
@@ -293,15 +298,20 @@ func docker(h Host) ([]host.Resource, error) {
 
 	var rs []host.Resource
 	if h.Facts.OSFamily == debian {
+		distro, err := vendorDistro(h, "Docker")
+		if err != nil {
+			return nil, err
+		}
+		base := "https://download.docker.com/linux/" + distro
 		// Debian's packages start Docker when they're installed.
 		rs = append(
 			rs,
 			host.AptRepo{
 				Name:          "docker",
-				URIs:          []string{"https://download.docker.com/linux/debian"},
+				URIs:          []string{base},
 				Suites:        []string{h.Facts.Release},
 				Components:    []string{"stable"},
-				SigningKeyURL: "https://download.docker.com/linux/debian/gpg",
+				SigningKeyURL: base + "/gpg",
 			},
 		)
 		rs = append(
@@ -434,6 +444,21 @@ func dockerClientConfig(auths map[string]string) ([]host.Resource, error) {
 		file,
 		host.WrittenRecord(file),
 	}, nil
+}
+
+// vendorDistro returns the distro to use in a vendor's apt repository URLs.
+// Vendors publish for Debian and Ubuntu, but not for their derivatives.
+func vendorDistro(h Host, vendor string) (string, error) {
+	switch h.Facts.Distro {
+	case "debian", "ubuntu":
+		return h.Facts.Distro, nil
+	}
+	return "", fmt.Errorf(
+		"host %s: %s only publishes packages for Debian and Ubuntu, not %q",
+		h.Name,
+		vendor,
+		h.Facts.Distro,
+	)
 }
 
 // certs writes the host's certificates, ahead of the stacks that mount them.
