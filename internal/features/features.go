@@ -61,6 +61,8 @@ func Resources(h Host) (host.ResourceList, error) {
 		backups,
 		// After stacks and backups, as jobs may use them.
 		jobs,
+		// After everything that declares accounts.
+		usersCleanUp,
 		// After the stacks that may still have been mounting them.
 		certsCleanUp,
 		// After everything that writes sudoers files or adds apt repos.

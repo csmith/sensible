@@ -2,6 +2,8 @@ package host
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"testing"
 
@@ -154,6 +156,133 @@ func TestUser_InSync(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, change.InSync, "%s: %s", r.Name, change.Diff)
 	}
+}
+
+func TestUser_CreatesManagedAccountMarked(t *testing.T) {
+	sys := newTestSys(t)
+	sys.on("useradd *", "", 0)
+
+	r := User{Name: "carol", Managed: true}
+
+	change, err := r.Check(context.Background(), sys)
+	require.NoError(t, err)
+	assert.Equal(t, "create user\n", change.Diff)
+
+	require.NoError(t, r.Apply(context.Background(), sys))
+	assert.Equal(t, []string{"useradd --create-home --comment ,,,,managed by sensible carol"}, sys.ran)
+}
+
+func TestUser_MarksExistingManagedAccount(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/etc/passwd", "alice:x:1000:1000:Alice A,,,:/home/alice:/bin/bash\n")
+	sys.on("usermod *", "", 0)
+	r := User{Name: "alice", Managed: true}
+
+	change, err := r.Check(context.Background(), sys)
+	require.NoError(t, err)
+	assert.Equal(t, "comment: \"Alice A,,,\" → \"Alice A,,,,managed by sensible\"\n", change.Diff)
+
+	require.NoError(t, r.Apply(context.Background(), sys))
+	assert.Equal(t, []string{"usermod --comment Alice A,,,,managed by sensible alice"}, sys.ran)
+}
+
+func TestUser_ManagedAccountAlreadyMarkedInSync(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/etc/passwd", "alice:x:1000:1000:Alice A,,,,managed by sensible:/home/alice:/bin/bash\n")
+
+	change, err := User{Name: "alice", Managed: true}.Check(context.Background(), sys)
+
+	require.NoError(t, err)
+	assert.True(t, change.InSync, change.Diff)
+}
+
+func TestUsers_WarnsAboutUndeclaredMarkedAccounts(t *testing.T) {
+	sys := newTestSys(t)
+	uid := os.Getuid()
+	sys.write("/etc/login.defs", fmt.Sprintf("# comment\nUID_MIN\t\t%d\nUID_MAX\t%d\n", uid, uid+10))
+	sys.write(
+		"/etc/passwd",
+		fmt.Sprintf(
+			"alice:x:%[1]d:1:,,,,managed by sensible:/home/alice:/bin/sh\n"+
+				"carol:x:%[1]d:1:Carol,,,,managed by sensible:/home/carol:/bin/sh\n"+
+				"dave:x:%[2]d:1:,,,,managed by sensible:/home/dave:/bin/sh\n"+
+				"erin:x:%[1]d:1:Erin,,,:/home/erin:/bin/sh\n"+
+				"frank:x:%[3]d:1:,,,,managed by sensible:/home/frank:/bin/sh\n",
+			uid,
+			uid+1,
+			uid+11,
+		),
+	)
+	require.NoError(t, os.MkdirAll(sys.path("/home/carol"), 0o755))
+	st := newRunState()
+	st.declare(User{Name: "alice"})
+	st.declare(User{Name: "dave", Absent: true})
+	ctx := withRunState(context.Background(), st)
+
+	change, err := Users{}.Check(ctx, sys)
+	require.NoError(t, err)
+	assert.True(t, change.InSync)
+	assert.Equal(
+		t,
+		"user carol and /home/carol\nuser dave\n"+
+			"no role declares these; run `sensible prune` to remove them once they're not needed\n",
+		change.Warning,
+	)
+
+	require.NoError(t, Users{}.Apply(ctx, sys))
+	assert.Empty(t, sys.ran)
+}
+
+func TestUsers_NeverListsSystemAccounts(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write(
+		"/etc/passwd",
+		"svc:x:999:999:,,,,managed by sensible:/var/lib/svc:/bin/sh\n"+
+			"nobody:x:65534:65534:,,,,managed by sensible:/:/bin/sh\n"+
+			"carol:x:1000:1000:,,,,managed by sensible:/home/carol:/bin/sh\n",
+	)
+
+	items, err := Users{}.Leftovers(context.Background(), sys)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"user carol"}, items)
+}
+
+func TestUsers_PruneDeletesAccount(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/etc/passwd", "carol:x:1000:1000:,,,,managed by sensible:/home/carol:/bin/sh\n")
+	sys.on("userdel *", "", 0)
+	e := &engine{sys: sys, log: io.Discard}
+
+	require.NoError(t, e.remove(context.Background(), ResourceList{Users{}}, "users", "user carol"))
+
+	assert.Equal(t, []string{"userdel carol"}, sys.ran)
+}
+
+func TestUsers_PruneDeletesOwnedHome(t *testing.T) {
+	sys := newTestSys(t)
+	uid := os.Getuid()
+	sys.write("/etc/login.defs", fmt.Sprintf("UID_MIN %d\n", uid))
+	sys.write("/etc/passwd", fmt.Sprintf("carol:x:%d:1:,,,,managed by sensible:/home/carol:/bin/sh\n", uid))
+	require.NoError(t, os.MkdirAll(sys.path("/home/carol"), 0o755))
+	sys.on("userdel *", "", 0)
+	e := &engine{sys: sys, log: io.Discard}
+
+	err := e.remove(context.Background(), ResourceList{Users{}}, "users", "user carol and /home/carol")
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"userdel --remove carol"}, sys.ran)
+}
+
+func TestUsers_PruneKeepsDeclaredAccounts(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/etc/passwd", "carol:x:1000:1000:,,,,managed by sensible:/home/carol:/bin/sh\n")
+	e := &engine{sys: sys, log: io.Discard}
+
+	err := e.remove(context.Background(), ResourceList{User{Name: "carol"}, Users{}}, "users", "user carol")
+
+	require.Error(t, err)
+	assert.Empty(t, sys.ran)
 }
 
 func TestGroupMembers_RemovesUndeclared(t *testing.T) {

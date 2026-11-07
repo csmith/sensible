@@ -14,9 +14,13 @@ import (
 func users(h Host) ([]host.Resource, error) {
 	rs := make([]host.Resource, 0, len(h.Config.Users))
 	for _, name := range slices.Sorted(maps.Keys(h.Config.Users)) {
-		rs = append(rs, host.User{Name: name, Groups: h.Config.Users[name].Groups})
+		rs = append(rs, host.User{Name: name, Groups: h.Config.Users[name].Groups, Managed: true})
 	}
 	return rs, nil
+}
+
+func usersCleanUp(Host) ([]host.Resource, error) {
+	return []host.Resource{host.Users{}}, nil
 }
 
 func home(name string) string {

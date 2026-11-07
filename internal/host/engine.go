@@ -240,6 +240,8 @@ type runState struct {
 	modified map[string]bool
 	// networks holds the names of every DockerNetwork seen so far.
 	networks map[string]bool
+	// users holds the names of every User seen so far that isn't Absent.
+	users map[string]bool
 
 	osFamily string
 
@@ -256,7 +258,12 @@ type runState struct {
 }
 
 func newRunState() *runState {
-	return &runState{declared: map[string]bool{}, modified: map[string]bool{}, networks: map[string]bool{}}
+	return &runState{
+		declared: map[string]bool{},
+		modified: map[string]bool{},
+		networks: map[string]bool{},
+		users:    map[string]bool{},
+	}
 }
 
 func (s *runState) declare(r Resource) {
@@ -271,6 +278,10 @@ func (s *runState) declare(r Resource) {
 		s.declared[r.sourcesPath()] = true
 	case DockerNetwork:
 		s.networks[r.Name] = true
+	case User:
+		if !r.Absent {
+			s.users[r.Name] = true
+		}
 	case Migration:
 		s.declared[filepath.Dir(r.dir())] = true
 		s.declared[r.dir()] = true

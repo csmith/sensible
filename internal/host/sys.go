@@ -109,11 +109,13 @@ func (i FileInfo) IsRegular() bool { return i.Mode.IsRegular() }
 func (i FileInfo) IsSymlink() bool { return i.Mode&fs.ModeSymlink != 0 }
 
 type UserInfo struct {
-	Name  string
-	UID   int
-	GID   int
-	Home  string
-	Shell string
+	Name string
+	UID  int
+	GID  int
+	// Comment is the GECOS field.
+	Comment string
+	Home    string
+	Shell   string
 	// Groups are the names of every group the user is in, including its
 	// primary group.
 	Groups []string
@@ -348,7 +350,14 @@ func (s *localSys) LookupUser(name string) (UserInfo, error) {
 		return UserInfo{}, err
 	}
 
-	u := UserInfo{Name: name, UID: entry.UID, GID: entry.GID, Home: entry.Home, Shell: entry.Shell}
+	u := UserInfo{
+		Name:    name,
+		UID:     entry.UID,
+		GID:     entry.GID,
+		Comment: entry.Comment,
+		Home:    entry.Home,
+		Shell:   entry.Shell,
+	}
 	for _, g := range groups {
 		if g.gid == entry.GID || slices.Contains(g.members, name) {
 			u.Groups = append(u.Groups, g.name)
@@ -474,7 +483,7 @@ func parsePasswd(data string) map[string]PasswdUser {
 		if err1 != nil || err2 != nil {
 			continue
 		}
-		users[fields[0]] = PasswdUser{UID: uid, GID: gid, Home: fields[5], Shell: fields[6]}
+		users[fields[0]] = PasswdUser{UID: uid, GID: gid, Comment: fields[4], Home: fields[5], Shell: fields[6]}
 	}
 	return users
 }

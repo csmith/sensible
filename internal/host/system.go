@@ -322,6 +322,9 @@ func (r User) modifications(sys Sys, u UserInfo) ([]string, error) {
 	if len(missing) > 0 {
 		changes = append(changes, "groups: + "+strings.Join(missing, ", ")+"\n")
 	}
+	if r.Managed && !isMarked(u.Comment) {
+		changes = append(changes, fmt.Sprintf("comment: %q → %q\n", u.Comment, marked(u.Comment)))
+	}
 	if r.Password != "" {
 		hash, err := sys.PasswordHash(r.Name)
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -359,6 +362,9 @@ func (r User) create(ctx context.Context, sys Sys) error {
 	if len(r.Groups) > 0 {
 		args = append(args, "--groups", strings.Join(r.Groups, ","))
 	}
+	if r.Managed {
+		args = append(args, "--comment", marked(""))
+	}
 	_, err := runOK(ctx, sys, argv(append(args, r.Name)...))
 	return err
 }
@@ -373,6 +379,9 @@ func (r User) modify(ctx context.Context, sys Sys, u UserInfo) error {
 	}
 	if missing := r.missingGroups(u); len(missing) > 0 {
 		args = append(args, "--append", "--groups", strings.Join(missing, ","))
+	}
+	if r.Managed && !isMarked(u.Comment) {
+		args = append(args, "--comment", marked(u.Comment))
 	}
 	if len(args) == 1 {
 		return nil
@@ -409,6 +418,119 @@ func (r User) passwordMatches(hash string) bool {
 		return strings.HasPrefix(hash, "!")
 	}
 	return hash == r.Password
+}
+
+// accountMarker marks sensible's accounts. It goes in the GECOS field's
+// fifth, "other", part, leaving the full name that programs such as display
+// managers read alone.
+const accountMarker = "managed by sensible"
+
+func isMarked(gecos string) bool {
+	parts := strings.Split(gecos, ",")
+	return len(parts) >= 5 && parts[4] == accountMarker
+}
+
+func marked(gecos string) string {
+	parts := strings.Split(gecos, ",")
+	for len(parts) < 5 {
+		parts = append(parts, "")
+	}
+	parts[4] = accountMarker
+	return strings.Join(parts, ",")
+}
+
+func (r Users) Check(ctx context.Context, sys Sys) (Change, error) {
+	extra, err := r.Leftovers(ctx, sys)
+	if err != nil || len(extra) == 0 {
+		return Change{InSync: true}, err
+	}
+	return Change{
+		InSync: true,
+		Warning: strings.Join(extra, "\n") +
+			"\nno role declares these; run `sensible prune` to remove them once they're not needed\n",
+	}, nil
+}
+
+func (r Users) Apply(context.Context, Sys) error {
+	return nil
+}
+
+// Leftovers lists each undeclared account as "user <name>", followed by
+// " and <home>" if the account owns its home, as only then does userdel
+// remove it.
+func (r Users) Leftovers(ctx context.Context, sys Sys) ([]string, error) {
+	data, err := sys.ReadFile("/etc/passwd")
+	if err != nil {
+		return nil, err
+	}
+	minUID, maxUID, err := userUIDs(sys)
+	if err != nil {
+		return nil, err
+	}
+	declared := state(ctx).users
+	accounts := parsePasswd(string(data))
+	var extra []string
+	for _, name := range slices.Sorted(maps.Keys(accounts)) {
+		u := accounts[name]
+		if declared[name] || !isMarked(u.Comment) || u.UID < minUID || u.UID > maxUID {
+			continue
+		}
+		item := "user " + name
+		if info, err := sys.Stat(u.Home); err == nil && info.IsDir() && info.UID == u.UID && u.Home != "/" {
+			item += " and " + u.Home
+		}
+		extra = append(extra, item)
+	}
+	return extra, nil
+}
+
+// Prune deletes the account, and its home and mail spool if it listed the
+// home. It fails if the account has processes running, rather than killing
+// them.
+func (r Users) Prune(ctx context.Context, sys Sys, item string) error {
+	rest, ok := strings.CutPrefix(item, "user ")
+	name, home, _ := strings.Cut(rest, " ")
+	if !ok || name == "" {
+		return fmt.Errorf("%q isn't an account", item)
+	}
+	args := []string{"userdel"}
+	// userdel refuses to remove a home the account doesn't own, but only
+	// after deleting the account.
+	if home != "" {
+		args = append(args, "--remove")
+	}
+	_, err := runOK(ctx, sys, argv(append(args, name)...))
+	return err
+}
+
+// userUIDs returns the range of UIDs useradd gives accounts that aren't
+// system accounts.
+func userUIDs(sys Sys) (int, int, error) {
+	minUID, maxUID := 1000, 60000
+	data, err := sys.ReadFile("/etc/login.defs")
+	if errors.Is(err, fs.ErrNotExist) {
+		return minUID, maxUID, nil
+	} else if err != nil {
+		return 0, 0, err
+	}
+	for line := range strings.Lines(string(data)) {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		n, err := strconv.Atoi(fields[1])
+		if err != nil {
+			continue
+		}
+		switch fields[0] {
+		case "UID_MIN":
+			minUID = n
+		case "UID_MAX":
+			maxUID = n
+		default:
+		}
+	}
+	return minUID, maxUID, nil
 }
 
 func (r GitCheckout) Check(ctx context.Context, sys Sys) (Change, error) {

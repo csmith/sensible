@@ -67,10 +67,12 @@ type Facts struct {
 }
 
 type PasswdUser struct {
-	UID   int    `json:"uid"`
-	GID   int    `json:"gid"`
-	Home  string `json:"home"`
-	Shell string `json:"shell"`
+	UID int `json:"uid"`
+	GID int `json:"gid"`
+	// Comment is the GECOS field.
+	Comment string `json:"comment"`
+	Home    string `json:"home"`
+	Shell   string `json:"shell"`
 }
 
 var resourceTypes = registry(
@@ -84,6 +86,7 @@ var resourceTypes = registry(
 	Service{},
 	ServiceAction{},
 	User{},
+	Users{},
 	GroupMembers{},
 	GitCheckout{},
 	LineInFile{},
@@ -214,7 +217,16 @@ type User struct {
 	// Password is a crypt(3) hash, or "!" to lock the account. Empty leaves
 	// it alone.
 	Password string `json:"password,omitempty"`
+	// Managed marks the account as sensible's in its GECOS field, so Users
+	// can find it once nothing declares it.
+	Managed bool `json:"managed,omitempty"`
 }
+
+// Users warns about the accounts marked as sensible's that no User earlier
+// in the same run declared. System accounts are never included. Applying
+// never removes them, but pruning removes each account, and its home if it
+// owns it.
+type Users struct{}
 
 // GroupMembers removes a group's members that aren't in Members. It never
 // adds them, which User does.
@@ -381,6 +393,8 @@ func (r Service) ID() string { return "service:" + r.Name }
 func (r ServiceAction) ID() string { return r.Action + ":" + r.Name }
 
 func (r User) ID() string { return "user:" + r.Name }
+
+func (r Users) ID() string { return "users" }
 
 func (r GroupMembers) ID() string { return "group-members:" + r.Group }
 

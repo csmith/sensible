@@ -117,6 +117,7 @@ func TestResources_order(t *testing.T) {
 				"systemd-reload",
 				"service:sensible-prune.timer",
 				"systemd-units:sensible-",
+				"users",
 				"owned-dir:/etc/sudoers.d",
 			},
 		},
@@ -152,6 +153,7 @@ func TestResources_order(t *testing.T) {
 				"systemd-reload",
 				"service:sensible-prune.timer",
 				"systemd-units:sensible-",
+				"users",
 				"owned-dir:/etc/sudoers.d",
 				"owned-dir:/etc/apt/sources.list.d",
 				"owned-dir:/etc/apt/keyrings",
@@ -698,6 +700,27 @@ func TestResources_zshSetsShells(t *testing.T) {
 		}
 	}
 	assert.Equal(t, []string{"alice /usr/bin/zsh", "carol /usr/bin/zsh"}, shells)
+}
+
+func TestResources_onlyConfiguredUsersAreManaged(t *testing.T) {
+	h := testHost(archLinux)
+	h.Config.Zsh.Users = []string{"alice", "carol"}
+	h.Config.Docker.Users = []string{"dave"}
+	rs, err := Resources(h)
+	require.NoError(t, err)
+
+	var managed, unmanaged []string
+	for _, r := range rs {
+		if u, ok := r.(host.User); ok {
+			if u.Managed {
+				managed = append(managed, u.Name)
+			} else if !slices.Contains(unmanaged, u.Name) {
+				unmanaged = append(unmanaged, u.Name)
+			}
+		}
+	}
+	assert.Equal(t, []string{"alice", "bob"}, managed)
+	assert.ElementsMatch(t, []string{"alice", "carol", "dave", SensibleUser, aurUser}, unmanaged)
 }
 
 func TestResources_accountFilesInHome(t *testing.T) {
