@@ -332,6 +332,10 @@ func docker(h Host) ([]host.Resource, error) {
 		)
 		rs = append(rs, installPackages("docker", "docker-compose")...)
 	}
+	// JSON has no comments for a header, so the files are recorded instead.
+	if c.Daemon != nil || len(c.Auths) > 0 {
+		rs = append(rs, host.Dir{Path: host.WrittenDir, Owner: "root", Group: "root", Mode: 0o700})
+	}
 	if c.Daemon != nil {
 		dc, err := dockerDaemonConfig(c.Daemon)
 		if err != nil {
@@ -394,6 +398,7 @@ func dockerDaemonConfig(settings map[string]any) ([]host.Resource, error) {
 	return []host.Resource{
 		host.Dir{Path: filepath.Dir(dockerDaemonFile), Owner: "root", Group: "root", Mode: 0o755},
 		file,
+		host.WrittenRecord(file),
 		host.ServiceRestart{Name: "docker", Watch: []string{file.ID()}},
 	}, nil
 }
@@ -416,16 +421,18 @@ func dockerClientConfig(auths map[string]string) ([]host.Resource, error) {
 	if err != nil {
 		return nil, err
 	}
+	file := host.File{
+		Path:    dockerClientFile,
+		Content: string(content) + "\n",
+		Owner:   "root",
+		Group:   "root",
+		Mode:    0o600,
+		Hidden:  true,
+	}
 	return []host.Resource{
 		host.Dir{Path: filepath.Dir(dockerClientFile), Owner: "root", Group: "root", Mode: 0o700},
-		host.File{
-			Path:    dockerClientFile,
-			Content: string(content) + "\n",
-			Owner:   "root",
-			Group:   "root",
-			Mode:    0o600,
-			Hidden:  true,
-		},
+		file,
+		host.WrittenRecord(file),
 	}, nil
 }
 

@@ -263,6 +263,34 @@ func TestDisowned_TargetLimitsToSymlinks(t *testing.T) {
 	assert.Equal(t, []string{"/usr/local/bin/vi"}, got)
 }
 
+func TestDisowned_RecordedLimitsToFilesAsWritten(t *testing.T) {
+	sys := newTestSys(t)
+	for _, f := range []File{
+		{Path: "/etc/docker/daemon.json", Content: "{}\n"},
+		{Path: "/root/.docker/config.json", Content: `{"auths": {}}`},
+	} {
+		record := WrittenRecord(f)
+		sys.write(f.Path, f.Content)
+		sys.write(record.Path, record.Content)
+	}
+	sys.write("/root/.docker/config.json", `{"auths": {"by": "hand"}}`)
+	sys.write("/etc/docker/other.json", "{}\n")
+	r := Disowned{
+		Name:     "docker",
+		Paths:    []string{"/etc/docker/*.json", "/root/.docker/config.json"},
+		Recorded: true,
+	}
+
+	got, err := r.Leftovers(context.Background(), sys)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"/etc/docker/daemon.json"}, got)
+
+	require.NoError(t, r.Prune(context.Background(), sys, "/etc/docker/daemon.json"))
+	assert.False(t, sys.exists("/etc/docker/daemon.json"))
+	assert.False(t, sys.exists(recordPath("/etc/docker/daemon.json")))
+	assert.True(t, sys.exists(recordPath("/root/.docker/config.json")))
+}
+
 func TestDisowned_SkipsWhatOtherResourcesDeclare(t *testing.T) {
 	sys := newTestSys(t)
 	for _, path := range []string{"/usr/local/bin/vi", "/usr/share/oh-my-zsh/oh-my-zsh.sh", "/var/cache/pam-rssh.deb"} {

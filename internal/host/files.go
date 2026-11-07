@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -209,7 +210,7 @@ func (r Disowned) Leftovers(ctx context.Context, sys Sys) ([]string, error) {
 }
 
 func (r Disowned) matches(sys Sys, path string) (bool, error) {
-	if r.Header == "" && r.Target == "" {
+	if r.Header == "" && r.Target == "" && !r.Recorded {
 		return true, nil
 	}
 	info, err := sys.Lstat(path)
@@ -220,6 +221,8 @@ func (r Disowned) matches(sys Sys, path string) (bool, error) {
 	case r.Header != "" && info.IsRegular():
 		content, err := sys.ReadFile(path)
 		return err == nil && strings.HasPrefix(string(content), r.Header), err
+	case r.Recorded && info.IsRegular():
+		return isRecorded(sys, path)
 	case r.Target != "" && info.IsSymlink():
 		target, err := sys.Readlink(path)
 		return err == nil && target == r.Target, err
@@ -233,12 +236,58 @@ func (r Disowned) Prune(ctx context.Context, sys Sys, item string) error {
 	if err := sys.RemoveAll(item); err != nil {
 		return err
 	}
+	if r.Recorded {
+		if err := sys.RemoveAll(recordPath(item)); err != nil {
+			return err
+		}
+	}
 	for _, h := range r.Notify {
 		if err := h.Apply(ctx, sys); err != nil {
 			return fmt.Errorf("removed, but %s failed: %w", h.ID(), err)
 		}
 	}
 	return nil
+}
+
+// WrittenDir holds the records WrittenRecord makes.
+const WrittenDir = "/var/lib/sensible/written"
+
+// WrittenRecord records the content f writes, so a Disowned with Recorded
+// can tell it from a file written by hand, or changed since. It needs
+// WrittenDir to exist.
+func WrittenRecord(f File) File {
+	return File{
+		Path:    recordPath(f.Path),
+		Content: contentSum([]byte(f.Content)) + "\n",
+		Owner:   "root",
+		Group:   "root",
+		Mode:    0o600,
+		Hidden:  true,
+	}
+}
+
+func recordPath(path string) string {
+	return filepath.Join(WrittenDir, url.QueryEscape(path))
+}
+
+func isRecorded(sys Sys, path string) (bool, error) {
+	record, err := sys.ReadFile(recordPath(path))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	content, err := sys.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(record)) == contentSum(content), nil
+}
+
+func contentSum(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
 }
 
 func (r Symlink) Check(ctx context.Context, sys Sys) (Change, error) {

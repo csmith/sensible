@@ -1030,6 +1030,9 @@ func assertWritten(t *testing.T, rs host.ResourceList, d host.Disowned, pattern 
 		if f, ok := r.(host.File); ok && d.Header != "" {
 			assert.True(t, strings.HasPrefix(f.Content, d.Header), "%s doesn't start with %q", p, d.Header)
 		}
+		if f, ok := r.(host.File); ok && d.Recorded {
+			assert.Contains(t, rs, host.WrittenRecord(f), "%s isn't recorded", p)
+		}
 		if l, ok := r.(host.Symlink); ok && d.Target != "" {
 			assert.Equal(t, d.Target, l.Target)
 		}

@@ -192,7 +192,7 @@ func disowned(h Host) ([]host.Resource, error) {
 		host.Disowned{Name: "tailscale", Paths: []string{tailscaleSysctl}, Header: managedMark},
 		// Docker reads its settings only when it starts, and restarting it
 		// would stop the containers, so it's left to pick up the change.
-		host.Disowned{Name: "docker", Paths: []string{dockerDaemonFile, dockerClientFile}},
+		host.Disowned{Name: "docker", Paths: []string{dockerDaemonFile, dockerClientFile}, Recorded: true},
 	}
 	switch h.Facts.OSFamily {
 	case debian:
