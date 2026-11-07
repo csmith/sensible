@@ -300,6 +300,10 @@ func TestResources_errors(t *testing.T) {
 			h.Config.AUR.Packages = nil
 			h.Facts.Release = "buster"
 		}},
+		{"pam_rssh on a Debian derivative", func(h *Host) {
+			h.Config.AUR.Packages, h.Config.Docker, h.Config.Tailscale = nil, nil, nil
+			h.Facts.Distro = "linuxmint"
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(
@@ -649,18 +653,32 @@ func TestResources_sshdReloadUnit(t *testing.T) {
 }
 
 func TestResources_pamRSSHDebianArch(t *testing.T) {
-	h := testHost(debian)
-	h.Config.AUR.Packages = nil
-	h.Facts.Arch = "aarch64"
-	rs, err := Resources(h)
-	require.NoError(t, err)
-	d, ok := find[host.Download](rs, "download:/var/cache/debian-trixie-arm64-pam-rssh_1.2.2-1_arm64.deb")
-	require.True(t, ok)
-	assert.NotEmpty(t, d.SHA256)
-	for _, service := range []string{"sudo", "sudo-i"} {
-		l, ok := find[host.LineInFile](rs, "line:/etc/pam.d/"+service+":"+`^\s*auth\s+\S+\s+\S*pam_rssh\.so`)
-		require.True(t, ok, service)
-		assert.Contains(t, l.Line, "/lib/aarch64-linux-gnu/security/libpam_rssh.so")
+	tests := []struct {
+		distro, release string
+		deb             string
+	}{
+		{"debian", "trixie", "debian-trixie-arm64-pam-rssh_1.2.2-1_arm64.deb"},
+		{"ubuntu", "noble", "ubuntu-24.04-arm-pam-rssh_1.2.2-1_arm64.deb"},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.distro,
+			func(t *testing.T) {
+				h := testHost(debian)
+				h.Config.AUR.Packages = nil
+				h.Facts.Distro, h.Facts.Release, h.Facts.Arch = tt.distro, tt.release, "aarch64"
+				rs, err := Resources(h)
+				require.NoError(t, err)
+				d, ok := find[host.Download](rs, "download:/var/cache/"+tt.deb)
+				require.True(t, ok)
+				assert.NotEmpty(t, d.SHA256)
+				for _, service := range []string{"sudo", "sudo-i"} {
+					l, ok := find[host.LineInFile](rs, "line:/etc/pam.d/"+service+":"+`^\s*auth\s+\S+\s+\S*pam_rssh\.so`)
+					require.True(t, ok, service)
+					assert.Contains(t, l.Line, "/lib/aarch64-linux-gnu/security/libpam_rssh.so")
+				}
+			},
+		)
 	}
 }
 

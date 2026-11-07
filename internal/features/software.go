@@ -157,19 +157,55 @@ func vim(h Host) ([]host.Resource, error) {
 }
 
 const (
-	pamRSSHRelease    = "v1.2.2-rc2"
-	pamRSSHDebVersion = "1.2.2-1"
-	// pamRSSHDebGlob matches the packages of every release.
-	pamRSSHDebGlob = "/var/cache/debian-*-pam-rssh_*.deb"
+	pamRSSHRelease = "v1.2.2-rc2"
+	// pamRSSHDebGlob matches the packages of every release and distro.
+	pamRSSHDebGlob = "/var/cache/*-pam-rssh_*.deb"
 	// sudoersKeys are the keys that may authenticate sudo.
 	sudoersKeys = "/etc/sudoers.keys"
 )
 
-var pamRSSHDebChecksums = map[string]string{
-	"debian-bookworm-amd64-pam-rssh_1.2.2-1_amd64.deb": "677ccb5b39a34265721c096b0efd39b21719bcf1bd6a24cff54d36de446e355b",
-	"debian-bookworm-arm64-pam-rssh_1.2.2-1_arm64.deb": "266b94935d3174995cd8f91468ed1abbaeeadceb9e46760e908ffb6008e61b6b",
-	"debian-trixie-amd64-pam-rssh_1.2.2-1_amd64.deb":   "b96f5ba6d39d76fb86344b71ca0a519f79e145f1ccca26e525ec15c3b02686d3",
-	"debian-trixie-arm64-pam-rssh_1.2.2-1_arm64.deb":   "272c99a14206810accb51e8448a9c4f51b94074204c14528e21b443551e39f54",
+// pamRSSHDebs are the release's packages, by distro, release and arch.
+var pamRSSHDebs = map[string]struct{ file, sha256 string }{
+	"debian bookworm x86_64": {
+		"debian-bookworm-amd64-pam-rssh_1.2.2-1_amd64.deb",
+		"677ccb5b39a34265721c096b0efd39b21719bcf1bd6a24cff54d36de446e355b",
+	},
+	"debian bookworm aarch64": {
+		"debian-bookworm-arm64-pam-rssh_1.2.2-1_arm64.deb",
+		"266b94935d3174995cd8f91468ed1abbaeeadceb9e46760e908ffb6008e61b6b",
+	},
+	"debian trixie x86_64": {
+		"debian-trixie-amd64-pam-rssh_1.2.2-1_amd64.deb",
+		"b96f5ba6d39d76fb86344b71ca0a519f79e145f1ccca26e525ec15c3b02686d3",
+	},
+	"debian trixie aarch64": {
+		"debian-trixie-arm64-pam-rssh_1.2.2-1_arm64.deb",
+		"272c99a14206810accb51e8448a9c4f51b94074204c14528e21b443551e39f54",
+	},
+	"ubuntu jammy x86_64": {
+		"ubuntu-22.04-pam-rssh_1.2.2-1_amd64.deb",
+		"c37bdac1a54ba27b06e357e34da50532ca4ac038b742e0134511c1c665b5c573",
+	},
+	"ubuntu jammy aarch64": {
+		"ubuntu-22.04-arm-pam-rssh_1.2.2-1_arm64.deb",
+		"2822b24adcc336c8474e3a11120f9c057735c2abeeddf6072767012ae958676f",
+	},
+	"ubuntu noble x86_64": {
+		"ubuntu-24.04-pam-rssh_1.2.2-1_amd64.deb",
+		"399858930cdfd7d22e20d9e6b15605d0af75c854c4fb9972e877c51a3baf9e5b",
+	},
+	"ubuntu noble aarch64": {
+		"ubuntu-24.04-arm-pam-rssh_1.2.2-1_arm64.deb",
+		"9b1fbbf886b93564433fcaa04682c0b51ead492ccdfc3cf922c5dce3e6aec11a",
+	},
+	"ubuntu resolute x86_64": {
+		"ubuntu-26.04-pam-rssh_1.2.2-1_amd64.deb",
+		"dd79d04cdbbfaf0c9ce74c42ce48c4e35ebf611a521b11d94c8d0d99a0666497",
+	},
+	"ubuntu resolute aarch64": {
+		"ubuntu-26.04-arm-pam-rssh_1.2.2-1_arm64.deb",
+		"38eda619e10d4dfbe560a440bbedcdf6c8d030fccb66cc7947192291aa289b3c",
+	},
 }
 
 func pamRSSH(h Host) ([]host.Resource, error) {
@@ -219,21 +255,26 @@ func installPAMRSSH(h Host) ([]host.Resource, string, error) {
 		return rs, "/usr/lib/security/pam_rssh.so", err
 	}
 
-	debArch := map[string]string{"x86_64": "amd64", "aarch64": "arm64"}[h.Facts.Arch]
-	if debArch == "" {
-		debArch = h.Facts.Arch
+	distro, err := vendorDistro(h, "pam_rssh")
+	if err != nil {
+		return nil, "", err
 	}
-	deb := fmt.Sprintf("debian-%s-%s-pam-rssh_%s_%s.deb", h.Facts.Release, debArch, pamRSSHDebVersion, debArch)
-	sum, ok := pamRSSHDebChecksums[deb]
+	deb, ok := pamRSSHDebs[distro+" "+h.Facts.Release+" "+h.Facts.Arch]
 	if !ok {
-		return nil, "", fmt.Errorf("host %s: pam_rssh has no release for %s on %s", h.Name, h.Facts.Release, h.Facts.Arch)
+		return nil, "", fmt.Errorf(
+			"host %s: pam_rssh has no package for %s %s on %s",
+			h.Name,
+			distro,
+			h.Facts.Release,
+			h.Facts.Arch,
+		)
 	}
-	path := "/var/cache/" + deb
+	path := "/var/cache/" + deb.file
 	return []host.Resource{
 		host.Download{
-			URL:    "https://github.com/z4yx/pam_rssh/releases/download/" + pamRSSHRelease + "/" + deb,
+			URL:    "https://github.com/z4yx/pam_rssh/releases/download/" + pamRSSHRelease + "/" + deb.file,
 			Path:   path,
-			SHA256: sum,
+			SHA256: deb.sha256,
 			Mode:   0o644,
 		},
 		host.Package{Name: "pam-rssh", Deb: path},
