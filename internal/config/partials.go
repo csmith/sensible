@@ -472,24 +472,15 @@ func (r *Repo) partialVolumes(role string, volumes map[string]Perms) (map[string
 	return volumes, nil
 }
 
-// partialVhosts are the vhosts written in the role's partials and their
-// arguments.
-func (r *Repo) partialVhosts(role string) ([]string, error) {
-	var vhosts []string
-	for _, use := range r.rolePartials[role] {
-		vhosts = append(vhosts, use.def.vhosts...)
-		values, _ := resolveParams(use.def.params, RoleParams{node: use.args})
-		for _, v := range values {
-			for _, tag := range findTags(v, vhostTag) {
-				names, err := vhostNames(tag)
-				if err != nil {
-					return nil, fmt.Errorf("%s: %w", r.path("roles", role, "role.yml"), err)
-				}
-				vhosts = append(vhosts, names...)
-			}
-		}
+// partialVhostTags are the !vhost tags in a partial's arguments and the
+// defaults they don't set.
+func partialVhostTags(use partialUse) []*ast.TagNode {
+	values, _ := resolveParams(use.def.params, RoleParams{node: use.args})
+	tags := make([]*ast.TagNode, 0, len(values))
+	for _, v := range values {
+		tags = append(tags, findTags(v, vhostTag)...)
 	}
-	return vhosts, nil
+	return tags
 }
 
 // expandPartials returns the settings the role's partials give a host, the
@@ -680,7 +671,11 @@ func (f filler) fill(node ast.Node) (ast.Node, bool, error) {
 		if err != nil || drop {
 			return nil, drop, err
 		}
-		n.Value = v
+		// A copy, as merge doesn't copy tags, so a role's arguments to its
+		// partials are filled afresh for each host.
+		tag := *n
+		tag.Value = v
+		return &tag, false, nil
 	case *ast.AnchorNode:
 		v, _, err := f.fill(n.Value)
 		if err != nil {

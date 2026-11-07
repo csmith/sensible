@@ -331,11 +331,16 @@ func TestVhosts_errors(t *testing.T) {
 			`"localhost" isn't a domain name`,
 		},
 		{
-			"placeholder in a role",
+			"invalid name once filled",
 			map[string]string{
-				"roles/web/docker-compose.yml": "services:\n  a:\n    labels: {v: !vhost \"{host}.example.com\"}\n",
+				"roles/web/docker-compose.yml": "services:\n  a:\n    labels: {v: !vhost \"{host}.{{host}}.example.com\"}\n",
 			},
-			"a !vhost can't hold a placeholder",
+			`docker-compose.yml: [3:17] "alpha.{host}.example.com" isn't a domain name`,
+		},
+		{
+			"placeholder in a host",
+			map[string]string{"hosts.d/hosts.yml": "alpha:\n  roles: {web: {name: !vhost \"{host}.example.com\"}}\n"},
+			`"{host}.example.com" isn't a domain name`,
 		},
 		{
 			"not a string",
@@ -395,6 +400,57 @@ func TestVhosts_anchoredHostEntry(t *testing.T) {
 	).open(t)
 
 	assert.Equal(t, map[string][]string{"x.example.com": {"alpha"}}, r.Vhosts())
+}
+
+func TestVhosts_placeholders(t *testing.T) {
+	r := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml":        "alpha:\n  roles: {web: }\nbeta:\n  roles: {web: {name: !vhost own.example.com}}\n",
+			"partials/ntp/partial.yml": "params:\n  server: ~\nntp:\n  servers: [\"{server}\"]\n",
+			"roles/web/role.yml": `
+params:
+  name: !vhost "name.{host}.example.com"
+partials:
+  - {partial: ntp, server: !vhost "ntp.{host}.example.com"}
+ntp:
+  servers: [!param name, !vhost "{stack}.{host}.example.com"]
+`,
+			"roles/web/docker-compose.yml": "services:\n  a:\n    labels: {vhost: !vhost \"app.{host}.example.com\"}\n",
+		},
+	).open(t)
+
+	assert.Equal(
+		t,
+		map[string][]string{
+			"app.alpha.example.com":  {"alpha"},
+			"app.beta.example.com":   {"beta"},
+			"web.alpha.example.com":  {"alpha"},
+			"web.beta.example.com":   {"beta"},
+			"ntp.alpha.example.com":  {"alpha"},
+			"ntp.beta.example.com":   {"beta"},
+			"name.alpha.example.com": {"alpha"},
+			"own.example.com":        {"beta"},
+		},
+		r.Vhosts(),
+	)
+
+	for host, name := range map[string]string{"alpha": "name.alpha.example.com", "beta": "own.example.com"} {
+		c, err := r.HostConfig(host, "debian")
+		require.NoError(t, err)
+		assert.ElementsMatch(
+			t,
+			Set{"ntp." + host + ".example.com", name, "web." + host + ".example.com"},
+			c.NTP.Servers,
+		)
+		assert.Equal(
+			t,
+			map[string]any{"services": map[string]any{"a": map[string]any{
+				"labels": map[string]any{"vhost": "app." + host + ".example.com"},
+			}}},
+			normaliseYAML(t, c.Stacks[0].Files[0].Content),
+		)
+	}
 }
 
 func stackFile(t *testing.T, s Stack, path string) StackFile {

@@ -372,8 +372,13 @@ type Repo struct {
 	rolePartials map[string][]partialUse
 	// volumes are the compose.volumes of the roles that declare any.
 	volumes map[string]map[string]Perms
-	// roleVhosts are the vhosts written in each role, outside its params.
-	roleVhosts map[string][]string
+	// roleVhosts are the !vhost tags written in each role's files, outside
+	// its params.
+	roleVhosts map[string][]*ast.TagNode
+	// vhostFiles are the role files each !vhost written in a role is in,
+	// including those in its params and partial arguments. Their
+	// placeholders are filled for each host.
+	vhostFiles map[*ast.TagNode]string
 	// params are each role's declared parameters: role.yml's, then those
 	// with each OS variant's merged over them.
 	params map[string][]ast.Node
@@ -721,7 +726,8 @@ func (r *Repo) checkLayout() error {
 	r.roles = map[string][]string{}
 	r.stacks = map[string]*stackDef{}
 	r.volumes = map[string]map[string]Perms{}
-	r.roleVhosts = map[string][]string{}
+	r.roleVhosts = map[string][]*ast.TagNode{}
+	r.vhostFiles = map[*ast.TagNode]string{}
 	r.params = map[string][]ast.Node{}
 	r.rolePartials = map[string][]partialUse{}
 	if err := r.readPartials(); err != nil {

@@ -682,15 +682,14 @@ func joinPath(elem ...string) string {
 	return strings.Join(slices.DeleteFunc(elem, func(e string) bool { return e == "" }), ".")
 }
 
-// readRoleVhosts records the vhosts named in the role's files and the
+// readRoleVhosts records the !vhost tags in the role's files and the
 // parameters it declares. A !vhost in a parameter's default only counts for
-// hosts that don't set the parameter, so those are left to mapVhosts. Files
-// that don't parse are skipped, as HostConfig reports them with the host
-// and role.
+// hosts that don't set the parameter, and placeholders are filled for each
+// host, so their names are left to mapVhosts. Files that don't parse are
+// skipped, as HostConfig reports them with the host and role.
 func (r *Repo) readRoleVhosts(role string, entries []os.DirEntry) error {
 	var base ast.Node
 	var variants []ast.Node
-	var vhosts []string
 	for _, e := range entries {
 		file := filepath.Join("roles", role, e.Name())
 		nodes, p, err := r.vhostSources(file, e.Name())
@@ -698,9 +697,7 @@ func (r *Repo) readRoleVhosts(role string, entries []os.DirEntry) error {
 			return err
 		}
 		for _, tag := range findTags(p, vhostTag) {
-			if _, err := roleVhostNames(tag); err != nil {
-				return fmt.Errorf("%s: %w", r.path(file), err)
-			}
+			r.vhostFiles[tag] = file
 		}
 		if e.Name() == "role.yml" {
 			base = p
@@ -709,21 +706,17 @@ func (r *Repo) readRoleVhosts(role string, entries []os.DirEntry) error {
 		}
 		for _, node := range nodes {
 			for _, tag := range findTags(node, vhostTag) {
-				names, err := roleVhostNames(tag)
-				if err != nil {
-					return fmt.Errorf("%s: %w", r.path(file), err)
-				}
-				vhosts = append(vhosts, names...)
+				r.vhostFiles[tag] = file
+				r.roleVhosts[role] = append(r.roleVhosts[role], tag)
 			}
 		}
 	}
-	fromPartials, err := r.partialVhosts(role)
-	if err != nil {
-		return err
-	}
-	vhosts = append(vhosts, fromPartials...)
-	if len(vhosts) > 0 {
-		r.roleVhosts[role] = vhosts
+	for _, use := range r.rolePartials[role] {
+		if use.parent < 0 {
+			for _, tag := range findTags(use.args, vhostTag) {
+				r.vhostFiles[tag] = filepath.Join("roles", role, "role.yml")
+			}
+		}
 	}
 	// As any variant may apply, like the vhosts outside params.
 	r.params[role] = []ast.Node{merge(nil, base)}
@@ -731,15 +724,6 @@ func (r *Repo) readRoleVhosts(role string, entries []os.DirEntry) error {
 		r.params[role] = append(r.params[role], merge(base, v))
 	}
 	return nil
-}
-
-// roleVhostNames are the domain names in a !vhost in a role's files, which
-// are known before the host is.
-func roleVhostNames(tag *ast.TagNode) ([]string, error) {
-	if v, ok := tag.Value.(*ast.StringNode); ok && rolePlaceholder.MatchString(v.Value) {
-		return nil, nodeError(tag, "a !vhost can't hold a placeholder")
-	}
-	return vhostNames(tag)
 }
 
 // vhostSources returns the parts of a role's file that may hold a !vhost:
@@ -789,9 +773,9 @@ func (r *Repo) mapVhosts() error {
 	for _, name := range slices.Sorted(maps.Keys(r.inventory.Hosts)) {
 		roles := r.hostRoles(name)
 		for _, role := range slices.Sorted(maps.Keys(roles)) {
-			vhosts, err := r.hostRoleVhosts(role, roles[role])
+			vhosts, err := r.hostRoleVhosts(name, role, roles[role])
 			if err != nil {
-				return err
+				return fmt.Errorf("%s: role %s: %w", name, role, err)
 			}
 			for _, vhost := range vhosts {
 				if other, ok := dnsNames[vhost]; ok {
@@ -808,21 +792,49 @@ func (r *Repo) mapVhosts() error {
 
 // hostRoleVhosts are the vhosts a role serves on a host that sets params
 // for it.
-func (r *Repo) hostRoleVhosts(role string, params RoleParams) ([]string, error) {
-	vhosts := slices.Clone(r.roleVhosts[role])
+func (r *Repo) hostRoleVhosts(host, role string, params RoleParams) ([]string, error) {
+	tags := slices.Clone(r.roleVhosts[role])
 	for _, declared := range r.params[role] {
 		values, _ := resolveParams(declared, params)
 		for _, v := range values {
-			for _, tag := range findTags(v, vhostTag) {
-				names, err := vhostNames(tag)
-				if err != nil {
-					return nil, err
-				}
-				vhosts = append(vhosts, names...)
-			}
+			tags = append(tags, findTags(v, vhostTag)...)
 		}
 	}
+	var vhosts []string
+	for _, use := range r.rolePartials[role] {
+		vhosts = append(vhosts, use.def.vhosts...)
+		tags = append(tags, partialVhostTags(use)...)
+	}
+	placeholders := roleFiller{host: host, stack: stackName(role)}
+	for _, tag := range tags {
+		names, err := r.hostVhostNames(placeholders, tag)
+		if err != nil {
+			return nil, err
+		}
+		vhosts = append(vhosts, names...)
+	}
 	return vhosts, nil
+}
+
+// hostVhostNames are the domain names in a !vhost on a host. One written in
+// a role has its placeholders filled; one from a host is used as written.
+func (r *Repo) hostVhostNames(placeholders roleFiller, tag *ast.TagNode) ([]string, error) {
+	file, ok := r.vhostFiles[tag]
+	if !ok {
+		return vhostNames(tag)
+	}
+	text, err := vhostText(tag)
+	if err == nil {
+		text, err = placeholders.interpolate(tag, text)
+	}
+	var names []string
+	if err == nil {
+		names, err = splitVhostNames(tag, text)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", r.path(file), err)
+	}
+	return names, nil
 }
 
 // checkHostVhosts allows a !vhost in a hosts.d file only within a role's
@@ -881,6 +893,10 @@ func vhostNames(tag *ast.TagNode) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	return splitVhostNames(tag, text)
+}
+
+func splitVhostNames(tag *ast.TagNode, text string) ([]string, error) {
 	var names []string
 	for part := range strings.SplitSeq(text, ",") {
 		fields := strings.Fields(part)
