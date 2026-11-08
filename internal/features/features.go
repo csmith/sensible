@@ -203,7 +203,10 @@ func files(h Host) ([]host.Resource, error) {
 			Mode:    f.Mode,
 			Hidden:  f.Hidden,
 		}
-		rs = append(rs, file, host.WrittenRecordIn(filesRecords, file))
+		// Without an owner or mode, a directory that already exists is left
+		// alone, and a missing one is created like its parents, as root:root
+		// 0755.
+		rs = append(rs, host.Dir{Path: path.Dir(f.Path)}, file, host.WrittenRecordIn(filesRecords, file))
 	}
 	return rs, nil
 }

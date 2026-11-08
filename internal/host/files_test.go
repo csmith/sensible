@@ -176,6 +176,22 @@ func TestDir_CreatesAndFixesMode(t *testing.T) {
 	assert.Equal(t, "mode: 0700 → 0755\n", change.Diff)
 }
 
+func TestDir_UnmanagedLeavesExistingAlone(t *testing.T) {
+	sys := newTestSys(t)
+	require.NoError(t, sys.MkdirAll("/etc/private", 0o700))
+
+	change, err := Dir{Path: "/etc/private"}.Check(context.Background(), sys)
+	require.NoError(t, err)
+	assert.True(t, change.InSync)
+
+	checkApply(t, sys, Dir{Path: "/etc/new.d/inner"})
+	for _, dir := range []string{"/etc/new.d", "/etc/new.d/inner"} {
+		info, err := sys.Stat(dir)
+		require.NoError(t, err)
+		assert.Equal(t, fs.FileMode(0o755), info.Mode.Perm(), dir)
+	}
+}
+
 func TestDir_FailsOnFile(t *testing.T) {
 	sys := newTestSys(t)
 	sys.write("/srv", "")

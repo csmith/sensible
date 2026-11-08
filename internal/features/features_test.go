@@ -1484,3 +1484,27 @@ func TestResources_fileAlsoWrittenByAFeature(t *testing.T) {
 
 	assert.ErrorContains(t, err, "/etc/hostname is written twice")
 }
+
+func TestResources_filesCreateTheirDirectories(t *testing.T) {
+	h := testHost(debian)
+	h.Config.AUR = nil
+	h.Config.Files = []config.FileConfig{
+		{Path: "/etc/foo.d/a.conf", Data: "a\n"},
+		{Path: "/etc/foo.d/b.conf", Data: "b\n"},
+	}
+	rs, err := Resources(h)
+	require.NoError(t, err)
+
+	all := ids(rs)
+	dir := slices.Index(all, "dir:/etc/foo.d")
+	require.GreaterOrEqual(t, dir, 0)
+	assert.Len(
+		t,
+		slices.DeleteFunc(slices.Clone(all), func(id string) bool { return id != "dir:/etc/foo.d" }),
+		1,
+		"the directory is declared more than once",
+	)
+	assert.Greater(t, slices.Index(all, "file:/etc/foo.d/a.conf"), dir)
+	d, _ := find[host.Dir](rs, "dir:/etc/foo.d")
+	assert.Equal(t, host.Dir{Path: "/etc/foo.d"}, d)
+}

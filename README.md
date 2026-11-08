@@ -68,8 +68,9 @@ the text itself.
 `content` or a `source` in the `files` directory of the role or partial that
 declares it, which may be binary. A source ending in `.age` is an age file from
 `sensible secret encrypt --raw`, and is decrypted. `content` can be an `!age`
-value. `owner`, `group` and `mode` default to root, root and 0644. Two roles
-can't write the same path.
+value. `owner`, `group` and `mode` default to root, root and 0644, and missing
+parent directories are created as root:root 0755. Two roles can't write the
+same path.
 
 ```yaml
 # roles/zram/role.yml
