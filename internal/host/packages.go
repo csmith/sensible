@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -984,6 +985,25 @@ func packageInstalled(ctx context.Context, sys Sys, family, name string) (bool, 
 	}
 	_, ok := installed[name]
 	return ok, nil
+}
+
+func installedPackages(ctx context.Context, sys Sys) ([]string, error) {
+	family, err := osFamily(ctx, sys)
+	if err != nil {
+		return nil, err
+	}
+	if family == familyArch {
+		db, err := pacman(ctx, sys)
+		if err != nil {
+			return nil, err
+		}
+		return slices.Collect(maps.Keys(db.installed)), nil
+	}
+	installed, err := dpkg(ctx, sys)
+	if err != nil {
+		return nil, err
+	}
+	return slices.Collect(maps.Keys(installed)), nil
 }
 
 func removePackage(ctx context.Context, sys Sys, family, name string) error {

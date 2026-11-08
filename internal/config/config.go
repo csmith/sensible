@@ -141,6 +141,7 @@ type Config struct {
 	Certs      map[string]CertConfig    `yaml:"certs"`
 	Remove     *RemoveConfig            `yaml:"remove"`
 	Files      []FileConfig             `yaml:"files"`
+	Leftovers  *LeftoversConfig         `yaml:"leftovers"`
 	// Stacks come from the host's roles that have a docker-compose.yml,
 	// rather than from a module, and are in name order.
 	Stacks []Stack `yaml:"-"`
@@ -287,6 +288,21 @@ type RemoveConfig struct {
 	// Paths are removed, recursively, on every apply. Each is absolute, or
 	// "~user/..." for a path in a user's home.
 	Paths Set `yaml:"paths"`
+}
+
+// LeftoversConfig acknowledges what sensible finds on a host but didn't put
+// there. Paths are absolute, and they and Packages may be glob patterns.
+type LeftoversConfig struct {
+	// Ignore may or may not be there, and is never warned about or pruned.
+	Ignore KeptConfig `yaml:"ignore"`
+	// External is managed outside sensible: it's never pruned, and is warned
+	// about if it's missing.
+	External KeptConfig `yaml:"external"`
+}
+
+type KeptConfig struct {
+	Paths    Set `yaml:"paths"`
+	Packages Set `yaml:"packages"`
 }
 
 // FileConfig is a file written as given. Its content is either Content, or

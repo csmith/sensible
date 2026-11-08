@@ -40,7 +40,9 @@ func Resources(h Host) (host.ResourceList, error) {
 	}
 
 	features := []func(Host) ([]host.Resource, error){
-		// First, so what it removes, such as an apt source, can't affect
+		// Before anything that lists leftovers.
+		leftovers,
+		// Next, so what it removes, such as an apt source, can't affect
 		// the rest.
 		remove,
 		aptRepos,

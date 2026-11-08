@@ -1159,6 +1159,40 @@ func TestHostConfig_dockerRegistryErrors(t *testing.T) {
 	}
 }
 
+func TestHostConfig_leftoversMergeFromRolesAndHostParams(t *testing.T) {
+	c, err := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml": "alpha:\n  roles:\n    base:\n    tools: {external: [/opt/tool]}\n",
+			"roles/base/role.yml": `
+leftovers:
+  ignore:
+    paths: [/etc/sudoers.d/README]
+`,
+			"roles/base/role.debian.yml": "leftovers:\n  ignore:\n    paths: [/etc/apt/sources.list.d/*.sources]\n",
+			"roles/tools/role.yml": `
+params:
+  external: []
+leftovers:
+  ignore:
+    paths: [/etc/sudoers.d/README]
+  external:
+    paths: !param external
+    packages: [tool-git]
+`,
+		},
+	).open(t).HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	assert.Equal(
+		t,
+		&LeftoversConfig{
+			Ignore:   KeptConfig{Paths: Set{"/etc/sudoers.d/README", "/etc/apt/sources.list.d/*.sources"}},
+			External: KeptConfig{Paths: Set{"/opt/tool"}, Packages: Set{"tool-git"}},
+		},
+		c.Leftovers,
+	)
+}
+
 func TestHostConfig_files(t *testing.T) {
 	tr := newTestRepo(
 		t,

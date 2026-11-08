@@ -409,6 +409,46 @@ func (r Disowned) Prune(ctx context.Context, sys Sys, item string) error {
 	return nil
 }
 
+func (r KeptLeftovers) Check(ctx context.Context, sys Sys) (Change, error) {
+	if !r.External {
+		return Change{InSync: true}, nil
+	}
+	var missing []string
+	for _, pattern := range r.Paths {
+		matches, err := sys.Glob(pattern)
+		if err != nil {
+			return Change{}, err
+		}
+		if len(matches) == 0 {
+			missing = append(missing, pattern)
+		}
+	}
+	if len(r.Packages) > 0 {
+		installed, err := installedPackages(ctx, sys)
+		if err != nil {
+			return Change{}, err
+		}
+		for _, pattern := range r.Packages {
+			match := func(name string) bool {
+				ok, _ := filepath.Match(pattern, name)
+				return ok
+			}
+			if !slices.ContainsFunc(installed, match) {
+				missing = append(missing, "package "+pattern)
+			}
+		}
+	}
+	if len(missing) == 0 {
+		return Change{InSync: true}, nil
+	}
+	return Change{
+		InSync:  true,
+		Warning: strings.Join(missing, "\n") + "\nmissing, but expected from outside sensible\n",
+	}, nil
+}
+
+func (r KeptLeftovers) Apply(context.Context, Sys) error { return nil }
+
 // WrittenDir holds the records WrittenRecord makes.
 const WrittenDir = "/var/lib/sensible/written"
 

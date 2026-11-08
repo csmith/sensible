@@ -725,6 +725,49 @@ func TestResources_removeRejectsPaths(t *testing.T) {
 	}
 }
 
+func TestResources_leftoversComeFirst(t *testing.T) {
+	h := testHost(archLinux)
+	h.Config.Leftovers = &config.LeftoversConfig{
+		Ignore:   config.KeptConfig{Paths: config.Set{"/etc/sudoers.d/README"}},
+		External: config.KeptConfig{Packages: config.Set{"tool-*"}},
+	}
+
+	rs, err := Resources(h)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(rs), 2)
+	assert.Equal(
+		t,
+		[]host.Resource{
+			host.KeptLeftovers{Paths: []string{"/etc/sudoers.d/README"}},
+			host.KeptLeftovers{Packages: []string{"tool-*"}, External: true},
+		},
+		[]host.Resource(rs[:2]),
+	)
+}
+
+func TestResources_leftoversRejectPatterns(t *testing.T) {
+	for _, tt := range []struct {
+		config config.LeftoversConfig
+		err    string
+	}{
+		{config.LeftoversConfig{Ignore: config.KeptConfig{Paths: config.Set{"etc/x"}}}, "leftovers.ignore.paths"},
+		{config.LeftoversConfig{External: config.KeptConfig{Paths: config.Set{"/"}}}, "leftovers.external.paths"},
+		{config.LeftoversConfig{Ignore: config.KeptConfig{Paths: config.Set{"/etc/[x"}}}, "leftovers.ignore.paths"},
+		{config.LeftoversConfig{Ignore: config.KeptConfig{Packages: config.Set{"package x"}}}, "leftovers.ignore.packages"},
+		{config.LeftoversConfig{External: config.KeptConfig{Packages: config.Set{""}}}, "leftovers.external.packages"},
+	} {
+		t.Run(
+			tt.err,
+			func(t *testing.T) {
+				h := testHost(archLinux)
+				h.Config.Leftovers = &tt.config
+				_, err := Resources(h)
+				assert.ErrorContains(t, err, tt.err)
+			},
+		)
+	}
+}
+
 func TestResources_pamRSSHOffRemovesOnlyItsLine(t *testing.T) {
 	for _, tt := range []struct {
 		osFamily string

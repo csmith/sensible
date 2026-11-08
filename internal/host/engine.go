@@ -7,6 +7,7 @@ import (
 	"io"
 	"path/filepath"
 	"slices"
+	"strings"
 )
 
 // engine checks and applies a host's resources in order.
@@ -291,6 +292,9 @@ type runState struct {
 	// ignored are leftovers that are meant to stay, as items by the ID of
 	// the Pruner that lists them.
 	ignored map[string][]string
+	// keptPaths and keptPackages are the patterns of every KeptLeftovers
+	// seen so far.
+	keptPaths, keptPackages []string
 }
 
 func newRunState() *runState {
@@ -340,18 +344,40 @@ func (s *runState) declare(r Resource) {
 		s.declared[r.dir()] = true
 	case CertRecord:
 		s.declared[filepath.Join(CertRecordsDir, r.Name)] = true
+	case KeptLeftovers:
+		s.keptPaths = append(s.keptPaths, r.Paths...)
+		s.keptPackages = append(s.keptPackages, r.Packages...)
 	default:
 	}
 }
 
 // unignored drops the items that are ignored for the Pruner with the given
-// ID.
+// ID, and those a KeptLeftovers keeps.
 func (s *runState) unignored(id string, items []string) []string {
 	ignored := s.ignored[id]
-	if len(ignored) == 0 {
+	if len(ignored) == 0 && len(s.keptPaths) == 0 && len(s.keptPackages) == 0 {
 		return items
 	}
-	return slices.DeleteFunc(slices.Clone(items), func(item string) bool { return slices.Contains(ignored, item) })
+	return slices.DeleteFunc(
+		slices.Clone(items),
+		func(item string) bool { return slices.Contains(ignored, item) || s.kept(item) },
+	)
+}
+
+// kept reports whether a leftover, a path or "package <name>", matches a
+// KeptLeftovers pattern.
+func (s *runState) kept(item string) bool {
+	patterns, name := s.keptPaths, item
+	if pkg, ok := strings.CutPrefix(item, "package "); ok {
+		patterns, name = s.keptPackages, pkg
+	}
+	return slices.ContainsFunc(
+		patterns,
+		func(p string) bool {
+			ok, _ := filepath.Match(p, name)
+			return ok
+		},
+	)
 }
 
 // changed drops cached package state, as any change may have installed or

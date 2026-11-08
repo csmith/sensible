@@ -128,6 +128,7 @@ var resourceTypes = registry(
 	SystemdReload{},
 	ServiceRestart{},
 	SystemdUnits{},
+	KeptLeftovers{},
 )
 
 // File manages a regular file.
@@ -459,6 +460,15 @@ type TailscaleSet struct {
 	Settings map[string]string `json:"settings"`
 }
 
+// KeptLeftovers keeps leftovers that match its glob patterns out of every
+// Pruner later in the same run, so they're neither warned about nor pruned.
+type KeptLeftovers struct {
+	Paths    []string `json:"paths,omitempty"`
+	Packages []string `json:"packages,omitempty"`
+	// External warns about each pattern nothing on the host matches.
+	External bool `json:"external,omitempty"`
+}
+
 func (r File) ID() string             { return "file:" + r.Path }
 func (r File) Notifies() ResourceList { return r.Notify }
 
@@ -523,3 +533,10 @@ func (r ServiceRestart) ID() string { return "service-restart:" + r.Name }
 func (r SystemdUnits) ID() string { return "systemd-units:" + r.Prefix }
 
 func (r TailscaleSet) ID() string { return "tailscale-set" }
+
+func (r KeptLeftovers) ID() string {
+	if r.External {
+		return "leftovers:external"
+	}
+	return "leftovers:ignored"
+}

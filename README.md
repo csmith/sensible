@@ -89,6 +89,25 @@ files:
 Once nothing declares a file, prune offers to remove it, unless it's been
 changed since it was written.
 
+### Leftovers
+
+Apply warns about what sensible finds but didn't put there, such as files in
+directories it manages or packages installed by hand, and prune offers to
+remove them. `leftovers` acknowledges those expected on many hosts. What's
+under `ignore` is never warned about or pruned. What's under `external` is
+managed some other way: it's never pruned, but apply warns if it's missing.
+Paths are absolute, and paths and package names can be globs.
+
+```yaml
+# roles/base/role.yml
+leftovers:
+  ignore:
+    paths: [/etc/sudoers.d/README]
+  external:
+    paths: [/usr/local/bin/tool]
+    packages: [tool-git]
+```
+
 ### DNS
 
 A host with a `dns_name` gets A and AAAA records for its addresses. With
@@ -129,7 +148,8 @@ index. It never reboots, but says when a host needs to.
 
 Prune asks about each leftover. Answering `i` keeps it and stops apply and
 prune mentioning it again, by adding it under `ignored` in the host's
-`hosts.d/<host>.state.yml`. Delete the entry there to see it again.
+`hosts.d/<host>.state.yml`. Delete the entry there to see it again. For
+leftovers expected on many hosts, see [Leftovers](#leftovers).
 
 Run `sensible -h` for the other commands and flags.
 

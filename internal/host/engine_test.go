@@ -402,6 +402,81 @@ func TestEngine_IgnoredLeftoversAreNeitherWarnedAboutNorListed(t *testing.T) {
 	)
 }
 
+func TestEngine_KeptLeftoversAreNeitherWarnedAboutNorListed(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		sys     func(*testing.T) *testSys
+		ignored string
+	}{
+		{"arch", newArchSys, "vi*"},
+		{"debian", newDebianSys, "pam-*"},
+	} {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				sys := tt.sys(t)
+				sys.write("/etc/sudoers.d/README", "")
+				sys.write("/etc/sudoers.d/stray", "")
+				sys.write("/opt/tool-1", "")
+				sys.write("/opt/other", "")
+				e := newTestEngine()
+				e.sys = sys
+				list := ResourceList{
+					KeptLeftovers{Paths: []string{"/etc/sudoers.d/README"}, Packages: []string{tt.ignored}},
+					KeptLeftovers{Paths: []string{"/opt/tool-*", "/opt/missing"}, Packages: []string{"zsh", "nope*"}, External: true},
+					OwnedDir{Path: "/etc/sudoers.d", Header: "# managed"},
+					Disowned{Name: "opt", Paths: []string{"/opt/*"}},
+					DisownedPackages{},
+				}
+
+				var warnings []string
+				_, err := e.check(
+					context.Background(),
+					list,
+					func(c Checked) error {
+						assert.Equal(t, StatusInSync, c.Status, c.ID)
+						warnings = append(warnings, c.Warning)
+						return nil
+					},
+				)
+				require.NoError(t, err)
+				assert.Equal(
+					t,
+					[]string{
+						"",
+						"/opt/missing\npackage nope*\nmissing, but expected from outside sensible\n",
+					},
+					warnings[:2],
+				)
+				assert.Contains(t, warnings[2], "/etc/sudoers.d/stray")
+				assert.NotContains(t, warnings[2], "README")
+				assert.Contains(t, warnings[3], "/opt/other")
+				assert.NotContains(t, warnings[3], "tool")
+				assert.Empty(t, warnings[4])
+
+				var found []Leftovers
+				_, err = e.leftovers(
+					context.Background(),
+					list,
+					func(l Leftovers) error {
+						found = append(found, l)
+						return nil
+					},
+				)
+				require.NoError(t, err)
+				assert.Equal(
+					t,
+					[]Leftovers{
+						{ID: "owned-dir:/etc/sudoers.d", Items: []string{"/etc/sudoers.d/stray"}},
+						{ID: "disowned:opt", Items: []string{"/opt/other"}},
+					},
+					found,
+				)
+			},
+		)
+	}
+}
+
 func TestEngine_OwnedDirSeesFilesDeclaredEarlier(t *testing.T) {
 	sys := newTestSys(t)
 	sys.write("/etc/sudoers.d/keep", "x\n")

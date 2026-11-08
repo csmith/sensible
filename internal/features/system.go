@@ -279,6 +279,40 @@ func execLine(argv []string) string {
 	return strings.Join(quoted, " ")
 }
 
+func leftovers(h Host) ([]host.Resource, error) {
+	c := h.Config.Leftovers
+	if c == nil {
+		return nil, nil
+	}
+	var rs []host.Resource
+	for _, kept := range []struct {
+		name     string
+		config   config.KeptConfig
+		external bool
+	}{
+		{"ignore", c.Ignore, false},
+		{"external", c.External, true},
+	} {
+		for _, p := range kept.config.Paths {
+			if _, err := path.Match(p, ""); err != nil || !path.IsAbs(p) || path.Clean(p) != p || p == "/" {
+				return nil, fmt.Errorf("host %s: leftovers.%s.paths: %q must be an absolute path or glob", h.Name, kept.name, p)
+			}
+		}
+		for _, p := range kept.config.Packages {
+			if _, err := path.Match(p, ""); err != nil || p == "" || strings.ContainsAny(p, "/ ") {
+				return nil, fmt.Errorf("host %s: leftovers.%s.packages: %q must be a package name or glob", h.Name, kept.name, p)
+			}
+		}
+		if len(kept.config.Paths) > 0 || len(kept.config.Packages) > 0 {
+			rs = append(
+				rs,
+				host.KeptLeftovers{Paths: kept.config.Paths, Packages: kept.config.Packages, External: kept.external},
+			)
+		}
+	}
+	return rs, nil
+}
+
 func remove(h Host) ([]host.Resource, error) {
 	if h.Config.Remove == nil {
 		return nil, nil
