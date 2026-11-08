@@ -143,6 +143,17 @@ func TestServe_HelloFactsCheckApplyBye(t *testing.T) {
 	assert.Equal(t, []string{"a", "h"}, scriptedApplied)
 }
 
+func TestServe_UnreadableOwedJournalIsAnError(t *testing.T) {
+	ta := startAgent(t, nil)
+	ta.receive(t)
+	ta.agent.sys.(*testSys).write(OwedPath, "not json")
+
+	require.NoError(t, ta.ctrl.Send(Check{Resources: ResourceList{scriptedResource{Name: "a", Drift: true}}}))
+	msg := ta.receive(t)
+	require.IsType(t, Error{}, msg)
+	assert.Contains(t, msg.(Error).Message, OwedPath)
+}
+
 func TestServe_ApplyWithoutCheckIsAnError(t *testing.T) {
 	ta := startAgent(t, nil)
 	ta.receive(t)

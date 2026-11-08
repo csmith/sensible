@@ -21,8 +21,11 @@ const ComposeFile = "docker-compose.yml"
 // differently. Instead, a stack is in sync if every service has its
 // containers running, and recreated whenever its files change.
 func (r ComposeStack) Check(ctx context.Context, sys Sys) (Change, error) {
-	if r.filesChanged(ctx) {
+	switch now, owed := state(ctx).triggered(r.ID(), r.Watch); {
+	case now:
 		return drift("recreate, as its files change\n"), nil
+	case owed:
+		return drift("recreate, owed from an earlier change\n"), nil
 	}
 	diff, err := r.containerDiff(ctx, sys)
 	if err != nil {
@@ -41,8 +44,8 @@ func (r ComposeStack) Apply(ctx context.Context, sys Sys) error {
 }
 
 func (r ComposeStack) filesChanged(ctx context.Context) bool {
-	modified := state(ctx).modified
-	return slices.ContainsFunc(r.Watch, func(id string) bool { return modified[id] })
+	now, owed := state(ctx).triggered(r.ID(), r.Watch)
+	return now || owed
 }
 
 func (r ComposeStack) containerDiff(ctx context.Context, sys Sys) (string, error) {

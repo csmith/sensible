@@ -46,14 +46,14 @@ func (r *fakeResource) Apply(context.Context, Sys) error {
 	return nil
 }
 
-func newTestEngine() *engine {
-	return &engine{log: io.Discard}
+func newTestEngine(t *testing.T) *engine {
+	return &engine{sys: newTestSys(t), log: io.Discard}
 }
 
 func collectChecked(t *testing.T, list ResourceList) ([]Checked, bool) {
 	t.Helper()
 	var got []Checked
-	failedAt, err := newTestEngine().check(
+	failedAt, err := newTestEngine(t).check(
 		context.Background(),
 		list,
 		func(c Checked) error {
@@ -68,7 +68,7 @@ func collectChecked(t *testing.T, list ResourceList) ([]Checked, bool) {
 func collectApplied(t *testing.T, list ResourceList) ([]Applied, bool) {
 	t.Helper()
 	var got []Applied
-	failed, err := newTestEngine().apply(
+	failed, err := newTestEngine(t).apply(
 		context.Background(),
 		list,
 		-1,
@@ -159,7 +159,7 @@ func TestEngine_ComposeStackSeesItsFilesChange(t *testing.T) {
 
 	sys := newTestSys(t)
 	sys.on("docker compose *", "", 0)
-	e := newTestEngine()
+	e := newTestEngine(t)
 	e.sys = sys
 	_, err := e.apply(
 		context.Background(),
@@ -201,7 +201,7 @@ func TestEngineApply_AppliesDeferredAndRunsHandlersOnce(t *testing.T) {
 func TestEngineApply_AnnouncesEachChangeBeforeMakingIt(t *testing.T) {
 	var log, sent []string
 	reload := &fakeResource{id: "reload", log: &log}
-	_, err := newTestEngine().apply(
+	_, err := newTestEngine(t).apply(
 		context.Background(),
 		ResourceList{
 			&fakeResource{id: "quiet", inSync: true, log: &log},
@@ -284,7 +284,7 @@ func TestEngineApply_LostConnectionStopsAfterCurrentResource(t *testing.T) {
 	reload := &fakeResource{id: "reload", log: &log}
 	lost := errors.New("broken pipe")
 
-	failed, err := newTestEngine().apply(
+	failed, err := newTestEngine(t).apply(
 		context.Background(),
 		ResourceList{
 			&fakeResource{id: "config", log: &log, notify: ResourceList{reload}},
@@ -314,7 +314,7 @@ func TestEngine_DisownedAptSourcesKeepsWhatApplyDoesNotDeclare(t *testing.T) {
 		},
 		DisownedAptSources{},
 	}
-	e := newTestEngine()
+	e := newTestEngine(t)
 	e.sys = sys
 
 	_, err := e.apply(context.Background(), list, -1, func(any) error { return nil })
@@ -355,7 +355,7 @@ func TestEngine_IgnoredLeftoversAreNeitherWarnedAboutNorListed(t *testing.T) {
 	sys.write("/etc/sudoers.d/README", "")
 	sys.write("/etc/sudoers.d/stray", "")
 	sys.write("/etc/early.d/README", "")
-	e := newTestEngine()
+	e := newTestEngine(t)
 	e.sys = sys
 	// The same path under another resource is still a leftover.
 	e.ignored = map[string][]string{
@@ -419,7 +419,7 @@ func TestEngine_KeptLeftoversAreNeitherWarnedAboutNorListed(t *testing.T) {
 				sys.write("/etc/sudoers.d/stray", "")
 				sys.write("/opt/tool-1", "")
 				sys.write("/opt/other", "")
-				e := newTestEngine()
+				e := newTestEngine(t)
 				e.sys = sys
 				list := ResourceList{
 					KeptLeftovers{Paths: []string{"/etc/sudoers.d/README"}, Packages: []string{tt.ignored}},
@@ -481,7 +481,7 @@ func TestEngine_OwnedDirSeesFilesDeclaredEarlier(t *testing.T) {
 	sys := newTestSys(t)
 	sys.write("/etc/sudoers.d/keep", "x\n")
 	sys.write("/etc/sudoers.d/stray", "")
-	e := newTestEngine()
+	e := newTestEngine(t)
 	e.sys = sys
 
 	var got []Applied
@@ -510,7 +510,7 @@ func TestEngine_ApplySkipsCleanUpsAfterFailedCheck(t *testing.T) {
 	sys := newTestSys(t)
 	sys.write("/etc/sudoers.d/stray", "")
 	sys.write("/etc/early.d/stray", "")
-	e := newTestEngine()
+	e := newTestEngine(t)
 	e.sys = sys
 	var log []string
 	flaky := &fakeResource{id: "flaky", checkErr: errors.New("timed out"), log: &log}
@@ -543,4 +543,152 @@ func TestEngine_ApplySkipsCleanUpsAfterFailedCheck(t *testing.T) {
 	)
 	assert.False(t, sys.exists("/etc/early.d/stray"), "the check showed this clean-up, so it runs")
 	assert.True(t, sys.exists("/etc/sudoers.d/stray"))
+}
+
+// run checks then applies list as a session would, reading what's owed from
+// sys before each, and returns both phases' results.
+func run(t *testing.T, sys *testSys, list ResourceList) ([]Checked, []Applied) {
+	t.Helper()
+	e := &engine{sys: sys, log: io.Discard}
+	readOwed := func() {
+		owed, err := readOwed(sys)
+		require.NoError(t, err)
+		e.owed = owed
+	}
+	readOwed()
+	var checked []Checked
+	failedAt, err := e.check(
+		context.Background(),
+		list,
+		func(c Checked) error {
+			checked = append(checked, c)
+			return nil
+		},
+	)
+	require.NoError(t, err)
+
+	readOwed()
+	var applied []Applied
+	_, err = e.apply(
+		context.Background(),
+		list,
+		failedAt,
+		func(msg any) error {
+			if a, ok := msg.(Applied); ok {
+				applied = append(applied, a)
+			}
+			return nil
+		},
+	)
+	require.NoError(t, err)
+	return checked, applied
+}
+
+func TestEngine_TriggerIsOwedPastAFailure(t *testing.T) {
+	sys := newTestSys(t)
+	sys.on("systemctl restart docker", "", 0)
+	var log []string
+	bad := &fakeResource{id: "bad", applyErr: errors.New("boom"), log: &log}
+	daemon := File{Path: "/etc/docker/daemon.json", Content: "{}\n"}
+	sys.write(daemon.Path, "{\"debug\": true}\n")
+	list := ResourceList{daemon, bad, ServiceRestart{Name: "docker", Watch: []string{daemon.ID()}}}
+
+	_, applied := run(t, sys, list)
+	assert.Equal(
+		t,
+		[]string{"file:/etc/docker/daemon.json changed", "bad failed", "service-restart:docker skipped"},
+		statuses(applied),
+	)
+	assert.Empty(t, sys.ran)
+
+	bad.applyErr = nil
+	checked, applied := run(t, sys, list)
+	assert.Equal(t, "restart, owed from an earlier change\n", checked[2].Diff)
+	assert.Equal(t, "service-restart:docker changed", statuses(applied)[2])
+	assert.Equal(t, []string{"systemctl restart docker"}, sys.ran)
+
+	checked, _ = run(t, sys, list)
+	assert.Equal(t, StatusInSync, checked[2].Status, "it's no longer owed once it's applied")
+}
+
+func TestEngine_TriggerIsStillOwedWhenItFails(t *testing.T) {
+	sys := newTestSys(t)
+	sys.on("systemctl enable --now docker", "no docker.service", 1)
+	var log []string
+	pkg := &fakeResource{id: "package:docker", log: &log}
+	list := ResourceList{
+		pkg,
+		Command{
+			Name:      "start docker",
+			Watch:     []string{pkg.ID()},
+			ApplyArgv: []string{"systemctl", "enable", "--now", "docker"},
+		},
+	}
+
+	_, applied := run(t, sys, list)
+	assert.Equal(t, []string{"package:docker changed", "command:start docker failed"}, statuses(applied))
+
+	sys.on("systemctl enable --now docker", "", 0)
+	checked, applied := run(t, sys, list)
+	assert.Equal(t, "run systemctl enable --now docker, owed from an earlier change\n", checked[1].Diff)
+	assert.Equal(t, []string{"package:docker in-sync", "command:start docker changed"}, statuses(applied))
+}
+
+func TestEngine_StackIsRecreatedAfterAFailedRecreate(t *testing.T) {
+	sys := newTestSys(t)
+	sys.on("docker compose *", "pull access denied", 1)
+	compose := File{Path: "/srv/compose/web/docker-compose.yml", Content: "services: {}\n"}
+	list := ResourceList{
+		Dir{Path: "/srv/compose/web"},
+		compose,
+		ComposeStack{Dir: "/srv/compose/web", Watch: []string{compose.ID()}},
+	}
+
+	_, applied := run(t, sys, list)
+	assert.Equal(t, "compose:/srv/compose/web failed", statuses(applied)[2])
+
+	sys.ran = nil
+	sys.on("docker compose *", "", 0)
+	checked, _ := run(t, sys, list)
+	assert.Equal(t, "recreate, owed from an earlier change\n", checked[2].Diff)
+	assert.Equal(
+		t,
+		[]string{"docker compose --file /srv/compose/web/docker-compose.yml up --detach --force-recreate --remove-orphans"},
+		sys.ran,
+	)
+}
+
+func TestEngine_FailedHandlerIsRetried(t *testing.T) {
+	sys := newTestSys(t)
+	var log []string
+	reload := &fakeResource{id: "reload", applyErr: errors.New("boom"), log: &log}
+	config := &fakeResource{id: "config", log: &log, notify: ResourceList{reload}}
+	list := ResourceList{config, &fakeResource{id: "other", inSync: true, log: &log}}
+
+	_, applied := run(t, sys, list)
+	assert.Equal(t, []string{"config changed", "other in-sync", "reload failed"}, statuses(applied))
+
+	reload.applyErr = nil
+	checked, applied := run(t, sys, list)
+	assert.Equal(t, []string{"config drifted", "other in-sync"}, statuses(checked))
+	assert.Equal(t, "changed in an earlier run whose handlers didn't run\n", checked[0].Diff)
+	assert.Equal(t, []string{"config in-sync", "other in-sync", "reload changed"}, statuses(applied))
+
+	checked, applied = run(t, sys, list)
+	assert.Equal(t, []string{"config in-sync", "other in-sync"}, statuses(checked))
+	assert.Equal(t, []string{"config in-sync", "other in-sync"}, statuses(applied))
+	assert.Equal(t, []string{"config", "reload", "reload"}, log)
+}
+
+func TestEngine_OwedHandlerDoesNotTriggerWatchers(t *testing.T) {
+	sys := newTestSys(t)
+	var log []string
+	reload := &fakeResource{id: "reload", log: &log}
+	config := &fakeResource{id: "config", inSync: true, log: &log, notify: ResourceList{reload}}
+	require.NoError(t, newOwedJournal().owe(sys, nil, []string{"reload"}))
+
+	checked, _ := run(t, sys, ResourceList{config, ServiceRestart{Name: "web", Watch: []string{"config"}}})
+
+	assert.Equal(t, []string{"config drifted", "service-restart:web in-sync"}, statuses(checked))
+	assert.Equal(t, []string{"reload"}, log)
 }

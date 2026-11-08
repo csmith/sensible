@@ -154,9 +154,11 @@ func (r ServiceAction) Apply(ctx context.Context, sys Sys) error {
 }
 
 func (r SystemdReload) Check(ctx context.Context, _ Sys) (Change, error) {
-	modified := state(ctx).modified
-	if slices.ContainsFunc(r.Watch, func(id string) bool { return modified[id] }) {
+	switch now, owed := state(ctx).triggered(r.ID(), r.Watch); {
+	case now:
 		return drift("reload, as unit files change\n"), nil
+	case owed:
+		return drift("reload, owed from an earlier change\n"), nil
 	}
 	return Change{InSync: true}, nil
 }
@@ -167,9 +169,11 @@ func (r SystemdReload) Apply(ctx context.Context, sys Sys) error {
 }
 
 func (r ServiceRestart) Check(ctx context.Context, _ Sys) (Change, error) {
-	modified := state(ctx).modified
-	if slices.ContainsFunc(r.Watch, func(id string) bool { return modified[id] }) {
+	switch now, owed := state(ctx).triggered(r.ID(), r.Watch); {
+	case now:
 		return drift("restart, as its config changes\n"), nil
+	case owed:
+		return drift("restart, owed from an earlier change\n"), nil
 	}
 	return Change{InSync: true}, nil
 }
@@ -710,9 +714,11 @@ func (r Command) Check(ctx context.Context, sys Sys) (Change, error) {
 		}
 	}
 	if len(r.Watch) > 0 {
-		modified := state(ctx).modified
-		if slices.ContainsFunc(r.Watch, func(id string) bool { return modified[id] }) {
+		switch now, owed := state(ctx).triggered(r.ID(), r.Watch); {
+		case now:
 			return drift("run " + strings.Join(r.ApplyArgv, " ") + "\n"), nil
+		case owed:
+			return drift("run " + strings.Join(r.ApplyArgv, " ") + ", owed from an earlier change\n"), nil
 		}
 		return Change{InSync: true}, nil
 	}

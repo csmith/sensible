@@ -582,7 +582,7 @@ func withKernels(sys *testSys, running string, installed ...string) {
 // failed.
 func applyAll(t *testing.T, sys Sys, list ResourceList) ([]Applied, bool) {
 	t.Helper()
-	e := newTestEngine()
+	e := newTestEngine(t)
 	e.sys = sys
 	var applied []Applied
 	failed, err := e.apply(
@@ -653,7 +653,7 @@ func TestPackageUpdate_DefersPackagesMissingFromTheSyncDatabase(t *testing.T) {
 		return Result{Stderr: "error: target not found: strace\n", Code: 1}
 	}
 
-	e := newTestEngine()
+	e := newTestEngine(t)
 	e.sys = sys
 	var checked []Status
 	failedAt, err := e.check(

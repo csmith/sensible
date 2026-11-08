@@ -19,13 +19,20 @@ func testMigration(phase, on string) Migration {
 	}
 }
 
-// migrate checks and applies both phases of a migration, as an apply
-// would, returning each phase's diff or error.
+// migrate checks and applies both phases of a migration around its stack
+// being recreated, as an apply would, returning each phase's diff or error.
 func migrate(t *testing.T, sys Sys, on string) (before, after string, err error) {
 	t.Helper()
-	ctx := withRunState(context.Background(), newRunState())
+	st := newRunState()
+	owed, err := readOwed(sys)
+	require.NoError(t, err)
+	st.owed = owed
+	ctx := withRunState(context.Background(), st)
 	for i, phase := range []string{PhaseBefore, PhaseAfter} {
 		r := testMigration(phase, on)
+		if phase == PhaseAfter {
+			require.NoError(t, owed.settle(sys, owed.triggers, r.stackID()))
+		}
 		change, cerr := r.Check(ctx, sys)
 		require.NoError(t, cerr)
 		if !change.InSync {
@@ -130,6 +137,28 @@ func TestMigration_FailedBeforeIsRetried(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "migrate a → b\n", before)
 	assert.Equal(t, []string{"cd /srv/compose/web && dump", "cd /srv/compose/web && restore"}, sys.ran)
+}
+
+func TestMigration_AfterWaitsForTheStackToBeRecreated(t *testing.T) {
+	sys := newTestSys(t)
+	_, _, err := migrate(t, sys, "a")
+	require.NoError(t, err)
+	sys.on("dump", "", 0)
+	sys.on("restore", "", 0)
+
+	// The stack's recreate fails, so the run stops before the after phase
+	// and the next starts with what's owed.
+	ctx := withRunState(context.Background(), newRunState())
+	require.NoError(t, testMigration(PhaseBefore, "b").Apply(ctx, sys))
+	owed, err := readOwed(sys)
+	require.NoError(t, err)
+	assert.True(t, owed.triggers["compose:/srv/compose/web"])
+
+	st := newRunState()
+	st.owed = owed
+	err = testMigration(PhaseAfter, "b").Apply(withRunState(context.Background(), st), sys)
+	require.ErrorContains(t, err, "the stack hasn't been recreated since its before phase ran")
+	assert.Equal(t, []string{"cd /srv/compose/web && dump"}, sys.ran)
 }
 
 func TestMigration_SecretIsntShownOrKept(t *testing.T) {

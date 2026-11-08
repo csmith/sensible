@@ -85,6 +85,9 @@ func (r Migration) Apply(ctx context.Context, sys Sys) error {
 	if !ok || rec.Pending == nil {
 		return fmt.Errorf("migration %s hasn't run its before phase", r.Name)
 	}
+	if state(ctx).owed.triggers[r.stackID()] {
+		return fmt.Errorf("migration %s: the stack hasn't been recreated since its before phase ran", r.Name)
+	}
 	if err := r.run(ctx, sys, r.After); err != nil {
 		return err
 	}
@@ -100,6 +103,11 @@ func (r Migration) before(ctx context.Context, sys Sys, rec migrationRecord, ok 
 	}
 	if rec.Pending != nil || rec.Hash == r.value().Hash {
 		return nil
+	}
+	// Before may stop the stack, so it must be recreated, not just started,
+	// before After runs.
+	if err := state(ctx).owed.owe(sys, []string{r.stackID()}, nil); err != nil {
+		return err
 	}
 	// Left by a before that failed, which is run again from scratch.
 	if err := sys.RemoveAll(r.workDir()); err != nil {
@@ -180,6 +188,8 @@ func (r Migration) value() migrationValue {
 }
 
 func (r Migration) stackName() string { return filepath.Base(r.Stack) }
+
+func (r Migration) stackID() string { return ComposeStack{Dir: r.Stack}.ID() }
 
 func (r Migration) dir() string { return filepath.Join(MigrationsDir, r.stackName(), r.Name) }
 

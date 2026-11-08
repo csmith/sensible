@@ -28,7 +28,8 @@ type Resource interface {
 }
 
 // Notifier is implemented by resources that trigger handlers when they
-// change. Handlers run once each, after the host's other resources.
+// change. Handlers run once each, after the host's other resources. One
+// that doesn't succeed is run again on the next apply.
 type Notifier interface {
 	Notifies() ResourceList
 }
@@ -367,7 +368,8 @@ type Command struct {
 	// not existing, means ApplyArgv is run.
 	CheckArgv []string `json:"check"`
 	// Watch, if set, replaces CheckArgv: ApplyArgv runs only if one of the
-	// resources with these IDs changed earlier in the run.
+	// resources with these IDs changed earlier in the run, or since it last
+	// ran.
 	Watch     []string `json:"watch,omitempty"`
 	ApplyArgv []string `json:"apply"`
 	// User runs both commands. Empty means root.
@@ -397,7 +399,8 @@ type OwnedDir struct {
 type ComposeStack struct {
 	Dir string `json:"dir"`
 	// Watch are the IDs of the resources that manage the stack's files. If
-	// any of them changed earlier in the run, the whole stack is recreated.
+	// any of them changed earlier in the run, or since the stack was last
+	// applied, the whole stack is recreated.
 	Watch []string `json:"watch"`
 }
 
@@ -435,7 +438,8 @@ type DockerNetworks struct{}
 // later in it.
 type SystemdReload struct {
 	// Watch are the IDs of the resources that manage unit files. It does
-	// nothing unless one of them changed earlier in the run.
+	// nothing unless one of them changed earlier in the run, or since it
+	// last reloaded.
 	Watch []string `json:"watch"`
 }
 
@@ -444,7 +448,8 @@ type SystemdReload struct {
 type ServiceRestart struct {
 	Name string `json:"name"`
 	// Watch are the IDs of the resources that manage the unit's config. It
-	// does nothing unless one of them changed earlier in the run.
+	// does nothing unless one of them changed earlier in the run, or since
+	// it last restarted.
 	Watch []string `json:"watch"`
 }
 
@@ -514,12 +519,14 @@ func (r CommentOut) ID() string { return "comment-out:" + r.Glob + ":" + r.Regex
 
 func (r Download) ID() string { return "download:" + r.Path }
 
-func (r Command) ID() string { return "command:" + r.Name }
+func (r Command) ID() string        { return "command:" + r.Name }
+func (r Command) watches() []string { return r.Watch }
 
 func (r OwnedDir) ID() string             { return "owned-dir:" + r.Path }
 func (r OwnedDir) Notifies() ResourceList { return r.Notify }
 
-func (r ComposeStack) ID() string { return "compose:" + r.Dir }
+func (r ComposeStack) ID() string        { return "compose:" + r.Dir }
+func (r ComposeStack) watches() []string { return r.Watch }
 
 func (r ComposeProjects) ID() string { return "compose-projects:" + r.Path }
 
@@ -529,9 +536,11 @@ func (r DockerNetwork) ID() string { return "docker-network:" + r.Name }
 
 func (r DockerNetworks) ID() string { return "docker-networks" }
 
-func (r SystemdReload) ID() string { return "systemd-reload" }
+func (r SystemdReload) ID() string        { return "systemd-reload" }
+func (r SystemdReload) watches() []string { return r.Watch }
 
-func (r ServiceRestart) ID() string { return "service-restart:" + r.Name }
+func (r ServiceRestart) ID() string        { return "service-restart:" + r.Name }
+func (r ServiceRestart) watches() []string { return r.Watch }
 
 func (r SystemdUnits) ID() string { return "systemd-units:" + r.Prefix }
 

@@ -104,6 +104,9 @@ func (s *session) handle(ctx context.Context, msg any) error {
 		}
 		return s.conn.Send(FactsReply{Facts: facts})
 	case Check:
+		if err := s.readOwed(); err != nil {
+			return s.conn.Send(Error{Message: err.Error()})
+		}
 		s.resources, s.engine.ignored = msg.Resources, msg.Ignored
 		failedAt, err := s.engine.check(ctx, s.resources, func(c Checked) error { return s.conn.Send(c) })
 		s.checkFailedAt = failedAt
@@ -137,6 +140,9 @@ func (s *session) apply(ctx context.Context) error {
 	if s.resources == nil {
 		return s.conn.Send(Error{Message: "apply without a check"})
 	}
+	if err := s.readOwed(); err != nil {
+		return s.conn.Send(Error{Message: err.Error()})
+	}
 	failed, err := s.engine.apply(ctx, s.resources, s.checkFailedAt, s.conn.Send)
 	s.resources = nil
 	if err == nil {
@@ -146,6 +152,15 @@ func (s *session) apply(ctx context.Context) error {
 		_, _ = fmt.Fprintf(s.agent.log, "exiting after losing the connection to the controller: %v\n", err)
 	}
 	return err
+}
+
+func (s *session) readOwed() error {
+	owed, err := readOwed(s.agent.sys)
+	if err != nil {
+		return err
+	}
+	s.engine.owed = owed
+	return nil
 }
 
 func (a *agent) hello(conn *Conn) error {

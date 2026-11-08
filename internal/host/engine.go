@@ -2,9 +2,12 @@ package host
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -16,11 +19,17 @@ type engine struct {
 	log io.Writer
 	// ignored are the leftovers from the last Check that are meant to stay.
 	ignored map[string][]string
+	// owed is what earlier runs left owed, as read before the last Check or
+	// Apply. Nil means nothing is.
+	owed *owedJournal
 }
 
 func (e *engine) newRunState() *runState {
 	st := newRunState()
 	st.ignored = e.ignored
+	if e.owed != nil {
+		st.owed = e.owed
+	}
 	return st
 }
 
@@ -59,6 +68,12 @@ func (e *engine) check(ctx context.Context, list ResourceList, send func(Checked
 			if failedAt < 0 {
 				failedAt = i
 			}
+		case StatusInSync:
+			// Its handlers run without it changing, so later resources
+			// aren't told it did.
+			if len(st.owed.handlersOf(r)) > 0 {
+				res.Status, res.Diff = StatusDrifted, "changed in an earlier run whose handlers didn't run\n"
+			}
 		default:
 		}
 		if err := send(res); err != nil {
@@ -69,21 +84,24 @@ func (e *engine) check(ctx context.Context, list ResourceList, send func(Checked
 }
 
 // apply re-checks and applies each resource, stopping at the first failure,
-// then runs the handlers that changed resources notified. Each change is
-// sent as Applying before it's made and Applied after. If send fails, it
-// stops after the resource in progress but still runs the due handlers.
-// checkFailedAt is the position of the first failure in the check that
-// planned this apply, or -1; the clean-ups after it are skipped, as the
-// check skipped them.
+// then runs the handlers that changed resources notified, and those owed
+// from earlier runs. Each change is sent as Applying before it's made and
+// Applied after. If send fails, it stops after the resource in progress but
+// still runs the due handlers. checkFailedAt is the position of the first
+// failure in the check that planned this apply, or -1; the clean-ups after
+// it are skipped, as the check skipped them.
 func (e *engine) apply(ctx context.Context, list ResourceList, checkFailedAt int, send func(any) error) (bool, error) {
 	st := e.newRunState()
 	ctx = withRunState(ctx, st)
+	watchers := watchersByWatched(list)
 	var (
-		failed   bool
-		sendErr  error
-		handlers ResourceList
-		notified = map[string]bool{}
+		failed  bool
+		sendErr error
+		due     = dueHandlers{seen: map[string]bool{}}
 	)
+	for _, r := range list {
+		due.add(st.owed.handlersOf(r))
+	}
 	starting := func(id string, handler bool) {
 		if sendErr == nil {
 			sendErr = send(Applying{ID: id, Handler: handler})
@@ -93,18 +111,13 @@ func (e *engine) apply(ctx context.Context, list ResourceList, checkFailedAt int
 		st.declare(r)
 		res := Applied{ID: r.ID(), Status: StatusSkipped}
 		if !failed && !skippedByCheck(r, i, checkFailedAt) {
-			res = e.applyOne(ctx, st, r, starting)
+			res = e.applyOne(ctx, st, r, watchers[r.ID()], starting)
 		}
 
 		switch res.Status {
 		case StatusChanged:
 			if n, ok := r.(Notifier); ok {
-				for _, h := range n.Notifies() {
-					if !notified[h.ID()] {
-						notified[h.ID()] = true
-						handlers = append(handlers, h)
-					}
-				}
+				due.add(n.Notifies())
 			}
 		case StatusFailed:
 			failed = true
@@ -123,13 +136,10 @@ func (e *engine) apply(ctx context.Context, list ResourceList, checkFailedAt int
 	// Handlers run even if the run was cut short, so a validated config
 	// that was changed is still picked up.
 	hctx := context.WithoutCancel(ctx)
-	for _, h := range handlers {
-		res := Applied{ID: h.ID(), Handler: true, Status: StatusChanged}
+	for _, h := range due.list {
 		starting(h.ID(), true)
-		if err := h.Apply(hctx, e.sys); err != nil {
-			res.Status, res.Error = StatusFailed, err.Error()
-			failed = true
-		}
+		res := e.applyHandler(hctx, st, h)
+		failed = failed || res.Status == StatusFailed
 		e.record(res)
 		if sendErr == nil {
 			sendErr = send(res)
@@ -138,16 +148,45 @@ func (e *engine) apply(ctx context.Context, list ResourceList, checkFailedAt int
 	return failed, sendErr
 }
 
+// dueHandlers are the handlers to run after the resources, each once.
+type dueHandlers struct {
+	list ResourceList
+	seen map[string]bool
+}
+
+func (d *dueHandlers) add(handlers ResourceList) {
+	for _, h := range handlers {
+		if !d.seen[h.ID()] {
+			d.seen[h.ID()] = true
+			d.list = append(d.list, h)
+		}
+	}
+}
+
+func (e *engine) applyHandler(ctx context.Context, st *runState, h Resource) Applied {
+	res := Applied{ID: h.ID(), Handler: true, Status: StatusChanged}
+	if err := h.Apply(ctx, e.sys); err != nil {
+		res.Status, res.Error = StatusFailed, err.Error()
+	} else if err := st.owed.settle(e.sys, st.owed.handlers, h.ID()); err != nil {
+		res.Warning = unsettledWarning(err)
+	}
+	return res
+}
+
 // skippedByCheck reports whether r, at position i, is a clean-up the check
 // skipped because an earlier resource failed at checkFailedAt.
 func skippedByCheck(r Resource, i, checkFailedAt int) bool {
 	return checkFailedAt >= 0 && i >= checkFailedAt && isCleanUp(r)
 }
 
+// applyOne records what r's change triggers as owed before applying it, so
+// a failure or a lost agent later in the run can't lose it, even if r
+// itself fails part way. watchers are the IDs of the resources watching r.
 func (e *engine) applyOne(
 	ctx context.Context,
 	st *runState,
 	r Resource,
+	watchers []string,
 	starting func(id string, handler bool),
 ) Applied {
 	res := Applied{ID: r.ID()}
@@ -160,6 +199,16 @@ func (e *engine) applyOne(
 	default:
 		res.Diff = change.Diff
 		starting(r.ID(), false)
+		var handlers []string
+		if n, ok := r.(Notifier); ok {
+			for _, h := range n.Notifies() {
+				handlers = append(handlers, h.ID())
+			}
+		}
+		if err := st.owed.owe(e.sys, watchers, handlers); err != nil {
+			res.Status, res.Error = StatusFailed, "recording what its change triggers: "+err.Error()
+			return res
+		}
 		if err := r.Apply(ctx, e.sys); err != nil {
 			res.Status, res.Error = StatusFailed, err.Error()
 		} else {
@@ -167,11 +216,21 @@ func (e *engine) applyOne(
 			st.modified[r.ID()] = true
 		}
 		st.changed()
-		if w, ok := r.(applyWarner); ok && res.Status == StatusChanged {
+		if res.Status != StatusChanged {
+			break
+		}
+		if w, ok := r.(applyWarner); ok {
 			res.Warning = w.appliedWarning(ctx, e.sys)
+		}
+		if err := st.owed.settle(e.sys, st.owed.triggers, r.ID()); err != nil {
+			res.Warning += unsettledWarning(err)
 		}
 	}
 	return res
+}
+
+func unsettledWarning(err error) string {
+	return "couldn't record that it's done, so the next run does it again: " + err.Error() + "\n"
 }
 
 // applyWarner is implemented by resources that have something to warn about
@@ -259,6 +318,121 @@ func isCleanUp(r Resource) bool {
 	}
 }
 
+// OwedPath is where the agent keeps what earlier runs changed but didn't
+// act on: the resources watching others that haven't applied since one of
+// them changed, and the handlers that haven't run since they were notified.
+// Without it, a run that stops part way, or an agent that's killed, would
+// lose them for good.
+const OwedPath = "/var/lib/sensible/owed.json"
+
+// owedJournal is what OwedPath holds, as sets of IDs. Entries for resources
+// that are no longer declared are kept, as an apply may be given only some
+// of a host's resources, as bootstrap's is, and only declared resources
+// read them.
+type owedJournal struct {
+	triggers map[string]bool
+	handlers map[string]bool
+}
+
+type owedFile struct {
+	Triggers []string `json:"triggers,omitempty"`
+	Handlers []string `json:"handlers,omitempty"`
+}
+
+func newOwedJournal() *owedJournal {
+	return &owedJournal{triggers: map[string]bool{}, handlers: map[string]bool{}}
+}
+
+func readOwed(sys FileReader) (*owedJournal, error) {
+	o := newOwedJournal()
+	data, err := sys.ReadFile(OwedPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return o, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", OwedPath, err)
+	}
+	var f owedFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", OwedPath, err)
+	}
+	for _, id := range f.Triggers {
+		o.triggers[id] = true
+	}
+	for _, id := range f.Handlers {
+		o.handlers[id] = true
+	}
+	return o, nil
+}
+
+// owe records the resources with the given IDs as triggered, and the
+// handlers as notified, writing the journal if that's new.
+func (o *owedJournal) owe(sys FileWriter, triggers, handlers []string) error {
+	changed := false
+	for _, id := range triggers {
+		changed = changed || !o.triggers[id]
+		o.triggers[id] = true
+	}
+	for _, id := range handlers {
+		changed = changed || !o.handlers[id]
+		o.handlers[id] = true
+	}
+	if !changed {
+		return nil
+	}
+	return o.write(sys)
+}
+
+// settle removes id from set, one of o's, once it's acted.
+func (o *owedJournal) settle(sys FileWriter, set map[string]bool, id string) error {
+	if !set[id] {
+		return nil
+	}
+	delete(set, id)
+	return o.write(sys)
+}
+
+func (o *owedJournal) handlersOf(r Resource) ResourceList {
+	n, ok := r.(Notifier)
+	if !ok || len(o.handlers) == 0 {
+		return nil
+	}
+	return slices.DeleteFunc(slices.Clone(n.Notifies()), func(h Resource) bool { return !o.handlers[h.ID()] })
+}
+
+func (o *owedJournal) write(sys FileWriter) error {
+	data, err := json.Marshal(
+		owedFile{Triggers: slices.Sorted(maps.Keys(o.triggers)), Handlers: slices.Sorted(maps.Keys(o.handlers))},
+	)
+	if err != nil {
+		return err
+	}
+	if err := sys.MkdirAll(filepath.Dir(OwedPath), 0o755); err != nil {
+		return err
+	}
+	return sys.WriteFile(OwedPath, append(data, '\n'), WriteOptions{UID: -1, GID: -1, Mode: 0o600})
+}
+
+// watcher is implemented by resources that act when a resource they watch
+// changes earlier in the run.
+type watcher interface {
+	watches() []string
+}
+
+// watchersByWatched maps the ID of each watched resource in list to the IDs
+// of those watching it.
+func watchersByWatched(list ResourceList) map[string][]string {
+	byWatched := map[string][]string{}
+	for _, r := range list {
+		if w, ok := r.(watcher); ok {
+			for _, id := range w.watches() {
+				byWatched[id] = append(byWatched[id], r.ID())
+			}
+		}
+	}
+	return byWatched
+}
+
 // runState is shared by the resources in one check or apply.
 type runState struct {
 	// declared holds the paths of every File, Dir, Symlink, GitCheckout,
@@ -268,6 +442,7 @@ type runState struct {
 	// modified holds the IDs of resources that changed earlier in an apply,
 	// or that a check found would change.
 	modified map[string]bool
+	owed     *owedJournal
 	// networks holds the names of every DockerNetwork seen so far.
 	networks map[string]bool
 	// users holds the names of every User seen so far that isn't Absent.
@@ -304,6 +479,7 @@ func newRunState() *runState {
 		networks: map[string]bool{},
 		users:    map[string]bool{},
 		packages: map[string]bool{},
+		owed:     newOwedJournal(),
 	}
 }
 
@@ -349,6 +525,13 @@ func (s *runState) declare(r Resource) {
 		s.keptPackages = append(s.keptPackages, r.Packages...)
 	default:
 	}
+}
+
+// triggered reports whether a watcher should act for a change in this run
+// (now) or in an earlier one it hasn't acted on (owed).
+func (s *runState) triggered(id string, watch []string) (now, owed bool) {
+	now = slices.ContainsFunc(watch, func(w string) bool { return s.modified[w] })
+	return now, s.owed.triggers[id]
 }
 
 // unignored drops the items that are ignored for the Pruner with the given
