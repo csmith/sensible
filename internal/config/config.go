@@ -470,7 +470,7 @@ func checkFilePaths(role string, node ast.Node, written map[string]string) error
 }
 
 // reveal sets the file's Data, and fills in the default ownership and mode,
-// root:root 0644. As elsewhere, a named owner without a group means the
+// root:root 0644, or 0640 for a secret. As elsewhere, a named owner without a group means the
 // owner's primary group.
 func (f *FileConfig) reveal(keys *keyring) error {
 	switch {
@@ -507,7 +507,11 @@ func (f *FileConfig) reveal(keys *keyring) error {
 			f.Group = "root"
 		}
 	}
-	if f.Mode == 0 {
+	switch {
+	case f.Mode != 0:
+	case f.Hidden:
+		f.Mode = 0o640
+	default:
 		f.Mode = 0o644
 	}
 	return nil

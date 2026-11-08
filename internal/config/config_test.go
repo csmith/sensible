@@ -1265,8 +1265,10 @@ files:
 
 	assert.Equal(t, "hunter2", byPath["/etc/password"].Data)
 	assert.True(t, byPath["/etc/password"].Hidden)
+	assert.Equal(t, Perms{Owner: "root", Group: "root", Mode: 0o640}, byPath["/etc/password"].Perms)
 	assert.Equal(t, "secret file\n", byPath["/etc/key"].Data)
 	assert.True(t, byPath["/etc/key"].Hidden)
+	assert.Equal(t, Perms{Owner: "root", Group: "root", Mode: 0o640}, byPath["/etc/key"].Perms)
 }
 
 func TestHostConfig_blockScalarFiles(t *testing.T) {
