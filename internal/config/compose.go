@@ -406,7 +406,7 @@ func (r *Repo) renderStack(
 		gen:          &generator{saved: generated[def.name], preview: r.keys.preview},
 		certs:        certs,
 	}
-	compose, err := c.renderCompose(e)
+	compose, body, err := c.renderCompose(e)
 	if err != nil {
 		return Stack{}, err
 	}
@@ -463,28 +463,38 @@ func (r *Repo) renderStack(
 		}
 		s.Files = append(s.Files, f)
 	}
+	if err := checkBindMounts(s, body); err != nil {
+		return Stack{}, fmt.Errorf("%s: %w", host.ComposeFile, err)
+	}
 	return s, nil
 }
 
 // renderCompose merges the role's compose file over its partials' and
 // replaces their tags, leaving the rest of them, including comments, as
 // written.
-func (c *composeRenderer) renderCompose(e expansion) (StackFile, error) {
+func (c *composeRenderer) renderCompose(e expansion) (StackFile, ast.Node, error) {
 	f, set, err := c.partialsCompose(e.partials)
 	if err != nil {
-		return StackFile{}, err
+		return StackFile{}, nil, err
 	}
 	file := filepath.Join("roles", c.def.role, host.ComposeFile)
 	if _, err := os.Stat(c.repo.path(file)); f == nil || err == nil {
 		if f, err = c.roleCompose(file, f, set); err != nil {
-			return StackFile{}, fmt.Errorf("%s: %w", c.repo.path(file), err)
+			return StackFile{}, nil, fmt.Errorf("%s: %w", c.repo.path(file), err)
 		}
 	}
 	content := f.String()
 	if !strings.HasSuffix(content, "\n") {
 		content += "\n"
 	}
-	return StackFile{Path: host.ComposeFile, Content: content, Perms: filePerms(Perms{}), Secrets: c.secrets}, nil
+	return StackFile{
+			Path:    host.ComposeFile,
+			Content: content,
+			Perms:   filePerms(Perms{}),
+			Secrets: c.secrets,
+		},
+		f.Docs[0].Body,
+		nil
 }
 
 // partialsCompose merges the compose fragments of the role's partials,
@@ -571,6 +581,110 @@ func (c *composeRenderer) checkProjectName(body ast.Node) error {
 		}
 	}
 	return nil
+}
+
+// checkBindMounts rejects bind mounts of paths in the stacks directory
+// other than the stack's own files and the directories holding them, as
+// sensible removes anything else it finds there.
+func checkBindMounts(s Stack, body ast.Node) error {
+	kept := map[string]bool{}
+	for _, f := range s.Files {
+		for p := f.Path; p != "."; p = filepath.Dir(p) {
+			kept[p] = true
+		}
+	}
+	for _, svc := range composeValues(composeValue(body, "services")) {
+		for _, v := range composeItems(composeValue(svc.Value, "volumes")) {
+			source, ok := bindSource(v)
+			// Variables are only known once compose reads them.
+			if !ok || strings.Contains(source, "$") {
+				continue
+			}
+			path := filepath.Clean(source)
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(s.Dir(), path)
+			}
+			rel, err := filepath.Rel(s.Dir(), path)
+			switch {
+			case err == nil && rel != ".." && !strings.HasPrefix(rel, "../"):
+				if kept[rel] {
+					continue
+				}
+				return fmt.Errorf(
+					"service %s mounts %s, which isn't in stack %s's compose.files, so would be removed; mount a !volume instead",
+					keyString(svc.Key),
+					source,
+					s.Name,
+				)
+			case strings.HasPrefix(path, StacksDir+"/"):
+				return fmt.Errorf(
+					"service %s of stack %s mounts %s, which is in %s, so would be removed; mount a !volume instead",
+					keyString(svc.Key),
+					s.Name,
+					source,
+					StacksDir,
+				)
+			default:
+			}
+		}
+	}
+	return nil
+}
+
+// bindSource is the host path a service's volume mounts, if it's a bind
+// mount, in either the short or the long syntax.
+func bindSource(v ast.Node) (string, bool) {
+	if s, ok := untagged(v).(ast.ScalarNode); ok {
+		source, _, ok := strings.Cut(scalarValue(s), ":")
+		return source, ok && (strings.HasPrefix(source, ".") || strings.HasPrefix(source, "/"))
+	}
+	typ, ok := untagged(composeValue(v, "type")).(ast.ScalarNode)
+	if !ok || scalarValue(typ) != "bind" {
+		return "", false
+	}
+	source, ok := untagged(composeValue(v, "source")).(ast.ScalarNode)
+	if !ok {
+		return "", false
+	}
+	return scalarValue(source), true
+}
+
+// composeValues returns the values of a mapping, looking through any tags,
+// such as compose's !override and !reset, and anchors.
+func composeValues(node ast.Node) []*ast.MappingValueNode {
+	if m, ok := untagged(node).(*ast.MappingNode); ok {
+		return m.Values
+	}
+	return nil
+}
+
+func composeValue(node ast.Node, key string) ast.Node {
+	for _, mv := range composeValues(node) {
+		if keyString(mv.Key) == key {
+			return mv.Value
+		}
+	}
+	return nil
+}
+
+func composeItems(node ast.Node) []ast.Node {
+	if s, ok := untagged(node).(*ast.SequenceNode); ok {
+		return s.Values
+	}
+	return nil
+}
+
+func untagged(node ast.Node) ast.Node {
+	for {
+		switch n := node.(type) {
+		case *ast.TagNode:
+			node = n.Value
+		case *ast.AnchorNode:
+			node = n.Value
+		default:
+			return node
+		}
+	}
 }
 
 type composeRenderer struct {

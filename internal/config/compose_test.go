@@ -163,6 +163,52 @@ func TestHostConfig_stackErrors(t *testing.T) {
 			`partials/x/docker-compose.yml: [1:7] name must be "web", the stack's name`,
 		},
 		{
+			"relative bind mount",
+			"services:\n  a:\n    volumes: [./data:/x]\n",
+			nil,
+			"docker-compose.yml: service a mounts ./data, which isn't in stack web's compose.files",
+		},
+		{
+			"long-form bind mount",
+			"services:\n  a:\n    volumes:\n      - {type: bind, source: data/db, target: /x}\n",
+			nil,
+			"service a mounts data/db, which isn't in stack web's compose.files",
+		},
+		{
+			"absolute bind mount",
+			"services:\n  a:\n    volumes: [\"/srv/compose/web/data:/x:ro\"]\n",
+			nil,
+			"service a mounts /srv/compose/web/data,",
+		},
+		{
+			"bind mount of the stack's directory",
+			"services:\n  a:\n    volumes: [.:/x]\n",
+			nil,
+			"service a mounts .,",
+		},
+		{
+			"bind mount beside a declared file",
+			"services:\n  a:\n    volumes: [./conf/new:/x]\n",
+			map[string]string{"roles/web/role.yml": "compose:\n  files: [conf]\n", "roles/web/conf/a": ""},
+			"service a mounts ./conf/new,",
+		},
+		{
+			"bind mount in a partial",
+			"services: {}\n",
+			map[string]string{
+				"roles/web/role.yml":            "partials: [{partial: x}]\n",
+				"partials/x/partial.yml":        "",
+				"partials/x/docker-compose.yml": "services:\n  a:\n    volumes: !override [./data:/x]\n",
+			},
+			"service a mounts ./data,",
+		},
+		{
+			"bind mount in another stack",
+			"services:\n  a:\n    volumes: [../other/data:/x]\n",
+			nil,
+			"service a of stack web mounts ../other/data, which is in /srv/compose",
+		},
+		{
 			"COMPOSE_PROJECT_NAME",
 			"services: {}\n",
 			map[string]string{"roles/web/role.yml": "compose:\n  env:\n    COMPOSE_PROJECT_NAME: other\n"},
@@ -184,6 +230,43 @@ func TestHostConfig_stackErrors(t *testing.T) {
 			},
 		)
 	}
+}
+
+func TestHostConfig_bindMountsOfStackFiles(t *testing.T) {
+	_, err := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml": "alpha:\n  roles: {web: }\n",
+			"roles/web/role.yml": `
+compose:
+  files: [app.conf, conf, nested/site.conf]
+  volumes: {data: }
+  env: {A: b}
+`,
+			"roles/web/app.conf":         "",
+			"roles/web/conf/sub/a.conf":  "",
+			"roles/web/nested/site.conf": "",
+			"roles/web/docker-compose.yml": `services:
+  a:
+    volumes:
+      - ./app.conf:/etc/app.conf:ro
+      - /srv/compose/web/conf:/etc/conf
+      - ./nested:/nested
+      - ./conf/sub/a.conf:/a
+      - ./.env:/env
+      - ./docker-compose.yml:/compose.yml
+      - !volume data:/data
+      - named:/named
+      - /var/lib/x:/x
+      - /srv/compose:/srv/compose:ro
+      - ${DATA}:/d
+      - /anonymous
+      - {type: volume, source: ./named, target: /n}
+      - {type: bind, source: ./conf, target: /c}
+`,
+		},
+	).open(t).HostConfig("alpha", "debian")
+	assert.NoError(t, err)
 }
 
 func TestHostConfig_parentVolumesWithOnlyAChild(t *testing.T) {
