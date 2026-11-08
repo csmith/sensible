@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -20,6 +22,36 @@ const (
 	defaultDirMode  fs.FileMode = 0o755
 	modeBits                    = fs.ModePerm | fs.ModeSetuid | fs.ModeSetgid | fs.ModeSticky
 )
+
+// MarshalJSON sends content that isn't UTF-8, such as a program, as
+// base64, as a JSON string would mangle it.
+func (r File) MarshalJSON() ([]byte, error) {
+	type plain File
+	v := struct {
+		plain
+		Binary []byte `json:"binary,omitempty"`
+	}{plain: plain(r)}
+	if !utf8.ValidString(r.Content) {
+		v.Content, v.Binary = "", []byte(r.Content)
+	}
+	return json.Marshal(v)
+}
+
+func (r *File) UnmarshalJSON(data []byte) error {
+	type plain File
+	var v struct {
+		plain
+		Binary []byte `json:"binary,omitempty"`
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	*r = File(v.plain)
+	if v.Binary != nil {
+		r.Content = string(v.Binary)
+	}
+	return nil
+}
 
 func (r File) Check(ctx context.Context, sys Sys) (Change, error) {
 	owner, err := resolveOwnership(sys, r.Owner, r.Group)
@@ -57,6 +89,8 @@ func (r File) contentDiff(current string) string {
 		return ""
 	case r.Hidden:
 		return "content hidden\n"
+	case !utf8.ValidString(current) || !utf8.ValidString(r.Content):
+		return "change binary content\n"
 	}
 	if diff := unifiedDiff(r.mask(current), r.mask(r.Content)); diff != "" {
 		return diff
@@ -201,7 +235,7 @@ func (r Disowned) Apply(ctx context.Context, sys Sys) error {
 		return err
 	}
 	for _, path := range stale {
-		if err := sys.RemoveAll(recordPath(path)); err != nil {
+		if err := sys.RemoveAll(r.recordPath(path)); err != nil {
 			return err
 		}
 	}
@@ -211,21 +245,42 @@ func (r Disowned) Apply(ctx context.Context, sys Sys) error {
 func (r Disowned) Leftovers(ctx context.Context, sys Sys) ([]string, error) {
 	declared := state(ctx).declared
 	var extra []string
+	check := func(path string) error {
+		if declared[path] || slices.Contains(extra, path) {
+			return nil
+		}
+		ok, err := r.matches(sys, path)
+		if ok {
+			extra = append(extra, path)
+		}
+		return err
+	}
 	for _, pattern := range r.Paths {
 		matches, err := sys.Glob(pattern)
 		if err != nil {
 			return nil, err
 		}
 		for _, path := range matches {
-			if declared[path] || slices.Contains(extra, path) {
-				continue
-			}
-			ok, err := r.matches(sys, path)
-			if err != nil {
+			if err := check(path); err != nil {
 				return nil, err
 			}
-			if ok {
-				extra = append(extra, path)
+		}
+	}
+	if r.Records != "" {
+		recorded, err := recordedPaths(sys, r.Records)
+		if err != nil {
+			return nil, err
+		}
+		for _, path := range recorded {
+			_, err := sys.Lstat(path)
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			if err == nil {
+				err = check(path)
+			}
+			if err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -235,21 +290,17 @@ func (r Disowned) Leftovers(ctx context.Context, sys Sys) ([]string, error) {
 // staleRecords lists the paths r covers that nothing declares, whose
 // WrittenRecord no longer matches what's there.
 func (r Disowned) staleRecords(ctx context.Context, sys Sys) ([]string, error) {
-	if !r.Recorded {
+	if !r.Recorded && r.Records == "" {
 		return nil, nil
 	}
-	names, err := sys.ReadDir(WrittenDir)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
+	recorded, err := recordedPaths(sys, r.recordDir())
 	if err != nil {
 		return nil, err
 	}
 	declared := state(ctx).declared
 	var stale []string
-	for _, name := range names {
-		path, err := url.QueryUnescape(name)
-		if err != nil || !filepath.IsAbs(path) || declared[path] || declared[recordPath(path)] || !r.covers(path) {
+	for _, path := range recorded {
+		if declared[path] || declared[r.recordPath(path)] || !r.covers(path) {
 			continue
 		}
 		info, err := sys.Lstat(path)
@@ -259,7 +310,7 @@ func (r Disowned) staleRecords(ctx context.Context, sys Sys) ([]string, error) {
 		case err != nil:
 			return nil, err
 		case info.IsRegular():
-			if ok, err = isRecorded(sys, path); err != nil {
+			if ok, err = isRecorded(sys, r.recordPath(path), path); err != nil {
 				return nil, err
 			}
 		}
@@ -270,8 +321,37 @@ func (r Disowned) staleRecords(ctx context.Context, sys Sys) ([]string, error) {
 	return stale, nil
 }
 
+// recordedPaths lists the paths of the WrittenRecords in dir.
+func recordedPaths(sys Sys, dir string) ([]string, error) {
+	names, err := sys.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, name := range names {
+		if path, err := url.QueryUnescape(name); err == nil && filepath.IsAbs(path) {
+			paths = append(paths, path)
+		}
+	}
+	return paths, nil
+}
+
+func (r Disowned) recordDir() string {
+	if r.Records != "" {
+		return r.Records
+	}
+	return WrittenDir
+}
+
+func (r Disowned) recordPath(path string) string {
+	return recordPath(r.recordDir(), path)
+}
+
 func (r Disowned) covers(path string) bool {
-	return slices.ContainsFunc(
+	return r.Records != "" || slices.ContainsFunc(
 		r.Paths,
 		func(pattern string) bool {
 			ok, _ := filepath.Match(pattern, path)
@@ -281,7 +361,7 @@ func (r Disowned) covers(path string) bool {
 }
 
 func (r Disowned) matches(sys Sys, path string) (bool, error) {
-	if r.Header == "" && r.Target == "" && !r.Recorded {
+	if r.Header == "" && r.Target == "" && !r.Recorded && r.Records == "" {
 		return true, nil
 	}
 	info, err := sys.Lstat(path)
@@ -291,8 +371,8 @@ func (r Disowned) matches(sys Sys, path string) (bool, error) {
 	switch {
 	case r.Header != "" && info.IsRegular():
 		return hasHeader(sys, path, r.Header)
-	case r.Recorded && info.IsRegular():
-		return isRecorded(sys, path)
+	case (r.Recorded || r.Records != "") && info.IsRegular():
+		return isRecorded(sys, r.recordPath(path), path)
 	case r.Target != "" && info.IsSymlink():
 		target, err := sys.Readlink(path)
 		return err == nil && target == r.Target, err
@@ -316,8 +396,8 @@ func (r Disowned) Prune(ctx context.Context, sys Sys, item string) error {
 	if err := sys.RemoveAll(item); err != nil {
 		return err
 	}
-	if r.Recorded {
-		if err := sys.RemoveAll(recordPath(item)); err != nil {
+	if r.Recorded || r.Records != "" {
+		if err := sys.RemoveAll(r.recordPath(item)); err != nil {
 			return err
 		}
 	}
@@ -332,12 +412,17 @@ func (r Disowned) Prune(ctx context.Context, sys Sys, item string) error {
 // WrittenDir holds the records WrittenRecord makes.
 const WrittenDir = "/var/lib/sensible/written"
 
-// WrittenRecord records the content f writes, so a Disowned with Recorded
-// can tell it from a file written by hand, or changed since. It needs
-// WrittenDir to exist.
+// WrittenRecord records f in WrittenDir, for a Disowned with Recorded to
+// tell it from a file written by hand.
 func WrittenRecord(f File) File {
+	return WrittenRecordIn(WrittenDir, f)
+}
+
+// WrittenRecordIn records f in dir, for a Disowned with Records, which must
+// exist.
+func WrittenRecordIn(dir string, f File) File {
 	return File{
-		Path:    recordPath(f.Path),
+		Path:    recordPath(dir, f.Path),
 		Content: contentSum([]byte(f.Content)) + "\n",
 		Owner:   "root",
 		Group:   "root",
@@ -346,12 +431,13 @@ func WrittenRecord(f File) File {
 	}
 }
 
-func recordPath(path string) string {
-	return filepath.Join(WrittenDir, url.QueryEscape(path))
+func recordPath(dir, path string) string {
+	return filepath.Join(dir, url.QueryEscape(path))
 }
 
-func isRecorded(sys Sys, path string) (bool, error) {
-	record, err := sys.ReadFile(recordPath(path))
+// isRecorded reports whether path is as the WrittenRecord at record says.
+func isRecorded(sys Sys, record, path string) (bool, error) {
+	sum, err := sys.ReadFile(record)
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
@@ -362,7 +448,7 @@ func isRecorded(sys Sys, path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return strings.TrimSpace(string(record)) == contentSum(content), nil
+	return strings.TrimSpace(string(sum)) == contentSum(content), nil
 }
 
 func contentSum(content []byte) string {

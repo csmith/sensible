@@ -1431,3 +1431,56 @@ func TestParuInstallScript_disablesDebugPackage(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, entries)
 }
+
+func TestResources_files(t *testing.T) {
+	for _, osFamily := range []string{archLinux, debian} {
+		t.Run(
+			osFamily,
+			func(t *testing.T) {
+				h := testHost(osFamily)
+				h.Config.AUR = nil
+				h.Config.Files = []config.FileConfig{
+					{
+						Path:  "/etc/systemd/zram-generator.conf",
+						Owner: "root", Group: "root", Mode: 0o644,
+						Data:   "[zram0]\n",
+						Hidden: true,
+					},
+				}
+				rs, err := Resources(h)
+				require.NoError(t, err)
+
+				f, ok := find[host.File](rs, "file:/etc/systemd/zram-generator.conf")
+				require.True(t, ok)
+				assert.Equal(
+					t,
+					host.File{
+						Path:    "/etc/systemd/zram-generator.conf",
+						Content: "[zram0]\n",
+						Owner:   "root",
+						Group:   "root",
+						Mode:    0o644,
+						Hidden:  true,
+					},
+					f,
+				)
+				d, ok := find[host.Disowned](rs, "disowned:files")
+				require.True(t, ok)
+				record := host.WrittenRecordIn(d.Records, f)
+				assert.Contains(t, rs, record)
+				_, ok = find[host.Dir](rs, "dir:"+filepath.Dir(record.Path))
+				assert.True(t, ok, "the records' directory isn't created")
+			},
+		)
+	}
+}
+
+func TestResources_fileAlsoWrittenByAFeature(t *testing.T) {
+	h := testHost(debian)
+	h.Config.AUR = nil
+	h.Config.Files = []config.FileConfig{{Path: "/etc/hostname", Data: "other\n"}}
+
+	_, err := Resources(h)
+
+	assert.ErrorContains(t, err, "/etc/hostname is written twice")
+}

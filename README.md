@@ -27,6 +27,7 @@ roles/<name>/role.debian.yml, role.arch.yml
                           Additions for one OS (optional)
 roles/<name>/docker-compose.yml
                           Makes the role a Compose stack (optional)
+roles/<name>/files/       Sources for the role's files (optional)
 partials/<name>/          Pieces of configuration shared between roles
 ```
 
@@ -60,6 +61,32 @@ zsh:
 A role's files can use `{host}`, the host's name in `hosts.d`, and `{stack}`,
 the role's stack name, e.g. `TASK_QUEUE: queue-{host}`. Write `{{host}}` for
 the text itself.
+
+### Files
+
+`files` writes files as given. Each has an absolute `path`, and either
+`content` or a `source` in the `files` directory of the role or partial that
+declares it, which may be binary. A source ending in `.age` is an age file from
+`sensible secret encrypt --raw`, and is decrypted. `content` can be an `!age`
+value. `owner`, `group` and `mode` default to root, root and 0644. Two roles
+can't write the same path.
+
+```yaml
+# roles/zram/role.yml
+packages:
+  install: [zram-generator]
+
+files:
+  - path: /etc/systemd/zram-generator.conf
+    content: |
+      [zram0]
+  - path: /usr/local/bin/tool
+    source: tool
+    mode: 0755
+```
+
+Once nothing declares a file, prune offers to remove it, unless it's been
+changed since it was written.
 
 ### DNS
 

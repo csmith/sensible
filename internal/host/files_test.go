@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -496,8 +497,8 @@ func TestDisowned_RecordedLimitsToFilesAsWritten(t *testing.T) {
 
 	require.NoError(t, r.Prune(context.Background(), sys, "/etc/docker/daemon.json"))
 	assert.False(t, sys.exists("/etc/docker/daemon.json"))
-	assert.False(t, sys.exists(recordPath("/etc/docker/daemon.json")))
-	assert.True(t, sys.exists(recordPath("/root/.docker/config.json")))
+	assert.False(t, sys.exists(recordPath(WrittenDir, "/etc/docker/daemon.json")))
+	assert.True(t, sys.exists(recordPath(WrittenDir, "/root/.docker/config.json")))
 }
 
 func TestDisowned_RecordedForgetsFilesNoLongerAsWritten(t *testing.T) {
@@ -533,12 +534,75 @@ func TestDisowned_RecordedForgetsFilesNoLongerAsWritten(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, after.InSync)
 	assert.Equal(t, change.Warning, after.Warning)
-	assert.False(t, sys.exists(recordPath("/etc/docker/daemon.json")))
-	assert.False(t, sys.exists(recordPath("/etc/docker/gone.json")))
+	assert.False(t, sys.exists(recordPath(WrittenDir, "/etc/docker/daemon.json")))
+	assert.False(t, sys.exists(recordPath(WrittenDir, "/etc/docker/gone.json")))
 	assert.True(t, sys.exists("/etc/docker/daemon.json"))
 	for _, kept := range []string{"/etc/docker/kept.json", "/etc/docker/declared.json", "/etc/other.json"} {
-		assert.True(t, sys.exists(recordPath(kept)), kept)
+		assert.True(t, sys.exists(recordPath(WrittenDir, kept)), kept)
 	}
+}
+
+func TestDisowned_RecordsFindsFilesAtAnyPath(t *testing.T) {
+	sys := newTestSys(t)
+	const dir = WrittenDir + "/files"
+	for _, f := range []File{
+		{Path: "/etc/zram.conf", Content: "[zram0]\n"},
+		{Path: "/usr/local/bin/tool", Content: "binary"},
+		{Path: "/etc/edited.conf", Content: "as written\n"},
+		{Path: "/etc/declared.conf", Content: "as written\n"},
+		{Path: "/etc/gone.conf", Content: "as written\n"},
+	} {
+		record := WrittenRecordIn(dir, f)
+		sys.write(f.Path, f.Content)
+		sys.write(record.Path, record.Content)
+	}
+	sys.write("/etc/edited.conf", "by hand\n")
+	require.NoError(t, os.Remove(sys.path("/etc/gone.conf")))
+	// Another feature's record isn't this resource's.
+	docker := WrittenRecord(File{Path: "/etc/docker/daemon.json", Content: "{}\n"})
+	sys.write("/etc/docker/daemon.json", "{}\n")
+	sys.write(docker.Path, docker.Content)
+	r := Disowned{Name: "files", Records: dir}
+	st := newRunState()
+	st.declare(File{Path: "/etc/declared.conf"})
+	ctx := withRunState(context.Background(), st)
+
+	got, err := r.Leftovers(ctx, sys)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"/etc/zram.conf", "/usr/local/bin/tool"}, got)
+
+	change, err := r.Check(ctx, sys)
+	require.NoError(t, err)
+	assert.Equal(t, "forget record of /etc/edited.conf\nforget record of /etc/gone.conf\n", change.Diff)
+	require.NoError(t, r.Apply(ctx, sys))
+	assert.True(t, sys.exists("/etc/edited.conf"))
+	assert.False(t, sys.exists(recordPath(dir, "/etc/edited.conf")))
+	assert.True(t, sys.exists(recordPath(dir, "/etc/declared.conf")))
+
+	require.NoError(t, r.Prune(ctx, sys, "/usr/local/bin/tool"))
+	assert.False(t, sys.exists("/usr/local/bin/tool"))
+	assert.False(t, sys.exists(recordPath(dir, "/usr/local/bin/tool")))
+	assert.True(t, sys.exists(docker.Path))
+}
+
+func TestFile_CarriesContentThatIsNotUTF8(t *testing.T) {
+	for _, content := range []string{"text\n", "\x7fELF\x00\xff\xfe"} {
+		data, err := json.Marshal(ResourceList{File{Path: "/usr/local/bin/tool", Content: content}})
+		require.NoError(t, err)
+		var got ResourceList
+		require.NoError(t, json.Unmarshal(data, &got))
+		assert.Equal(t, content, got[0].(File).Content)
+	}
+}
+
+func TestFile_DoesNotDiffBinaryContent(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/usr/local/bin/tool", "\x7fELF\x01")
+
+	change, err := File{Path: "/usr/local/bin/tool", Content: "\x7fELF\x02\xff"}.Check(context.Background(), sys)
+
+	require.NoError(t, err)
+	assert.Equal(t, "change binary content\n", change.Diff)
 }
 
 func TestDisowned_SkipsWhatOtherResourcesDeclare(t *testing.T) {

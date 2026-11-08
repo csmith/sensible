@@ -33,6 +33,7 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 	var merged ast.Node
 	expansions := map[string]expansion{}
 	set := map[string]setBy{}
+	written := map[string]string{}
 	for _, role := range slices.Sorted(maps.Keys(roles)) {
 		e, err := r.expandRole(name, role, osFamily, roles[role])
 		if err != nil {
@@ -42,6 +43,9 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 			expansions[role] = e
 		}
 		if err := checkConflicts("role "+role, e.node, set); err != nil {
+			return Config{}, fmt.Errorf("%s: %w", name, err)
+		}
+		if err := checkFilePaths(role, e.node, written); err != nil {
 			return Config{}, fmt.Errorf("%s: %w", name, err)
 		}
 		merged = merge(merged, e.node)
@@ -60,15 +64,8 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 			return Config{}, fmt.Errorf("merging configuration for %s: %w", name, err)
 		}
 	}
-	if c.Docker != nil {
-		if err := c.Docker.reveal(); err != nil {
-			return Config{}, fmt.Errorf("%s: %w", name, err)
-		}
-	}
-	if c.Restic != nil {
-		if err := c.Restic.reveal(); err != nil {
-			return Config{}, fmt.Errorf("%s: %w", name, err)
-		}
+	if err := c.reveal(r.keys); err != nil {
+		return Config{}, fmt.Errorf("%s: %w", name, err)
 	}
 
 	var err error
@@ -189,6 +186,9 @@ func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (expan
 		if err != nil {
 			return expansion{}, fmt.Errorf("%s: %w", r.path(l.file), err)
 		}
+		if err := resolveSources(node, r.path("roles", role, sourcesDir)); err != nil {
+			return expansion{}, fmt.Errorf("%s: %w", r.path(l.file), err)
+		}
 		if err := r.checkLayer(node); err != nil {
 			return expansion{}, fmt.Errorf("%s: %w", r.path(l.file), err)
 		}
@@ -246,6 +246,60 @@ func (r *Repo) prepareLayer(
 		return nil, nil, err
 	}
 	return body, p, nil
+}
+
+// sourcesDir is the directory in a role or partial that files entries with
+// a source read from.
+const sourcesDir = "files"
+
+// resolveSources makes each source in the files of node, a role or partial
+// file's settings, a path in dir, the files directory of that role or
+// partial.
+func resolveSources(node ast.Node, dir string) error {
+	for _, v := range mappingValues(node) {
+		if keyString(v.Key) != "files" {
+			continue
+		}
+		for _, item := range sequenceValues(v.Value) {
+			for _, f := range mappingValues(item) {
+				if keyString(f.Key) != "source" {
+					continue
+				}
+				s, ok := f.Value.(*ast.StringNode)
+				if !ok {
+					return nodeError(f.Value, "files: source must be a path in "+sourcesDir)
+				}
+				clean := filepath.Clean(s.Value)
+				if s.Value == "" || filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+					return nodeError(f.Value, fmt.Sprintf("files: source %q isn't a path in %s", s.Value, sourcesDir))
+				}
+				n, err := flowNode(filepath.Join(dir, clean))
+				if err != nil {
+					return err
+				}
+				f.Value = n
+			}
+		}
+	}
+	return nil
+}
+
+func sequenceValues(node ast.Node) []ast.Node {
+	for {
+		switch n := node.(type) {
+		case *ast.TagNode:
+			if n.Start.Value != replaceTag {
+				return nil
+			}
+			node = n.Value
+		case *ast.AnchorNode:
+			node = n.Value
+		case *ast.SequenceNode:
+			return n.Values
+		default:
+			return nil
+		}
+	}
 }
 
 // checkLayer checks a role file's settings, with its parameters' values,

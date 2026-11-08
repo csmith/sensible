@@ -63,7 +63,9 @@ func Resources(h Host) (host.ResourceList, error) {
 		certs,
 		stacks,
 		backups,
-		// After stacks and backups, as jobs may use them.
+		// After the packages and accounts they may be for.
+		files,
+		// After stacks, backups and files, as jobs may use them.
 		jobs,
 		// After everything that declares accounts.
 		usersCleanUp,
@@ -92,6 +94,11 @@ func Resources(h Host) (host.ResourceList, error) {
 			repo, ok := r.(host.AptRepo)
 			if ok && slices.ContainsFunc(out, func(o host.Resource) bool { return o.ID() == r.ID() }) {
 				return nil, fmt.Errorf("host %s: apt repo %s is declared twice with different settings", h.Name, repo.Name)
+			}
+			// As can files, such as one in files that a feature also writes.
+			file, ok := r.(host.File)
+			if ok && slices.ContainsFunc(out, func(o host.Resource) bool { return o.ID() == r.ID() }) {
+				return nil, fmt.Errorf("host %s: %s is written twice with different content or settings", h.Name, file.Path)
 			}
 			out = append(out, r)
 		}
@@ -174,6 +181,33 @@ func access(h Host) ([]host.Resource, error) {
 	return rs, nil
 }
 
+// filesRecords holds the records of the files in the files setting, apart
+// from features' own, so that prune finds those nothing declares any more.
+const filesRecords = host.WrittenDir + "/files"
+
+// files writes the files roles give as they are.
+func files(h Host) ([]host.Resource, error) {
+	if len(h.Config.Files) == 0 {
+		return nil, nil
+	}
+	rs := []host.Resource{
+		host.Dir{Path: host.WrittenDir, Owner: "root", Group: "root", Mode: 0o700},
+		host.Dir{Path: filesRecords, Owner: "root", Group: "root", Mode: 0o700},
+	}
+	for _, f := range h.Config.Files {
+		file := host.File{
+			Path:    f.Path,
+			Content: f.Data,
+			Owner:   f.Owner,
+			Group:   f.Group,
+			Mode:    f.Mode,
+			Hidden:  f.Hidden,
+		}
+		rs = append(rs, file, host.WrittenRecordIn(filesRecords, file))
+	}
+	return rs, nil
+}
+
 // disowned reports the files features write that nothing declares any more,
 // for prune to remove. Unlike the clean-ups, it's only a warning, as the host
 // may still rely on them.
@@ -208,6 +242,7 @@ func disowned(h Host) ([]host.Resource, error) {
 		// Docker reads its settings only when it starts, and restarting it
 		// would stop the containers, so it's left to pick up the change.
 		host.Disowned{Name: "docker", Paths: []string{dockerDaemonFile, dockerClientFile}, Recorded: true},
+		host.Disowned{Name: "files", Records: filesRecords},
 		host.DisownedPackages{},
 	}
 	switch h.Facts.OSFamily {

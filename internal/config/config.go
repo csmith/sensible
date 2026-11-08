@@ -140,6 +140,7 @@ type Config struct {
 	Restic     *ResticConfig            `yaml:"restic"`
 	Certs      map[string]CertConfig    `yaml:"certs"`
 	Remove     *RemoveConfig            `yaml:"remove"`
+	Files      []FileConfig             `yaml:"files"`
 	// Stacks come from the host's roles that have a docker-compose.yml,
 	// rather than from a module, and are in name order.
 	Stacks []Stack `yaml:"-"`
@@ -286,6 +287,114 @@ type RemoveConfig struct {
 	// Paths are removed, recursively, on every apply. Each is absolute, or
 	// "~user/..." for a path in a user's home.
 	Paths Set `yaml:"paths"`
+}
+
+// FileConfig is a file written as given. Its content is either Content, or
+// read from Source, a file in the files directory of the role or partial that
+// declares it.
+type FileConfig struct {
+	Path    string `yaml:"path"`
+	Content *Value `yaml:"content"`
+	// Source is read when HostConfig merges the host's roles, and decrypted
+	// if its name ends in .age.
+	Source string `yaml:"source"`
+	Perms  `yaml:",inline"`
+
+	// Data is the file's content, decrypted. HostConfig sets it.
+	Data string `yaml:"-"`
+	// Hidden is set when Data is secret.
+	Hidden bool `yaml:"-"`
+}
+
+// reveal decrypts the secrets the modules need ready to write.
+func (c *Config) reveal(keys *keyring) error {
+	if c.Docker != nil {
+		if err := c.Docker.reveal(); err != nil {
+			return err
+		}
+	}
+	if c.Restic != nil {
+		if err := c.Restic.reveal(); err != nil {
+			return err
+		}
+	}
+	for i := range c.Files {
+		if err := c.Files[i].reveal(keys); err != nil {
+			return fmt.Errorf("files: %s: %w", c.Files[i].Path, err)
+		}
+	}
+	return nil
+}
+
+// checkFilePaths rejects files in node, the role's settings, that the role
+// or a role before it already writes. written maps each path to its role.
+func checkFilePaths(role string, node ast.Node, written map[string]string) error {
+	for _, v := range mappingValues(node) {
+		if keyString(v.Key) != "files" {
+			continue
+		}
+		var files []FileConfig
+		if err := decode(context.Background(), merge(nil, v.Value), &files); err != nil {
+			return fmt.Errorf("role %s: files: %w", role, err)
+		}
+		for _, f := range files {
+			if !filepath.IsAbs(f.Path) || filepath.Clean(f.Path) != f.Path {
+				return fmt.Errorf("role %s: files: %q isn't a clean absolute path", role, f.Path)
+			}
+			switch prev, ok := written[f.Path]; {
+			case ok && prev == role:
+				return fmt.Errorf("role %s writes %s more than once", role, f.Path)
+			case ok:
+				return fmt.Errorf("roles %s and %s both write %s", prev, role, f.Path)
+			}
+			written[f.Path] = role
+		}
+	}
+	return nil
+}
+
+// reveal sets the file's Data, and fills in the default ownership and mode,
+// root:root 0644. As elsewhere, a named owner without a group means the
+// owner's primary group.
+func (f *FileConfig) reveal(keys *keyring) error {
+	switch {
+	case f.Content != nil && f.Source != "":
+		return errors.New("set content or source, not both")
+	case f.Content != nil:
+		var err error
+		if f.Data, f.Hidden, err = f.Content.reveal(); err != nil {
+			return err
+		}
+	case f.Source != "":
+		b, err := os.ReadFile(f.Source)
+		if err != nil {
+			return err
+		}
+		f.Data = string(b)
+		if strings.HasSuffix(f.Source, ageSuffix) {
+			secret, err := parseArmored(f.Data)
+			if err != nil {
+				return fmt.Errorf("%s: %w", f.Source, err)
+			}
+			secret.keys = keys
+			if f.Data, err = secret.Reveal(); err != nil {
+				return fmt.Errorf("%s: %w", f.Source, err)
+			}
+			f.Hidden = true
+		}
+	default:
+		return errors.New("needs content or source")
+	}
+	if f.Owner == "" {
+		f.Owner = "root"
+		if f.Group == "" {
+			f.Group = "root"
+		}
+	}
+	if f.Mode == 0 {
+		f.Mode = 0o644
+	}
+	return nil
 }
 
 // JobConfig is a command run on a schedule by a systemd timer.
@@ -865,22 +974,9 @@ func (r *Repo) checkRole(role string, topLevel bool) error {
 		return err
 	}
 
-	var children []string
-	for _, name := range settings.Children {
-		if name == "" || name == "." || name == ".." || strings.Contains(name, "/") {
-			return fmt.Errorf("%s: children: invalid name %q", r.path("roles", role, "role.yml"), name)
-		}
-		if covered[name] {
-			return fmt.Errorf("%s: %q is both a child role and in compose.files", r.path("roles", role, "role.yml"), name)
-		}
-		if info, err := os.Stat(filepath.Join(dir, name)); err != nil || !info.IsDir() {
-			return fmt.Errorf("%s: children: %q isn't a directory in %s", r.path("roles", role, "role.yml"), name, dir)
-		}
-		child := role + "/" + name
-		if err := r.checkRole(child, false); err != nil {
-			return err
-		}
-		children = append(children, child)
+	children, err := r.checkChildren(role, settings, covered)
+	if err != nil {
+		return err
 	}
 
 	hasBase, hasVariant := false, false
@@ -888,6 +984,7 @@ func (r *Repo) checkRole(role string, topLevel bool) error {
 		file := filepath.Join(dir, e.Name())
 		switch {
 		case covered[e.Name()] || slices.Contains(settings.Children, e.Name()):
+		case e.Name() == sourcesDir && e.IsDir():
 		case e.IsDir():
 			return fmt.Errorf("%s: unexpected directory; list it in children, or in compose.files for a stack", file)
 		case e.Name() == "role.yml":
@@ -917,6 +1014,46 @@ func (r *Repo) checkRole(role string, topLevel bool) error {
 	slices.Sort(children)
 	r.roles[role] = children
 	return nil
+}
+
+// checkChildren checks and records the role's child roles, returning their
+// names. covered are the role directory's entries its stack's files cover.
+func (r *Repo) checkChildren(role string, settings roleSettings, covered map[string]bool) ([]string, error) {
+	if err := r.checkSourcesDir(role, settings, covered); err != nil {
+		return nil, err
+	}
+	dir := r.path("roles", role)
+	var children []string
+	for _, name := range settings.Children {
+		if name == "" || name == "." || name == ".." || strings.Contains(name, "/") {
+			return nil, fmt.Errorf("%s: children: invalid name %q", r.path("roles", role, "role.yml"), name)
+		}
+		if covered[name] {
+			return nil, fmt.Errorf("%s: %q is both a child role and in compose.files", r.path("roles", role, "role.yml"), name)
+		}
+		if info, err := os.Stat(filepath.Join(dir, name)); err != nil || !info.IsDir() {
+			return nil, fmt.Errorf("%s: children: %q isn't a directory in %s", r.path("roles", role, "role.yml"), name, dir)
+		}
+		child := role + "/" + name
+		if err := r.checkRole(child, false); err != nil {
+			return nil, err
+		}
+		children = append(children, child)
+	}
+	return children, nil
+}
+
+// checkSourcesDir rejects other uses of the role's files directory.
+func (r *Repo) checkSourcesDir(role string, settings roleSettings, covered map[string]bool) error {
+	file := r.path("roles", role, "role.yml")
+	switch {
+	case slices.Contains(settings.Children, sourcesDir):
+		return fmt.Errorf("%s: children: %q holds files' sources, so can't be a child role", file, sourcesDir)
+	case covered[sourcesDir]:
+		return fmt.Errorf("%s: %q holds files' sources, so can't be in compose.files", file, sourcesDir)
+	default:
+		return nil
+	}
 }
 
 // checkCompose records the role's volumes and stack, returning the names of

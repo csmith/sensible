@@ -1158,3 +1158,146 @@ func TestHostConfig_dockerRegistryErrors(t *testing.T) {
 		)
 	}
 }
+
+func TestHostConfig_files(t *testing.T) {
+	tr := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml": "alpha:\n  roles:\n    zram:\n    tools: {name: tool}\n",
+			"roles/zram/role.yml": `
+files:
+  - path: /etc/systemd/zram-generator.conf
+    content: |
+      [zram0]
+      # {host}
+`,
+			"roles/tools/role.yml": `
+params:
+  name: ""
+partials: [{partial: shared}]
+files:
+  - path: /usr/local/bin/tool
+    source: !param name
+    owner: chris
+    mode: 0755
+`,
+			"roles/tools/files/tool":            "\x7fELF\x00\xff",
+			"partials/shared/partial.yml":       "files:\n  - {path: /etc/shared.conf, source: shared.conf, group: wheel}\n",
+			"partials/shared/files/shared.conf": "shared\n",
+		},
+	)
+	password, err := tr.open(t).Encrypt("hunter2")
+	require.NoError(t, err)
+	armored, err := tr.open(t).EncryptFile("secret file\n")
+	require.NoError(t, err)
+	writeFile(t, tr.dir, "roles/zram/files/key.age", armored)
+	writeFile(
+		t,
+		tr.dir,
+		"roles/zram/role.debian.yml",
+		"files:\n  - path: /etc/password\n    content: "+nest(nest(password))+"\n  - {path: /etc/key, source: key.age}\n",
+	)
+
+	c, err := tr.open(t).HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	byPath := map[string]FileConfig{}
+	for _, f := range c.Files {
+		byPath[f.Path] = f
+	}
+	assert.Len(t, byPath, len(c.Files))
+
+	zram := byPath["/etc/systemd/zram-generator.conf"]
+	assert.Equal(t, "[zram0]\n# alpha\n", zram.Data)
+	assert.Equal(t, Perms{Owner: "root", Group: "root", Mode: 0o644}, zram.Perms)
+	assert.False(t, zram.Hidden)
+
+	tool := byPath["/usr/local/bin/tool"]
+	assert.Equal(t, "\x7fELF\x00\xff", tool.Data)
+	assert.Equal(t, Perms{Owner: "chris", Mode: 0o755}, tool.Perms)
+
+	shared := byPath["/etc/shared.conf"]
+	assert.Equal(t, "shared\n", shared.Data)
+	assert.Equal(t, Perms{Owner: "root", Group: "wheel", Mode: 0o644}, shared.Perms)
+
+	assert.Equal(t, "hunter2", byPath["/etc/password"].Data)
+	assert.True(t, byPath["/etc/password"].Hidden)
+	assert.Equal(t, "secret file\n", byPath["/etc/key"].Data)
+	assert.True(t, byPath["/etc/key"].Hidden)
+}
+
+func TestHostConfig_fileErrors(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{
+			"two roles writing a path",
+			map[string]string{
+				"roles/a/role.yml": "files: [{path: /etc/x, content: a}]\n",
+				"roles/b/role.yml": "files: [{path: /etc/x, content: a}]\n",
+			},
+			"roles a and b both write /etc/x",
+		},
+		{
+			"a role and its variant writing a path",
+			map[string]string{
+				"roles/a/role.yml":        "files: [{path: /etc/x, content: a}]\n",
+				"roles/a/role.debian.yml": "files: [{path: /etc/x, content: b}]\n",
+				"roles/b/role.yml":        "",
+			},
+			"role a writes /etc/x more than once",
+		},
+		{
+			"relative path",
+			map[string]string{"roles/a/role.yml": "files: [{path: etc/x, content: a}]\n", "roles/b/role.yml": ""},
+			`"etc/x" isn't a clean absolute path`,
+		},
+		{
+			"content and source",
+			map[string]string{
+				"roles/a/role.yml": "files: [{path: /etc/x, content: a, source: x}]\n",
+				"roles/a/files/x":  "",
+				"roles/b/role.yml": "",
+			},
+			"set content or source, not both",
+		},
+		{
+			"neither content nor source",
+			map[string]string{"roles/a/role.yml": "files: [{path: /etc/x}]\n", "roles/b/role.yml": ""},
+			"needs content or source",
+		},
+		{
+			"source outside the files directory",
+			map[string]string{"roles/a/role.yml": "files: [{path: /etc/x, source: ../role.yml}]\n", "roles/b/role.yml": ""},
+			`source "../role.yml" isn't a path in files`,
+		},
+		{
+			"missing source",
+			map[string]string{"roles/a/role.yml": "files: [{path: /etc/x, source: x}]\n", "roles/b/role.yml": ""},
+			"no such file",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				tt.files["hosts.d/hosts.yml"] = "alpha:\n  roles: {a: , b: }\n"
+				_, err := newTestRepo(t, tt.files).open(t).HostConfig("alpha", "debian")
+				assert.ErrorContains(t, err, tt.want)
+			},
+		)
+	}
+}
+
+func TestOpen_filesDirectoryInComposeFiles(t *testing.T) {
+	_, err := newTestRepo(
+		t,
+		map[string]string{
+			"roles/web/role.yml":           "compose:\n  files: [files]\n",
+			"roles/web/docker-compose.yml": "services: {}\n",
+			"roles/web/files/x":            "",
+		},
+	).tryOpen()
+	assert.ErrorContains(t, err, `"files" holds files' sources, so can't be in compose.files`)
+}

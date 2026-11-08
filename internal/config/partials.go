@@ -113,12 +113,17 @@ func (r *Repo) readPartial(name string) (*partialDef, error) {
 			hasFile = true
 		case host.ComposeFile:
 			def.hasCompose = true
+		case sourcesDir:
+			if !e.IsDir() {
+				return nil, fmt.Errorf("%s: expected a directory of files' sources", r.path("partials", name, e.Name()))
+			}
 		default:
 			return nil, fmt.Errorf(
-				"%s: unexpected file; expected %s or %s",
+				"%s: unexpected file; expected %s, %s or a %s directory",
 				r.path("partials", name, e.Name()),
 				partialFile,
 				host.ComposeFile,
+				sourcesDir,
 			)
 		}
 	}
@@ -578,6 +583,9 @@ func (r *Repo) partialSettings(role, file string, values map[string]ast.Node) (a
 	}
 	volumePath := func(tag *ast.TagNode) (string, error) { return r.volumePath(role, tag) }
 	if err := resolveTags(filled, volumeTag, volumePath); err != nil {
+		return nil, err
+	}
+	if err := resolveSources(filled, r.path(filepath.Dir(file), sourcesDir)); err != nil {
 		return nil, err
 	}
 	if err := decode(r.keys.context(), merge(nil, settings), &Config{}); err != nil {

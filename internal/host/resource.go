@@ -187,6 +187,11 @@ type Disowned struct {
 	// says, for files that can't have a Header. Applying forgets the
 	// records of files that have changed or gone since.
 	Recorded bool `json:"recorded,omitempty"`
+	// Records, if set, is the directory of WrittenRecords to use in place
+	// of WrittenDir, and the files they record are checked along with
+	// Paths, limited as for Recorded. It's for files at paths that aren't
+	// known in advance.
+	Records string `json:"records,omitempty"`
 	// Notify is applied after each item is pruned, e.g. to reload a service
 	// that read it.
 	Notify ResourceList `json:"notify,omitempty"`
