@@ -82,14 +82,19 @@ const aurUser = "aur"
 const aurHome = "/var/lib/" + aurUser
 
 // paru's release profile optimises the whole program at once, which takes
-// more memory than small hosts have. makepkg leaves files the build account
-// can't remove, so the build directory is removed as root.
+// more memory than small hosts have. Nothing uses the debug package makepkg
+// builds by default. makepkg reads a user config after makepkg.conf.d, so one
+// can turn that off without replacing the system config. makepkg leaves files
+// the build account can't remove, so the build directory is removed as root.
 const paruInstallScript = `set -eu
 dir=$(runuser -u ` + aurUser + ` -- mktemp -d -t paru.XXXXXXXXXX)
 trap 'rm -rf "$dir"' EXIT
-cd "$dir"
-runuser -u ` + aurUser + ` -- env HOME=` + aurHome + ` git clone --depth 1 https://aur.archlinux.org/paru.git "$dir"
+runuser -u ` + aurUser + ` -- mkdir -p "$dir/config/pacman"
+echo 'OPTIONS+=(!debug)' | runuser -u ` + aurUser + ` -- tee "$dir/config/pacman/makepkg.conf" >/dev/null
 runuser -u ` + aurUser + ` -- env HOME=` + aurHome + ` \
+  git clone --depth 1 https://aur.archlinux.org/paru.git "$dir/paru"
+cd "$dir/paru"
+runuser -u ` + aurUser + ` -- env HOME=` + aurHome + ` XDG_CONFIG_HOME="$dir/config" \
   CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
   makepkg --syncdeps --rmdeps --install --noconfirm
 `
@@ -114,8 +119,7 @@ func aurPackages(h Host, names ...string) ([]host.Resource, error) {
 			Name:      "install paru",
 			CheckArgv: []string{"paru", "--version"},
 			ApplyArgv: []string{"sh", "-c", paruInstallScript},
-			// makepkg also builds a debug package, and installs both.
-			Packages: []string{"paru", "paru-debug"},
+			Packages:  []string{"paru"},
 		},
 	)
 	for _, n := range names {

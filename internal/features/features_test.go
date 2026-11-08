@@ -1,6 +1,8 @@
 package features
 
 import (
+	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -1398,4 +1400,34 @@ func TestResources_sshdListenSettingsRestartSocket(t *testing.T) {
 			},
 		)
 	}
+}
+
+func TestParuInstallScript_disablesDebugPackage(t *testing.T) {
+	bin, tmp := t.TempDir(), t.TempDir()
+	out := filepath.Join(t.TempDir(), "debug")
+	fakes := map[string]string{
+		"runuser": "#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n",
+		"git":     "#!/bin/sh\nfor a; do dir=$a; done\nmkdir -p \"$dir\"\n",
+		// Reads its user config after a system config that enables debug
+		// packages, and records the last word on them.
+		"makepkg": "#!/bin/bash\nOPTIONS=(strip debug lto)\n" +
+			"source \"${XDG_CONFIG_HOME:-$HOME/.config}/pacman/makepkg.conf\"\n" +
+			"for o in \"${OPTIONS[@]}\"; do case $o in debug|'!debug') last=$o;; esac; done\n" +
+			"echo \"$last\" >\"$OUT\"\n",
+	}
+	for name, script := range fakes {
+		require.NoError(t, os.WriteFile(filepath.Join(bin, name), []byte(script), 0o755))
+	}
+
+	cmd := exec.CommandContext(t.Context(), "sh", "-c", paruInstallScript)
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "TMPDIR="+tmp, "OUT="+out)
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+
+	got, err := os.ReadFile(out)
+	require.NoError(t, err)
+	assert.Equal(t, "!debug\n", string(got))
+	entries, err := os.ReadDir(tmp)
+	require.NoError(t, err)
+	assert.Empty(t, entries)
 }
