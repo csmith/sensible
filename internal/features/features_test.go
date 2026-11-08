@@ -885,6 +885,24 @@ func TestAccessFiles(t *testing.T) {
 	}
 }
 
+func TestResources_declaresAccessPackages(t *testing.T) {
+	for osFamily, sshd := range map[string]string{debian: "openssh-server", archLinux: "openssh"} {
+		t.Run(
+			osFamily,
+			func(t *testing.T) {
+				h := testHost(osFamily)
+				h.Config.AUR = nil
+				h.Config.Sudoers = nil
+				h.Config.SSHD = nil
+				rs, err := Resources(h)
+				require.NoError(t, err)
+				assert.Contains(t, ids(rs), "package:sudo")
+				assert.Contains(t, ids(rs), "package:"+sshd)
+			},
+		)
+	}
+}
+
 func TestResources_zshSetsShells(t *testing.T) {
 	h := testHost(debian)
 	h.Config.AUR = nil

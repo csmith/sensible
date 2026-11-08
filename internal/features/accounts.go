@@ -164,6 +164,13 @@ func sshdService(h Host) string {
 	return "sshd"
 }
 
+func sshdPackage(h Host) string {
+	if h.Facts.OSFamily == debian {
+		return "openssh-server"
+	}
+	return "openssh"
+}
+
 const (
 	sshdConfig       = "/etc/ssh/sshd_config"
 	sshdDropIn       = "/etc/ssh/sshd_config.d/10-sensible.conf"
@@ -179,10 +186,7 @@ func sshd(h Host) ([]host.Resource, error) {
 	if c == nil {
 		return nil, nil
 	}
-	pkg, svc := "openssh", sshdService(h)
-	if h.Facts.OSFamily == debian {
-		pkg = "openssh-server"
-	}
+	svc := sshdService(h)
 	reload := host.ServiceAction{Name: svc, Action: "reload"}
 
 	var lines, listen []string
@@ -195,7 +199,7 @@ func sshd(h Host) ([]host.Resource, error) {
 	}
 
 	rs := []host.Resource{
-		host.Package{Name: pkg},
+		host.Package{Name: sshdPackage(h)},
 		// sshd uses the first value it finds for each setting, and the
 		// distributions' sshd_config includes sshd_config.d before setting
 		// anything itself.

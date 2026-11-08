@@ -167,14 +167,16 @@ func AccessFiles(sensibleKey string) []host.File {
 	}
 }
 
-// access keeps bootstrap's files in place, so the sudoers
-// clean-up or an sshd change can't lock the tool out.
+// access keeps what bootstrap set up in place, so the sudoers clean-up, an
+// sshd change or prune can't lock the tool out.
 func access(h Host) ([]host.Resource, error) {
 	reload := host.ServiceAction{Name: sshdService(h), Action: "reload"}
 	files := AccessFiles(h.SensibleKey)
-	rs := make([]host.Resource, 0, 3+len(files))
+	rs := make([]host.Resource, 0, 5+len(files))
 	rs = append(
 		rs,
+		host.Package{Name: "sudo"},
+		host.Package{Name: sshdPackage(h)},
 		// The shell is /bin/sh, which reads no startup files, and the home is
 		// root-owned, so a shell as the account can't capture the sudo password.
 		host.User{Name: SensibleUser, System: true, Home: SensibleHome, Shell: "/bin/sh"},
