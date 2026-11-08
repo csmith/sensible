@@ -846,7 +846,7 @@ func scalarText(at ast.Node, name string, v ast.Node) (string, error) {
 	if !ok || isNull(v) || v.Type() == ast.TagType {
 		return "", nodeError(at, fmt.Sprintf("{%s} must be a string, number or bool to be part of a longer value", name))
 	}
-	return fmt.Sprint(s.GetValue()), nil
+	return scalarValue(s), nil
 }
 
 func hasLineBreak(s string) bool {

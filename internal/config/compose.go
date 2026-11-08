@@ -553,7 +553,7 @@ func (c *composeRenderer) checkProjectName(body ast.Node) error {
 		if isNull(v) {
 			continue
 		}
-		if s, ok := v.(ast.ScalarNode); !ok || v.Type() == ast.TagType || fmt.Sprint(s.GetValue()) != c.def.name {
+		if s, ok := v.(ast.ScalarNode); !ok || v.Type() == ast.TagType || scalarValue(s) != c.def.name {
 			return nodeError(mv.Value, fmt.Sprintf("name must be %q, the stack's name", c.def.name))
 		}
 	}
@@ -906,7 +906,7 @@ func (c *composeRenderer) envValue(node ast.Node) (string, bool, error) {
 		}
 	}
 	if s, ok := node.(ast.ScalarNode); ok {
-		return fmt.Sprint(s.GetValue()), false, nil
+		return scalarValue(s), false, nil
 	}
 	return "", false, nodeError(node, "a compose.env value must be a string, number or bool")
 }

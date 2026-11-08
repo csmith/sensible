@@ -127,16 +127,25 @@ func isAtomic(path []string) bool {
 	)
 }
 
+// scalarValue is a scalar's value as text. A block scalar's GetValue is its
+// source, indicator and indentation included, not its value.
+func scalarValue(s ast.ScalarNode) string {
+	if l, ok := s.(*ast.LiteralNode); ok {
+		return l.Value.Value
+	}
+	return fmt.Sprint(s.GetValue())
+}
+
 func keyString(n ast.MapKeyNode) string {
 	if s, ok := n.(ast.ScalarNode); ok {
-		return fmt.Sprint(s.GetValue())
+		return scalarValue(s)
 	}
 	return n.String()
 }
 
 func itemString(n ast.Node) string {
 	if s, ok := n.(ast.ScalarNode); ok && n.Type() != ast.TagType {
-		return fmt.Sprint(s.GetValue())
+		return scalarValue(s)
 	}
 	return n.String()
 }

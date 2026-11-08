@@ -1225,6 +1225,38 @@ files:
 	assert.True(t, byPath["/etc/key"].Hidden)
 }
 
+func TestHostConfig_blockScalarFiles(t *testing.T) {
+	tests := []struct {
+		indicator string
+		want      string
+	}{
+		{"|", "[zram0]\nsize = 4G\n"},
+		{"|-", "[zram0]\nsize = 4G"},
+		{"|+", "[zram0]\nsize = 4G\n\n"},
+		{">", "[zram0] size = 4G\n"},
+		{">-", "[zram0] size = 4G"},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.indicator,
+			func(t *testing.T) {
+				c, err := newTestRepo(
+					t,
+					map[string]string{
+						"hosts.d/hosts.yml": "alpha:\n  roles:\n    zram:\n",
+						"roles/zram/role.yml": "files:\n  - path: /etc/zram.conf\n    content: " + tt.indicator +
+							"\n      [zram0]\n      size = 4G\n\n  - {path: /etc/other, content: x}\n",
+					},
+				).open(t).HostConfig("alpha", "debian")
+				require.NoError(t, err)
+				i := slices.IndexFunc(c.Files, func(f FileConfig) bool { return f.Path == "/etc/zram.conf" })
+				require.NotEqual(t, -1, i)
+				assert.Equal(t, tt.want, c.Files[i].Data)
+			},
+		)
+	}
+}
+
 func TestHostConfig_fileErrors(t *testing.T) {
 	tests := []struct {
 		name  string

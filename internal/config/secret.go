@@ -122,7 +122,7 @@ func (v *Value) UnmarshalYAML(ctx context.Context, node ast.Node) error {
 	if !ok || node.Type() == ast.NullType || node.Type() == ast.TagType {
 		return nodeError(node, "expected a scalar or an !age secret")
 	}
-	*v = Value{plain: fmt.Sprint(scalar.GetValue())}
+	*v = Value{plain: scalarValue(scalar)}
 	return nil
 }
 
