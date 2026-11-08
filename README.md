@@ -89,6 +89,22 @@ files:
 Once nothing declares a file, prune offers to remove it, unless it's been
 changed since it was written.
 
+### Services
+
+`services` sets systemd units' states. `enabled` enables and starts a unit,
+`disabled` disables and stops it, and `masked` stops and masks it, even if
+it isn't installed yet. Stopping a unit also stops the units, such as sockets,
+that would start it again. Two roles can't give a unit different states.
+Removing a unit from `services` leaves it as it is.
+
+```yaml
+# roles/pi/role.yml
+services:
+  bluetooth.service: enabled
+  fwupd-refresh.timer: enabled
+  smartd.service: masked
+```
+
 ### Leftovers
 
 Apply warns about what sensible finds but didn't put there, such as files in

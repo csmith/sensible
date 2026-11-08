@@ -5,11 +5,17 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// serviceShow is how Service reads a unit's state, less the unit's name.
+const serviceShow = "systemctl show " +
+	"--property=LoadState,ActiveState,ConditionResult,ConditionTimestampMonotonic,TriggeredBy "
 
 func TestService(t *testing.T) {
 	tests := []struct {
@@ -40,13 +46,58 @@ func TestService(t *testing.T) {
 			wantDiff:  "disable\nstop\n",
 			wantApply: []string{"systemctl disable sshd", "systemctl stop sshd"},
 		},
+		{
+			name:      "mask a running unit",
+			show:      "LoadState=loaded\nActiveState=active\n",
+			resource:  Service{Name: "sshd", Masked: true},
+			wantDiff:  "mask\nstop\n",
+			wantApply: []string{"systemctl mask sshd", "systemctl stop sshd"},
+		},
+		{
+			name:     "already masked",
+			show:     "LoadState=masked\nActiveState=inactive\n",
+			resource: Service{Name: "sshd", Masked: true},
+		},
+		{
+			name:      "mask a unit that isn't installed",
+			show:      "LoadState=not-found\nActiveState=inactive\n",
+			resource:  Service{Name: "sshd", Masked: true},
+			wantDiff:  "mask\n",
+			wantApply: []string{"systemctl mask sshd"},
+		},
+		{
+			name:     "started but its condition failed",
+			show:     "LoadState=loaded\nActiveState=inactive\nConditionResult=no\nConditionTimestampMonotonic=9192863805\n",
+			resource: Service{Name: "sshd", Enabled: true, Running: true},
+		},
+		{
+			name:      "never started",
+			show:      "LoadState=loaded\nActiveState=inactive\nConditionResult=no\nConditionTimestampMonotonic=0\n",
+			resource:  Service{Name: "sshd", Enabled: true, Running: true},
+			wantDiff:  "start\n",
+			wantApply: []string{"systemctl start sshd"},
+		},
+		{
+			name:      "stopped with the sockets that start it",
+			show:      "LoadState=loaded\nActiveState=active\nTriggeredBy=sshd.socket sshd-varlink.socket\n",
+			enabled:   1,
+			resource:  Service{Name: "sshd"},
+			wantDiff:  "stop\n",
+			wantApply: []string{"systemctl stop sshd.socket sshd-varlink.socket sshd"},
+		},
+		{
+			name:     "disabled while masked",
+			show:     "LoadState=masked\nActiveState=inactive\n",
+			resource: Service{Name: "sshd"},
+			wantDiff: "unmask\n",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(
 			tt.name,
 			func(t *testing.T) {
 				sys := newTestSys(t)
-				sys.on("systemctl show --property=LoadState,ActiveState sshd", tt.show, 0)
+				sys.on(serviceShow+"sshd", tt.show, 0)
 				sys.on("systemctl is-enabled --quiet sshd", "", tt.enabled)
 				for _, cmd := range tt.wantApply {
 					sys.on(cmd, "", 0)
@@ -68,11 +119,38 @@ func TestService(t *testing.T) {
 
 func TestService_MissingUnitIsNotYetCheckable(t *testing.T) {
 	sys := newTestSys(t)
-	sys.on("systemctl show --property=LoadState,ActiveState docker", "LoadState=not-found\nActiveState=inactive\n", 0)
+	sys.on(serviceShow+"docker", "LoadState=not-found\nActiveState=inactive\n", 0)
 
 	_, err := Service{Name: "docker", Enabled: true}.Check(context.Background(), sys)
 
 	assert.ErrorIs(t, err, ErrNotYetCheckable)
+}
+
+func TestService_UnmasksBeforeEnabling(t *testing.T) {
+	sys := newTestSys(t)
+	shows := []string{"LoadState=masked\nActiveState=inactive\n", "LoadState=loaded\nActiveState=inactive\n"}
+	sys.commands[serviceShow+"sshd"] = func(Cmd) Result {
+		show := shows[0]
+		shows = shows[1:]
+		return Result{Stdout: show}
+	}
+	sys.on("systemctl is-enabled --quiet sshd", "", 1)
+	sys.on("systemctl unmask sshd", "", 0)
+	sys.on("systemctl enable sshd", "", 0)
+	sys.on("systemctl start sshd", "", 0)
+
+	require.NoError(t, Service{Name: "sshd", Enabled: true, Running: true}.Apply(context.Background(), sys))
+
+	assert.Equal(
+		t,
+		[]string{"systemctl unmask sshd", "systemctl enable sshd", "systemctl start sshd"},
+		slices.DeleteFunc(
+			slices.Clone(sys.ran),
+			func(c string) bool {
+				return strings.HasPrefix(c, "systemctl show") || strings.HasPrefix(c, "systemctl is-enabled")
+			},
+		),
+	)
 }
 
 func TestServiceAction_ReloadStartsStoppedUnit(t *testing.T) {

@@ -1367,3 +1367,59 @@ func TestOpen_filesDirectoryInComposeFiles(t *testing.T) {
 	).tryOpen()
 	assert.ErrorContains(t, err, `"files" holds files' sources, so can't be in compose.files`)
 }
+
+func TestHostConfig_services(t *testing.T) {
+	c, err := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml": "alpha:\n  roles: {a: , b: }\n",
+			"roles/a/role.yml":  "services:\n  bluetooth.service: enabled\n  smartd.service: masked\n",
+			"roles/b/role.yml":  "services:\n  smartd.service: masked\n  fwupd-refresh.timer: disabled\n",
+		},
+	).open(t).HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	assert.Equal(
+		t,
+		map[string]ServiceState{
+			"bluetooth.service":   ServiceEnabled,
+			"smartd.service":      ServiceMasked,
+			"fwupd-refresh.timer": ServiceDisabled,
+		},
+		c.Services,
+	)
+}
+
+func TestHostConfig_serviceErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b string
+		want string
+	}{
+		{
+			"roles disagreeing",
+			"services: {smartd.service: masked}\n",
+			"services: {smartd.service: enabled}\n",
+			"role a and role b set services.smartd.service differently",
+		},
+		{
+			"unknown state",
+			"services: {smartd.service: running}\n",
+			"",
+			"a service must be enabled, disabled or masked",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				files := map[string]string{
+					"hosts.d/hosts.yml": "alpha:\n  roles: {a: , b: }\n",
+					"roles/a/role.yml":  tt.a,
+					"roles/b/role.yml":  tt.b,
+				}
+				_, err := newTestRepo(t, files).open(t).HostConfig("alpha", "debian")
+				assert.ErrorContains(t, err, tt.want)
+			},
+		)
+	}
+}

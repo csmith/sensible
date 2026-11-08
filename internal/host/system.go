@@ -15,53 +15,117 @@ import (
 )
 
 func (r Service) Check(ctx context.Context, sys Sys) (Change, error) {
-	enabled, running, err := r.state(ctx, sys)
+	st, err := r.state(ctx, sys)
 	if err != nil {
 		return Change{}, err
 	}
 	var diff strings.Builder
-	if enabled != r.Enabled {
-		diff.WriteString(map[bool]string{true: "enable\n", false: "disable\n"}[r.Enabled])
-	}
-	if running != r.Running {
-		diff.WriteString(map[bool]string{true: "start\n", false: "stop\n"}[r.Running])
+	for _, action := range r.actions(st) {
+		diff.WriteString(action + "\n")
 	}
 	return Change{InSync: diff.Len() == 0, Diff: diff.String()}, nil
 }
 
+// Apply unmasks a unit before anything else, and checks its state again
+// afterwards, as unmasking can leave it enabled.
 func (r Service) Apply(ctx context.Context, sys Sys) error {
-	enabled, running, err := r.state(ctx, sys)
+	st, err := r.state(ctx, sys)
 	if err != nil {
 		return err
 	}
-	if enabled != r.Enabled {
-		action := map[bool]string{true: "enable", false: "disable"}[r.Enabled]
-		if _, err := runOK(ctx, sys, argv("systemctl", action, r.Name)); err != nil {
+	if st.masked && !r.Masked {
+		if _, err := runOK(ctx, sys, argv("systemctl", "unmask", r.Name)); err != nil {
+			return err
+		}
+		if st, err = r.state(ctx, sys); err != nil {
 			return err
 		}
 	}
-	if running != r.Running {
-		action := map[bool]string{true: "start", false: "stop"}[r.Running]
-		if _, err := runOK(ctx, sys, argv("systemctl", action, r.Name)); err != nil {
+	for _, action := range r.actions(st) {
+		cmd := []string{"systemctl", action}
+		if action == "stop" {
+			// Or they'd start it again.
+			cmd = append(cmd, st.triggers...)
+		}
+		if _, err := runOK(ctx, sys, argv(append(cmd, r.Name)...)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (r Service) state(ctx context.Context, sys Sys) (enabled, running bool, err error) {
-	props, err := unitProperties(ctx, sys, r.Name)
-	if err != nil {
-		return false, false, err
+type unitState struct {
+	masked, enabled, running bool
+	// skipped is set when the unit was last started but didn't run, as a
+	// condition failed, so starting it again would change nothing.
+	skipped bool
+	// triggers are the units, such as sockets, that start it.
+	triggers []string
+}
+
+// actions are the systemctl commands that take the unit from st to the
+// wanted state, in order.
+func (r Service) actions(st unitState) []string {
+	var actions []string
+	if r.Masked {
+		if !st.masked {
+			actions = append(actions, "mask")
+		}
+		if st.running {
+			actions = append(actions, "stop")
+		}
+		return actions
 	}
-	if props["LoadState"] == "not-found" {
-		return false, false, fmt.Errorf("unit %s doesn't exist yet: %w", r.Name, ErrNotYetCheckable)
+	if st.masked {
+		actions = append(actions, "unmask")
+	}
+	if st.enabled != r.Enabled {
+		actions = append(actions, map[bool]string{true: "enable", false: "disable"}[r.Enabled])
+	}
+	if st.running != r.Running && !(r.Running && st.skipped) {
+		actions = append(actions, map[bool]string{true: "start", false: "stop"}[r.Running])
+	}
+	return actions
+}
+
+func (r Service) state(ctx context.Context, sys Sys) (unitState, error) {
+	props, err := unitProperties(
+		ctx,
+		sys,
+		r.Name,
+		"LoadState",
+		"ActiveState",
+		"ConditionResult",
+		"ConditionTimestampMonotonic",
+		"TriggeredBy",
+	)
+	if err != nil {
+		return unitState{}, err
+	}
+	st := unitState{
+		running: isRunning(props["ActiveState"]),
+		skipped: props["ActiveState"] == "inactive" &&
+			props["ConditionResult"] == "no" &&
+			props["ConditionTimestampMonotonic"] != "0",
+		triggers: strings.Fields(props["TriggeredBy"]),
+	}
+	switch props["LoadState"] {
+	case "masked":
+		st.masked = true
+		return st, nil
+	case "not-found":
+		// A unit can be masked before it's installed.
+		if r.Masked {
+			return st, nil
+		}
+		return unitState{}, fmt.Errorf("unit %s doesn't exist yet: %w", r.Name, ErrNotYetCheckable)
 	}
 	res, err := sys.Run(ctx, argv("systemctl", "is-enabled", "--quiet", r.Name))
 	if err != nil {
-		return false, false, err
+		return unitState{}, err
 	}
-	return res.Code == 0, isRunning(props["ActiveState"]), nil
+	st.enabled = res.Code == 0
+	return st, nil
 }
 
 func (r ServiceAction) Check(ctx context.Context, sys Sys) (Change, error) {
@@ -75,7 +139,7 @@ func (r ServiceAction) Apply(ctx context.Context, sys Sys) error {
 	switch action {
 	case "restart":
 	case "reload":
-		props, err := unitProperties(ctx, sys, r.Name)
+		props, err := unitProperties(ctx, sys, r.Name, "LoadState", "ActiveState")
 		if err != nil {
 			return err
 		}
@@ -173,8 +237,8 @@ func (r SystemdUnits) undeclared(ctx context.Context, sys Sys) ([]string, error)
 	return units, nil
 }
 
-func unitProperties(ctx context.Context, sys Sys, name string) (map[string]string, error) {
-	res, err := runOK(ctx, sys, argv("systemctl", "show", "--property=LoadState,ActiveState", name))
+func unitProperties(ctx context.Context, sys Sys, name string, names ...string) (map[string]string, error) {
+	res, err := runOK(ctx, sys, argv("systemctl", "show", "--property="+strings.Join(names, ","), name))
 	if err != nil {
 		return nil, err
 	}

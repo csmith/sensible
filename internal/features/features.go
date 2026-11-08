@@ -67,6 +67,8 @@ func Resources(h Host) (host.ResourceList, error) {
 		backups,
 		// After the packages and accounts they may be for.
 		files,
+		// After the packages that install units.
+		services,
 		// After stacks, backups and files, as jobs may use them.
 		jobs,
 		// After everything that declares accounts.
@@ -101,6 +103,11 @@ func Resources(h Host) (host.ResourceList, error) {
 			file, ok := r.(host.File)
 			if ok && slices.ContainsFunc(out, func(o host.Resource) bool { return o.ID() == r.ID() }) {
 				return nil, fmt.Errorf("host %s: %s is written twice with different content or settings", h.Name, file.Path)
+			}
+			// And services, such as one in services that a feature also runs.
+			svc, ok := r.(host.Service)
+			if ok && slices.ContainsFunc(out, func(o host.Resource) bool { return o.ID() == r.ID() }) {
+				return nil, fmt.Errorf("host %s: service %s is given two different states", h.Name, svc.Name)
 			}
 			out = append(out, r)
 		}
@@ -209,6 +216,24 @@ func files(h Host) ([]host.Resource, error) {
 		// alone, and a missing one is created like its parents, as root:root
 		// 0755.
 		rs = append(rs, host.Dir{Path: path.Dir(f.Path)}, file, host.WrittenRecordIn(filesRecords, file))
+	}
+	return rs, nil
+}
+
+// services puts the units roles list in the state they give.
+func services(h Host) ([]host.Resource, error) {
+	rs := make([]host.Resource, 0, len(h.Config.Services))
+	for _, name := range slices.Sorted(maps.Keys(h.Config.Services)) {
+		state := h.Config.Services[name]
+		rs = append(
+			rs,
+			host.Service{
+				Name:    name,
+				Enabled: state == config.ServiceEnabled,
+				Running: state == config.ServiceEnabled,
+				Masked:  state == config.ServiceMasked,
+			},
+		)
 	}
 	return rs, nil
 }

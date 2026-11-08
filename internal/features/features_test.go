@@ -1551,3 +1551,42 @@ func TestResources_filesCreateTheirDirectories(t *testing.T) {
 	d, _ := find[host.Dir](rs, "dir:/etc/foo.d")
 	assert.Equal(t, host.Dir{Path: "/etc/foo.d"}, d)
 }
+
+func TestResources_services(t *testing.T) {
+	for _, osFamily := range []string{archLinux, debian} {
+		t.Run(
+			osFamily,
+			func(t *testing.T) {
+				h := testHost(osFamily)
+				h.Config.AUR = nil
+				h.Config.Services = map[string]config.ServiceState{
+					"bluetooth.service":   config.ServiceEnabled,
+					"fwupd-refresh.timer": config.ServiceDisabled,
+					"smartd.service":      config.ServiceMasked,
+				}
+				rs, err := Resources(h)
+				require.NoError(t, err)
+
+				for _, want := range []host.Service{
+					{Name: "bluetooth.service", Enabled: true, Running: true},
+					{Name: "fwupd-refresh.timer"},
+					{Name: "smartd.service", Masked: true},
+				} {
+					got, ok := find[host.Service](rs, want.ID())
+					require.True(t, ok, want.Name)
+					assert.Equal(t, want, got)
+				}
+			},
+		)
+	}
+}
+
+func TestResources_serviceAlsoRunByAFeature(t *testing.T) {
+	h := testHost(debian)
+	h.Config.AUR = nil
+	h.Config.Services = map[string]config.ServiceState{"systemd-timesyncd": config.ServiceMasked}
+
+	_, err := Resources(h)
+
+	assert.ErrorContains(t, err, "service systemd-timesyncd is given two different states")
+}

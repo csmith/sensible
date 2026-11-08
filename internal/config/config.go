@@ -141,6 +141,7 @@ type Config struct {
 	Certs      map[string]CertConfig    `yaml:"certs"`
 	Remove     *RemoveConfig            `yaml:"remove"`
 	Files      []FileConfig             `yaml:"files"`
+	Services   map[string]ServiceState  `yaml:"services"`
 	Leftovers  *LeftoversConfig         `yaml:"leftovers"`
 	// Stacks come from the host's roles that have a docker-compose.yml,
 	// rather than from a module, and are in name order.
@@ -303,6 +304,28 @@ type LeftoversConfig struct {
 type KeptConfig struct {
 	Paths    Set `yaml:"paths"`
 	Packages Set `yaml:"packages"`
+}
+
+// ServiceState is what a systemd unit in services should be: enabled and
+// running, disabled and stopped, or stopped and masked.
+type ServiceState string
+
+const (
+	ServiceEnabled  ServiceState = "enabled"
+	ServiceDisabled ServiceState = "disabled"
+	ServiceMasked   ServiceState = "masked"
+)
+
+func (s *ServiceState) UnmarshalYAML(_ context.Context, node ast.Node) error {
+	str, ok := node.(*ast.StringNode)
+	if ok {
+		switch state := ServiceState(str.Value); state {
+		case ServiceEnabled, ServiceDisabled, ServiceMasked:
+			*s = state
+			return nil
+		}
+	}
+	return nodeError(node, "a service must be enabled, disabled or masked")
 }
 
 // FileConfig is a file written as given. Its content is either Content, or

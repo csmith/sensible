@@ -265,6 +265,9 @@ type Service struct {
 	Enabled bool `json:"enabled"`
 	// Running false stops the unit.
 	Running bool `json:"running"`
+	// Masked stops and masks the unit, and Enabled and Running are ignored.
+	// Otherwise, a masked unit is unmasked.
+	Masked bool `json:"masked,omitempty"`
 }
 
 // ServiceAction acts on a unit every time it's applied, so it's only useful
