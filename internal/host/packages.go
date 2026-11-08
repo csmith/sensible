@@ -286,6 +286,7 @@ func aptSourcePaths(sys Sys) ([]string, error) {
 
 type dpkgPackage struct {
 	version string
+	base    bool
 }
 
 // dpkg returns the installed packages, reading dpkg's status file once per
@@ -303,7 +304,12 @@ func dpkg(ctx context.Context, sys Sys) (map[string]dpkgPackage, error) {
 	installed := map[string]dpkgPackage{}
 	for _, fields := range controlStanzas(string(data)) {
 		if status := strings.Fields(fields["Status"]); len(status) == 3 && status[2] == "installed" {
-			installed[fields["Package"]] = dpkgPackage{version: fields["Version"]}
+			installed[fields["Package"]] = dpkgPackage{
+				version: fields["Version"],
+				base: fields["Essential"] == "yes" ||
+					fields["Priority"] == "required" ||
+					fields["Priority"] == "important",
+			}
 		}
 	}
 	st.dpkg = installed
@@ -640,7 +646,8 @@ func (r DisownedPackages) Leftovers(ctx context.Context, sys Sys) ([]string, err
 // manualPackages lists the installed packages that nothing earlier in the
 // run declares, and that were installed explicitly rather than as a
 // dependency: those `apt-mark showmanual` or `pacman -Qqe` list. On Arch, a
-// package that provides a declared name counts as declared.
+// package that provides a declared name counts as declared. On Debian, the
+// base system is left out, as images mark much of it manually installed.
 func manualPackages(ctx context.Context, sys Sys) ([]string, error) {
 	family, err := osFamily(ctx, sys)
 	if err != nil {
@@ -669,8 +676,8 @@ func manualPackages(ctx context.Context, sys Sys) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	for name := range installed {
-		if !declared[name] && !auto[name] {
+	for name, pkg := range installed {
+		if !declared[name] && !auto[name] && !pkg.base {
 			manual = append(manual, name)
 		}
 	}

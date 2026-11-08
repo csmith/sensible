@@ -549,3 +549,22 @@ func TestDisownedPackages_ListsPackagesInstalledByHandOnApt(t *testing.T) {
 		change.Warning,
 	)
 }
+
+func TestDisownedPackages_LeavesOutDebianBaseSystem(t *testing.T) {
+	sys := newDebianSys(t)
+	sys.write(
+		"/var/lib/dpkg/status",
+		"Package: zsh\nStatus: install ok installed\nVersion: 5.9-8\n\n"+
+			"Package: bash\nStatus: install ok installed\nEssential: yes\nVersion: 5.2\n\n"+
+			"Package: libc6\nStatus: install ok installed\nPriority: required\nVersion: 2.41\n\n"+
+			"Package: apt\nStatus: install ok installed\nPriority: important\nVersion: 3.0\n\n"+
+			"Package: less\nStatus: install ok installed\nPriority: standard\nVersion: 668\n\n"+
+			"Package: htop\nStatus: install ok installed\nPriority: optional\nVersion: 3.4\n",
+	)
+	st := newRunState()
+	st.declare(Package{Name: "zsh"})
+
+	got, err := DisownedPackages{}.Leftovers(withRunState(context.Background(), st), sys)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"package htop", "package less"}, got)
+}
