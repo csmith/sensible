@@ -292,6 +292,10 @@ func aptSourcePaths(sys Sys) ([]string, error) {
 type dpkgPackage struct {
 	version string
 	base    bool
+	// depends names what the package depends or pre-depends on, including
+	// every alternative.
+	depends  []string
+	provides []string
 }
 
 // dpkg returns the installed packages, reading dpkg's status file once per
@@ -314,11 +318,28 @@ func dpkg(ctx context.Context, sys Sys) (map[string]dpkgPackage, error) {
 				base: fields["Essential"] == "yes" ||
 					fields["Priority"] == "required" ||
 					fields["Priority"] == "important",
+				depends:  dpkgRelationNames(fields["Depends"] + "," + fields["Pre-Depends"]),
+				provides: dpkgRelationNames(fields["Provides"]),
 			}
 		}
 	}
 	st.dpkg = installed
 	return installed, nil
+}
+
+// dpkgRelationNames returns the package names in a relationship field such
+// as "libc6 (>= 2.34), foo:any | bar", leaving out versions and
+// architectures.
+func dpkgRelationNames(field string) []string {
+	var names []string
+	for rel := range strings.FieldsFuncSeq(field, func(r rune) bool { return r == ',' || r == '|' }) {
+		if fields := strings.Fields(rel); len(fields) > 0 {
+			name, _, _ := strings.Cut(fields[0], ":")
+			name, _, _ = strings.Cut(name, "(")
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // controlStanzas splits a file of dpkg control stanzas, such as dpkg's
@@ -344,6 +365,8 @@ type pacmanDB struct {
 	// explicit holds what each package installed explicitly, rather than
 	// as a dependency, provides, including its own name.
 	explicit map[string][]string
+	// depended holds what installed packages depend on.
+	depended map[string]bool
 }
 
 const pacmanLocalDB = "/var/lib/pacman/local"
@@ -360,7 +383,12 @@ func pacman(ctx context.Context, sys Sys) (*pacmanDB, error) {
 		return nil, err
 	}
 
-	db := &pacmanDB{installed: map[string]bool{}, satisfied: map[string]bool{}, explicit: map[string][]string{}}
+	db := &pacmanDB{
+		installed: map[string]bool{},
+		satisfied: map[string]bool{},
+		explicit:  map[string][]string{},
+		depended:  map[string]bool{},
+	}
 	for _, entry := range entries {
 		desc, err := sys.ReadFile(filepath.Join(pacmanLocalDB, entry, "desc"))
 		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
@@ -387,6 +415,11 @@ func pacman(ctx context.Context, sys Sys) (*pacmanDB, error) {
 				name, _, _ := strings.Cut(line, "=")
 				db.satisfied[name] = true
 				provides = append(provides, name)
+			case section == "%DEPENDS%":
+				if i := strings.IndexAny(line, "<>="); i >= 0 {
+					line = line[:i]
+				}
+				db.depended[line] = true
 			case section == "%REASON%":
 				dependency = line == "1"
 			}
@@ -787,10 +820,12 @@ func (r DisownedPackages) Leftovers(ctx context.Context, sys Sys) ([]string, err
 }
 
 // manualPackages lists the installed packages that nothing earlier in the
-// run declares, and that were installed explicitly rather than as a
-// dependency: those `apt-mark showmanual` or `pacman -Qqe` list. On Arch, a
-// package that provides a declared name counts as declared. On Debian, the
-// base system is left out, as images mark much of it manually installed.
+// run declares, that were installed explicitly rather than as a dependency,
+// and that no installed package depends on: those `pacman -Qqet` lists, or
+// the Debian equivalent. A package that provides a depended-on name counts
+// as depended on and, on Arch, one that provides a declared name counts as
+// declared. On Debian, the base system is left out too, as images mark much
+// of it manually installed.
 func manualPackages(ctx context.Context, sys Sys) ([]string, error) {
 	family, err := osFamily(ctx, sys)
 	if err != nil {
@@ -804,7 +839,7 @@ func manualPackages(ctx context.Context, sys Sys) ([]string, error) {
 			return nil, err
 		}
 		for name, provides := range db.explicit {
-			if !slices.ContainsFunc(provides, func(p string) bool { return declared[p] }) {
+			if !slices.ContainsFunc(provides, func(p string) bool { return declared[p] || db.depended[p] }) {
 				manual = append(manual, name)
 			}
 		}
@@ -819,8 +854,15 @@ func manualPackages(ctx context.Context, sys Sys) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	depended := map[string]bool{}
+	for _, pkg := range installed {
+		for _, dep := range pkg.depends {
+			depended[dep] = true
+		}
+	}
 	for name, pkg := range installed {
-		if !declared[name] && !auto[name] && !pkg.base {
+		needed := depended[name] || slices.ContainsFunc(pkg.provides, func(p string) bool { return depended[p] })
+		if !declared[name] && !auto[name] && !pkg.base && !needed {
 			manual = append(manual, name)
 		}
 	}

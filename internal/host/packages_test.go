@@ -736,3 +736,43 @@ func TestPackageUpdate_FailedUpgradeDoesNotCheckTheKernel(t *testing.T) {
 	assert.Empty(t, applied[0].Warning)
 	assert.NotContains(t, sys.ran, "uname -r")
 }
+
+func TestDisownedPackages_LeavesOutWhatPacmanPackagesDependOn(t *testing.T) {
+	sys := newArchSys(t)
+	sys.write("/var/lib/pacman/local/htop-3.4-1/desc", "%NAME%\nhtop\n\n%DEPENDS%\nncurses>=6\nlibnl\n\n")
+	sys.write("/var/lib/pacman/local/ncurses-6.5-1/desc", "%NAME%\nncurses\n\n")
+	sys.write("/var/lib/pacman/local/libnl-ng-3.11-1/desc", "%NAME%\nlibnl-ng\n\n%PROVIDES%\nlibnl=3.11\n\n")
+	sys.write(
+		"/var/lib/pacman/local/lsof-4.99-1/desc",
+		"%NAME%\nlsof\n\n%OPTDEPENDS%\nperl: for sample scripts\n\n%REASON%\n1\n\n",
+	)
+	sys.write("/var/lib/pacman/local/perl-5.40-1/desc", "%NAME%\nperl\n\n")
+	st := newRunState()
+	st.declare(Package{Name: "vim"})
+	st.declare(Package{Name: "zsh"})
+
+	got, err := DisownedPackages{}.Leftovers(withRunState(context.Background(), st), sys)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"package htop", "package perl"}, got)
+}
+
+func TestDisownedPackages_LeavesOutWhatAptPackagesDependOn(t *testing.T) {
+	sys := newDebianSys(t)
+	sys.write(
+		"/var/lib/dpkg/status",
+		"Package: htop\nStatus: install ok installed\nVersion: 3.4\n"+
+			"Depends: libc6 (>= 2.34), libncursesw6:any (>= 6), python3 | perl\n\n"+
+			"Package: libncursesw6\nStatus: install ok installed\nVersion: 6.5\n\n"+
+			"Package: perl\nStatus: install ok installed\nVersion: 5.40\n\n"+
+			"Package: mawk\nStatus: install ok installed\nVersion: 1.3\nProvides: awk\n\n"+
+			"Package: dash\nStatus: install ok installed\nVersion: 0.5\nPre-Depends: awk\n\n"+
+			"Package: zlib1g\nStatus: install ok installed\nVersion: 1.3\n\n"+
+			"Package: old\nStatus: deinstall ok config-files\nVersion: 1\nDepends: zlib1g\n",
+	)
+	st := newRunState()
+	st.declare(Package{Name: "dash"})
+
+	got, err := DisownedPackages{}.Leftovers(withRunState(context.Background(), st), sys)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"package htop", "package zlib1g"}, got)
+}
