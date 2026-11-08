@@ -62,6 +62,13 @@ A role's files can use `{host}`, the host's name in `hosts.d`, and `{stack}`,
 the role's stack name, e.g. `TASK_QUEUE: queue-{host}`. Write `{{host}}` for
 the text itself.
 
+A stack's compose file and `compose.env` can use `!generated <name>`, a random
+value that's made once per host and saved in its state. Every use of the name
+in the stack gets the same value. `!generated <name> <length>` asks for at
+least that many characters, rather than the default 26, and every use must give
+the same length. A saved value that's too short is an error, not regenerated, so
+use a new name to get a longer one.
+
 ### Files
 
 `files` writes files as given. Each has an absolute `path`, and either

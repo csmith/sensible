@@ -344,11 +344,11 @@ func (g *GeneratedName) UnmarshalYAML(_ context.Context, node ast.Node) error {
 	if !ok || tag.Start.Value != generatedTag {
 		return nodeError(node, "expected a !generated value")
 	}
-	v, ok := tag.Value.(*ast.StringNode)
-	if !ok || !generatedName.MatchString(v.Value) {
-		return nodeError(tag, "!generated needs a name of letters, digits, \"-\" and \"_\"")
+	name, _, err := parseGenerated(tag)
+	if err != nil {
+		return err
 	}
-	*g = GeneratedName(v.Value)
+	*g = GeneratedName(name)
 	return nil
 }
 

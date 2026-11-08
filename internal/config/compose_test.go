@@ -651,6 +651,30 @@ func TestHostConfig_generatedValues(t *testing.T) {
 	}
 }
 
+func TestHostConfig_generatedLengths(t *testing.T) {
+	tr := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml":            "alpha:\n  roles: {web: }\n",
+			"roles/web/docker-compose.yml": "services: {}\n",
+			"roles/web/role.yml":           "compose:\n  env: {A: !generated a, B: !generated b 40, C: !generated c 8}\n",
+		},
+	)
+	r := tr.open(t)
+
+	c, err := r.HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	g := c.Stacks[0].Generated
+	assert.Len(t, g["a"], 26)
+	assert.Len(t, g["b"], 40)
+	assert.Len(t, g["c"], 26, "never shorter than the default")
+
+	short := map[string]string{"a": "x", "b": strings.Repeat("y", 39), "c": strings.Repeat("z", 26)}
+	require.NoError(t, r.SaveGenerated("alpha", []Stack{{Name: "web", Generated: short}}))
+	_, err = tr.open(t).HostConfig("alpha", "debian")
+	require.ErrorContains(t, err, "generated value b is saved with 39 characters, fewer than the 40 asked for")
+}
+
 func TestHostConfig_previewDoesNotGenerate(t *testing.T) {
 	r := newGeneratedRepo(t).open(t)
 	r.Preview(nil)
@@ -959,6 +983,16 @@ func TestHostConfig_generatedErrors(t *testing.T) {
 			"!generated needs a name",
 		},
 		{
+			"invalid length",
+			map[string]string{"roles/web/role.yml": "compose:\n  env: {A: !generated a 0}\n"},
+			"a !generated length must be from 1 to 1024",
+		},
+		{
+			"different lengths",
+			map[string]string{"roles/web/role.yml": "compose:\n  env: {A: !generated a 40, B: !generated a}\n"},
+			"generated value a is used with different lengths",
+		},
+		{
 			"invalid variable name",
 			map[string]string{"roles/web/role.yml": "compose:\n  env: {A-B: x}\n"},
 			`roles/web/role.yml: compose.env: [2:9] "A-B" isn't a variable name`,
@@ -1166,6 +1200,17 @@ func TestHostConfig_oidcClientSecretMayBeTheOnlyUse(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, c.Stacks[0].Generated["other"], c.OIDCClients["app"].SecretValue)
+}
+
+func TestHostConfig_oidcClientSecretWithALength(t *testing.T) {
+	files := readTestTree(t, "oidc-clients")
+	files["roles/app/role.yml"] = oidcClientYAML("    secret: !generated other 48\n")
+
+	c, err := newTestRepo(t, files).open(t).HostConfig("alpha", "debian")
+
+	require.NoError(t, err)
+	assert.Len(t, c.OIDCClients["app"].SecretValue, 48)
+	assert.Equal(t, GeneratedName("other"), c.OIDCClients["app"].Secret)
 }
 
 func TestHostConfig_oidcClientErrors(t *testing.T) {

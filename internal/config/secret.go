@@ -10,6 +10,7 @@ import (
 	"io"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -134,13 +135,46 @@ func (v Value) reveal() (value string, secret bool, err error) {
 	return value, true, err
 }
 
-var generatedName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+var (
+	generatedName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	generatedRef  = regexp.MustCompile(`^([A-Za-z0-9_-]+)(?: +([0-9]+))?$`)
+)
+
+// generatedLength is how long a !generated value is when its tag doesn't ask
+// for more: the length of rand.Text.
+const generatedLength = 26
+
+// parseGenerated reads a !generated tag's name and the length it asks for,
+// which is zero when it doesn't give one.
+func parseGenerated(tag *ast.TagNode) (string, int, error) {
+	v, ok := tag.Value.(*ast.StringNode)
+	var m []string
+	if ok {
+		m = generatedRef.FindStringSubmatch(v.Value)
+	}
+	if m == nil {
+		return "", 0, nodeError(
+			tag,
+			"!generated needs a name of letters, digits, \"-\" and \"_\", and optionally a length after a space",
+		)
+	}
+	if m[2] == "" {
+		return m[1], 0, nil
+	}
+	length, err := strconv.Atoi(m[2])
+	if err != nil || length < 1 || length > 1024 {
+		return "", 0, nodeError(tag, "a !generated length must be from 1 to 1024")
+	}
+	return m[1], length, nil
+}
 
 // generator gives the values of a stack's !generated tags on one host:
 // those saved in the host's state, and new ones for names it hasn't saved.
 type generator struct {
 	saved  map[string]Secret
 	values map[string]string
+	// lengths are the lengths the tags asked for, by name.
+	lengths map[string]int
 	// preview gives names that aren't saved a placeholder instead of a new
 	// value.
 	preview bool
@@ -149,21 +183,36 @@ type generator struct {
 }
 
 func (g *generator) value(tag *ast.TagNode) (string, error) {
-	v, ok := tag.Value.(*ast.StringNode)
-	if !ok || !generatedName.MatchString(v.Value) {
-		return "", nodeError(tag, "!generated needs a name of letters, digits, \"-\" and \"_\"")
+	name, length, err := parseGenerated(tag)
+	if err != nil {
+		return "", err
 	}
-	name := v.Value
 	if value, ok := g.values[name]; ok {
+		if g.lengths[name] != length {
+			return "", nodeError(tag, fmt.Sprintf("generated value %s is used with different lengths", name))
+		}
 		return value, nil
 	}
 	if g.values == nil {
 		g.values = map[string]string{}
+		g.lengths = map[string]int{}
 	}
+	g.lengths[name] = length
 	if s, ok := g.saved[name]; ok {
 		value, err := s.Reveal()
 		if err != nil {
 			return "", nodeError(tag, fmt.Sprintf("generated value %s: %v", name, err))
+		}
+		if len(value) < length {
+			return "", nodeError(
+				tag,
+				fmt.Sprintf(
+					"generated value %s is saved with %d characters, fewer than the %d asked for; use a new name to generate another",
+					name,
+					len(value),
+					length,
+				),
+			)
 		}
 		g.values[name] = value
 		return value, nil
@@ -175,9 +224,20 @@ func (g *generator) value(tag *ast.TagNode) (string, error) {
 	if g.created == nil {
 		g.created = map[string]string{}
 	}
-	g.values[name] = rand.Text()
+	g.values[name] = generate(length)
 	g.created[name] = g.values[name]
 	return g.values[name], nil
+}
+
+// generate makes a random value of length characters, or of
+// generatedLength if that's longer.
+func generate(length int) string {
+	length = max(length, generatedLength)
+	var b strings.Builder
+	for b.Len() < length {
+		b.WriteString(rand.Text())
+	}
+	return b.String()[:length]
 }
 
 func nodeError(node ast.Node, msg string) error {
