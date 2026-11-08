@@ -269,6 +269,34 @@ func (e *engine) leftovers(ctx context.Context, list ResourceList, send func(Lef
 // remove prunes one of the leftovers of the Pruner with the given ID, as
 // long as it still lists the item.
 func (e *engine) remove(ctx context.Context, list ResourceList, id, item string) error {
+	ctx, p, err := e.listed(ctx, list, id, item)
+	if err != nil {
+		return err
+	}
+	err = p.Prune(ctx, e.sys, item)
+	res := "removed"
+	if err != nil {
+		res = "failed: " + err.Error()
+	}
+	_, _ = fmt.Fprintf(e.log, "prune %s %s: %s\n", id, item, res)
+	return err
+}
+
+// preview shows what's at one of the leftovers of the Pruner with the given
+// ID, as long as it still lists the item and the item is a path.
+func (e *engine) preview(ctx context.Context, list ResourceList, id, item string) ([]string, string, error) {
+	if !filepath.IsAbs(item) {
+		return nil, "", fmt.Errorf("%s isn't a path", item)
+	}
+	if _, _, err := e.listed(ctx, list, id, item); err != nil {
+		return nil, "", err
+	}
+	return previewPath(e.sys, item)
+}
+
+// listed finds the Pruner with the given ID, checking it still lists item.
+// The context it returns has the run state the Pruner was listed with.
+func (e *engine) listed(ctx context.Context, list ResourceList, id, item string) (context.Context, Pruner, error) {
 	st := e.newRunState()
 	ctx = withRunState(ctx, st)
 	for _, r := range list {
@@ -279,20 +307,14 @@ func (e *engine) remove(ctx context.Context, list ResourceList, id, item string)
 		}
 		items, err := p.Leftovers(ctx, e.sys)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 		if !slices.Contains(items, item) {
-			return fmt.Errorf("%s is no longer a leftover", item)
+			return nil, nil, fmt.Errorf("%s is no longer a leftover", item)
 		}
-		err = p.Prune(ctx, e.sys, item)
-		res := "removed"
-		if err != nil {
-			res = "failed: " + err.Error()
-		}
-		_, _ = fmt.Fprintf(e.log, "prune %s %s: %s\n", id, item, res)
-		return err
+		return ctx, p, nil
 	}
-	return fmt.Errorf("no resource %s to prune", id)
+	return nil, nil, fmt.Errorf("no resource %s with leftovers", id)
 }
 
 func (e *engine) record(res Applied) {

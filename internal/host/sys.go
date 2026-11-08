@@ -40,6 +40,8 @@ type Sys interface {
 
 type FileReader interface {
 	ReadFile(path string) ([]byte, error)
+	// Open opens a regular file to read.
+	Open(path string) (io.ReadCloser, error)
 	// Stat follows symlinks; Lstat doesn't.
 	Stat(path string) (FileInfo, error)
 	Lstat(path string) (FileInfo, error)
@@ -219,24 +221,34 @@ func environment() map[string]string {
 }
 
 func (s *localSys) ReadFile(path string) ([]byte, error) {
+	file, err := s.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = file.Close() }()
+	return io.ReadAll(file)
+}
+
+func (s *localSys) Open(path string) (io.ReadCloser, error) {
 	return confined(
 		s,
 		path,
 		followLast,
-		func(f fileOps) ([]byte, error) {
+		func(f fileOps) (io.ReadCloser, error) {
 			// Opening a FIFO someone else put in place would block until they
 			// opened its other end.
 			file, err := f.open(f.name, unix.O_RDONLY|unix.O_NONBLOCK, 0)
 			if err != nil {
 				return nil, err
 			}
-			defer func() { _ = file.Close() }()
 			if info, err := file.Stat(); err != nil {
+				_ = file.Close()
 				return nil, err
 			} else if !info.Mode().IsRegular() {
+				_ = file.Close()
 				return nil, f.err("read", f.name, errNotRegular)
 			}
-			return io.ReadAll(file)
+			return file, nil
 		},
 	)
 }

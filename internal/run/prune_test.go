@@ -1,6 +1,8 @@
 package run
 
 import (
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,8 +16,8 @@ var pruneResources = host.ResourceList{host.Package{Name: "zsh"}, host.Volumes{P
 func TestPrune_asksBeforeRemovingEachLeftover(t *testing.T) {
 	f := newRunnerFixture(t, pruneResources)
 	answers := map[string]string{
-		"Remove /srv/volumes/old from acidburn? [y/N] ":   "y",
-		"Remove /srv/volumes/older from acidburn? [y/N] ": "n",
+		"Remove /srv/volumes/old from acidburn? [y/N/p] ":   "y",
+		"Remove /srv/volumes/older from acidburn? [y/N/p] ": "n",
 	}
 	f.runner.Ask = func(prompt string) (string, error) {
 		f.confirmed = append(f.confirmed, prompt)
@@ -53,11 +55,69 @@ func TestPrune_ignoreAnswerRecordsTheLeftover(t *testing.T) {
 	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", agent)})
 
 	require.NoError(t, err)
-	assert.Equal(t, []string{"Remove /srv/volumes/old from acidburn? [y/N/i] "}, f.confirmed)
+	assert.Equal(t, []string{"Remove /srv/volumes/old from acidburn? [y/N/i/p] "}, f.confirmed)
 	assert.Equal(t, []string{"volumes:/srv/volumes /srv/volumes/old"}, ignored)
 	assert.Empty(t, agent.removed)
 	assert.Equal(t, map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/kept"}}, agent.ignored)
 	assert.Contains(t, f.out.String(), "  - acidburn: /srv/volumes/old  ignored\n")
+}
+
+func TestPrune_previewShowsAPathThenAsksAgain(t *testing.T) {
+	f := newRunnerFixture(t, pruneResources)
+	answers := []string{"p", "preview", "y"}
+	f.runner.Ask = func(prompt string) (string, error) {
+		f.confirmed = append(f.confirmed, prompt)
+		answer := answers[0]
+		answers = answers[1:]
+		return answer, nil
+	}
+	agent := &fakeAgent{
+		leftovers: map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/old"}},
+		previews: map[string]host.Previewed{
+			"/srv/volumes/old": {Lines: []string{"data/", "data/\x1b[2Jfile"}, Cut: "3 more entries"},
+		},
+	}
+
+	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", agent)})
+
+	require.NoError(t, err)
+	assert.Equal(t, slices.Repeat([]string{"Remove /srv/volumes/old from acidburn? [y/N/p] "}, 3), f.confirmed)
+	assert.Equal(t, []string{"/srv/volumes/old"}, agent.removed)
+	preview := "    data/\n    data/\\x1b[2Jfile\n    … 3 more entries\n"
+	assert.Equal(t, 2, strings.Count(f.out.String(), preview))
+}
+
+func TestPrune_reportsFailedPreviewThenAsksAgain(t *testing.T) {
+	f := newRunnerFixture(t, pruneResources)
+	answers := []string{"p", "n"}
+	f.runner.Ask = func(prompt string) (string, error) {
+		answer := answers[0]
+		answers = answers[1:]
+		return answer, nil
+	}
+	agent := &fakeAgent{leftovers: map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/old"}}}
+
+	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", agent)})
+
+	require.NoError(t, err)
+	assert.Empty(t, answers)
+	assert.Contains(t, f.out.String(), "✗ acidburn: /srv/volumes/old: not found")
+	assert.Contains(t, f.out.String(), "- acidburn: /srv/volumes/old  kept")
+}
+
+func TestPrune_offersNoPreviewOfLeftoversThatArentPaths(t *testing.T) {
+	f := newRunnerFixture(t, pruneResources)
+	f.runner.Ask = func(prompt string) (string, error) {
+		f.confirmed = append(f.confirmed, prompt)
+		return "p", nil
+	}
+	agent := &fakeAgent{leftovers: map[string][]string{"volumes:/srv/volumes": {"user bob"}}}
+
+	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", agent)})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Remove user bob from acidburn? [y/N] "}, f.confirmed)
+	assert.NotContains(t, agent.messages(), "Preview")
 }
 
 func TestPrune_keepsSecretsWhoseVolumeIsIgnored(t *testing.T) {
@@ -150,8 +210,8 @@ func TestPrune_offersSecretsOnceTheirVolumesAreRemoved(t *testing.T) {
 	f := newRunnerFixture(t, nil)
 	dropped := withUnusedSecrets(f, "app", "kept", "gone")
 	answers := map[string]string{
-		"Remove /srv/volumes/app from acidburn? [y/N] ":                       "y",
-		"Remove /srv/volumes/kept from acidburn? [y/N] ":                      "n",
+		"Remove /srv/volumes/app from acidburn? [y/N/p] ":                     "y",
+		"Remove /srv/volumes/kept from acidburn? [y/N/p] ":                    "n",
 		"Remove generated secrets for app (db, token) from acidburn? [y/N] ":  "y",
 		"Remove generated secrets for gone (db, token) from acidburn? [y/N] ": "y",
 	}
@@ -167,8 +227,8 @@ func TestPrune_offersSecretsOnceTheirVolumesAreRemoved(t *testing.T) {
 	assert.Equal(
 		t,
 		[]string{
-			"Remove /srv/volumes/app from acidburn? [y/N] ",
-			"Remove /srv/volumes/kept from acidburn? [y/N] ",
+			"Remove /srv/volumes/app from acidburn? [y/N/p] ",
+			"Remove /srv/volumes/kept from acidburn? [y/N/p] ",
 			"Remove generated secrets for app (db, token) from acidburn? [y/N] ",
 			"Remove generated secrets for gone (db, token) from acidburn? [y/N] ",
 		},
@@ -190,7 +250,7 @@ func TestPrune_keepsSecretsWhenTheirVolumeRemovalFails(t *testing.T) {
 	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", agent)})
 
 	require.ErrorIs(t, err, errFailed)
-	assert.Equal(t, []string{"Remove /srv/volumes/app from acidburn? [y/N] "}, f.confirmed)
+	assert.Equal(t, []string{"Remove /srv/volumes/app from acidburn? [y/N/p] "}, f.confirmed)
 	assert.Empty(t, *dropped)
 }
 

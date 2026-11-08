@@ -57,6 +57,8 @@ type leftover struct {
 	remove func() error
 	// ignore, if set, records that it's meant to stay.
 	ignore func() error
+	// preview, if set, shows what's there.
+	preview func() (host.Previewed, error)
 	// note, if set, warns what removing it may affect.
 	note string
 	// after, if set, must be removed first, or this is kept.
@@ -133,13 +135,24 @@ func (r *Runner) pruneOne(out *renderer, l *leftover) (bool, error) {
 	if l.note != "" {
 		prompt += strings.ToUpper(l.note[:1]) + l.note[1:] + ". "
 	}
-	choices := "[y/N] "
+	choices := "y/N"
 	if l.ignore != nil {
-		choices = "[y/N/i] "
+		choices += "/i"
 	}
-	answer, err := r.Ask(prompt + choices)
-	if err != nil {
-		return false, err
+	if l.preview != nil {
+		choices += "/p"
+	}
+	var answer string
+	for {
+		var err error
+		answer, err = r.Ask(prompt + "[" + choices + "] ")
+		if err != nil {
+			return false, err
+		}
+		if l.preview == nil || (answer != "p" && answer != "preview") {
+			break
+		}
+		out.item(previewLines(l, out.p)...)
 	}
 	ignore := l.ignore != nil && (answer == "i" || answer == "ignore")
 	if !ignore && answer != "y" && answer != "yes" {
@@ -163,6 +176,24 @@ func (r *Runner) pruneOne(out *renderer, l *leftover) (bool, error) {
 	return true, nil
 }
 
+func previewLines(l *leftover, p palette) []string {
+	shown, err := l.preview()
+	if err != nil {
+		return p.failure(l.h.name + ": " + l.label + ": " + err.Error())
+	}
+	lines := make([]string, 0, len(shown.Lines)+1)
+	for _, line := range shown.Lines {
+		lines = append(lines, "  "+printable(line))
+	}
+	switch {
+	case shown.Cut != "":
+		lines = append(lines, p.dim("  … "+shown.Cut))
+	case len(lines) == 0:
+		lines = append(lines, p.dim("  empty"))
+	}
+	return lines
+}
+
 func (h *hostRun) findLeftovers() {
 	found, err := h.agent.leftovers()
 	if err != nil {
@@ -178,6 +209,9 @@ func (h *hostRun) findLeftovers() {
 			l := &leftover{h: h, label: item, remove: func() error { return h.agent.remove(f.ID, item) }}
 			if h.ignore != nil {
 				l.ignore = func() error { return h.ignore(f.ID, item) }
+			}
+			if filepath.IsAbs(item) {
+				l.preview = func() (host.Previewed, error) { return h.agent.preview(f.ID, item) }
 			}
 			h.leftovers = append(h.leftovers, l)
 		}
@@ -301,4 +335,21 @@ func (a *agent) remove(id, item string) error {
 		return errors.New(removed.Error)
 	}
 	return nil
+}
+
+func (a *agent) preview(id, item string) (host.Previewed, error) {
+	if err := a.conn.Send(host.Preview{ID: id, Item: item}); err != nil {
+		return host.Previewed{}, err
+	}
+	shown, err := receive[host.Previewed](a)
+	if err != nil {
+		return host.Previewed{}, err
+	}
+	if shown.ID != id || shown.Item != item {
+		return host.Previewed{}, fmt.Errorf("agent previewed %s from %s, not %s", shown.Item, shown.ID, item)
+	}
+	if shown.Error != "" {
+		return host.Previewed{}, errors.New(shown.Error)
+	}
+	return shown, nil
 }

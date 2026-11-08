@@ -131,6 +131,13 @@ func (s *session) handle(ctx context.Context, msg any) error {
 			res.Error = err.Error()
 		}
 		return s.conn.Send(res)
+	case Preview:
+		res := Previewed{ID: msg.ID, Item: msg.Item}
+		var err error
+		if res.Lines, res.Cut, err = s.engine.preview(ctx, s.resources, msg.ID, msg.Item); err != nil {
+			res.Error = err.Error()
+		}
+		return s.conn.Send(res)
 	default:
 		return s.conn.Send(Error{Message: fmt.Sprintf("unexpected %T", msg)})
 	}

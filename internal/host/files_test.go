@@ -966,3 +966,95 @@ func TestUnifiedDiff(t *testing.T) {
 		)
 	}
 }
+
+func TestPreviewPath_ShowsTheStartOfATextFile(t *testing.T) {
+	sys := newTestSys(t)
+	var content strings.Builder
+	content.WriteString(strings.Repeat("é", previewWidth+1) + "\r\n")
+	for i := 2; i <= previewLimit+5; i++ {
+		content.WriteString("line " + strconv.Itoa(i) + "\n")
+	}
+	content.WriteString("no newline")
+	sys.write("/etc/foo.conf", content.String())
+
+	lines, cut, err := previewPath(sys, "/etc/foo.conf")
+
+	require.NoError(t, err)
+	require.Len(t, lines, previewLimit)
+	assert.Equal(t, strings.Repeat("é", previewWidth)+"…", lines[0])
+	assert.Equal(t, "line 2", lines[1])
+	assert.Equal(t, "line "+strconv.Itoa(previewLimit), lines[previewLimit-1])
+	assert.Equal(t, "6 more lines", cut)
+}
+
+func TestPreviewPath_ShowsAShortFileWhole(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/etc/foo.conf", "a\n\nb")
+
+	lines, cut, err := previewPath(sys, "/etc/foo.conf")
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a", "", "b"}, lines)
+	assert.Empty(t, cut)
+}
+
+func TestPreviewPath_DescribesBinaryFiles(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/srv/image.png", "\x89PNG\r\n\x1a\n"+strings.Repeat("\x00", 2040))
+
+	lines, cut, err := previewPath(sys, "/srv/image.png")
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"binary, 2.0 KiB, image/png"}, lines)
+	assert.Empty(t, cut)
+}
+
+func TestPreviewPath_ListsDirectoriesRecursively(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/srv/volumes/old/data/file", "")
+	sys.write("/srv/volumes/old/config", "")
+	require.NoError(t, os.Symlink("data/file", sys.path("/srv/volumes/old/link")))
+	require.NoError(t, os.Mkdir(sys.path("/srv/volumes/old/empty"), 0o755))
+
+	lines, cut, err := previewPath(sys, "/srv/volumes/old")
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"config", "data/", "data/file", "empty/", "link → data/file"}, lines)
+	assert.Empty(t, cut)
+}
+
+func TestPreviewPath_CapsDirectoryEntries(t *testing.T) {
+	sys := newTestSys(t)
+	for i := range previewLimit + 3 {
+		sys.write("/srv/volumes/old/"+strconv.Itoa(i), "")
+	}
+
+	lines, cut, err := previewPath(sys, "/srv/volumes/old")
+
+	require.NoError(t, err)
+	assert.Len(t, lines, previewLimit)
+	assert.Equal(t, "3 more entries", cut)
+}
+
+func TestPreviewPath_ShowsALinksTarget(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/etc/real.conf", "secret\n")
+	require.NoError(t, os.Symlink("/etc/real.conf", sys.path("/etc/foo.conf")))
+
+	lines, _, err := previewPath(sys, "/etc/foo.conf")
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"link to /etc/real.conf"}, lines)
+}
+
+func TestPreviewPath_DoesNotFollowUserLinks(t *testing.T) {
+	sys := newTestSys(t)
+	userHome(t, sys, "../../etc")
+
+	_, _, err := previewPath(sys, "/home/alice/.ssh/shadow")
+	require.ErrorIs(t, err, errUntrustedLink)
+
+	lines, _, err := previewPath(sys, "/home/alice")
+	require.NoError(t, err)
+	assert.Equal(t, []string{".profile", ".ssh → ../../etc"}, lines)
+}

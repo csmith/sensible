@@ -55,6 +55,8 @@ type fakeAgent struct {
 	// listFailure, if set, fails listing the leftovers of the resource with
 	// this ID.
 	listFailure string
+	// previews are what Preview replies with, by item.
+	previews map[string]host.Previewed
 
 	mu       sync.Mutex
 	received []string
@@ -136,6 +138,13 @@ func (f *fakeAgent) serve(r io.ReadCloser, w io.WriteCloser) {
 				f.mu.Unlock()
 			}
 			_ = conn.Send(r)
+		case host.Preview:
+			p, ok := f.previews[m.Item]
+			if !ok {
+				p.Error = "not found"
+			}
+			p.ID, p.Item = m.ID, m.Item
+			_ = conn.Send(p)
 		case host.Bye:
 			return
 		}

@@ -201,10 +201,11 @@ if it's missing.
 anything else, which fixes installs failing with a 404 from a stale package
 index. It never reboots, but says when a host needs to.
 
-Prune asks about each leftover. Answering `i` keeps it and stops apply and
-prune mentioning it again, by adding it under `ignored` in the host's
-`hosts.d/<host>.state.yml`. Delete the entry there to see it again. For
-leftovers expected on many hosts, see [Leftovers](#leftovers).
+Prune asks about each leftover. Answering `p` shows what's at a path before
+asking again. Answering `i` keeps it and stops apply and prune mentioning it
+again, by adding it under `ignored` in the host's `hosts.d/<host>.state.yml`.
+Delete the entry there to see it again. For leftovers expected on many hosts,
+see [Leftovers](#leftovers).
 
 Run `sensible -h` for the other commands and flags.
 

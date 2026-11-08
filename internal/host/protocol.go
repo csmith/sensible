@@ -10,7 +10,7 @@ import (
 // ProtocolVersion is bumped whenever a message or resource changes, so a
 // controller can refuse an agent built from older code. Hello and Upgrade
 // must never change shape, so any controller can upgrade any agent.
-const ProtocolVersion = 25
+const ProtocolVersion = 26
 
 // Hello is the first message an agent sends, and the first after it re-execs
 // following an Upgrade.
@@ -99,6 +99,25 @@ type Removed struct {
 	Error string `json:"error,omitempty"`
 }
 
+// Preview shows what's at the path of one item that Leftovers listed,
+// replying with Previewed. As with Remove, the agent refuses an item that's
+// no longer among the resource's leftovers.
+type Preview struct {
+	ID   string `json:"id"`
+	Item string `json:"item"`
+}
+
+type Previewed struct {
+	ID   string `json:"id"`
+	Item string `json:"item"`
+	// Lines are the start of a text file, a directory's entries, or a
+	// description of anything else, such as a link's target.
+	Lines []string `json:"lines,omitempty"`
+	// Cut, if set, says what Lines leaves out, e.g. "20 more lines".
+	Cut   string `json:"cut,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
 type Done struct {
 	Failed bool `json:"failed"`
 }
@@ -136,6 +155,8 @@ var messageTypes = registry(
 	Leftovers{},
 	Remove{},
 	Removed{},
+	Preview{},
+	Previewed{},
 	Done{},
 	Bye{},
 	Error{},

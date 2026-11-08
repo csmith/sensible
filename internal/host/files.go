@@ -1,13 +1,17 @@
 package host
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"net/http"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -958,4 +962,194 @@ func noteAptSourceChange(ctx context.Context, path string) {
 
 func drift(diff string) Change {
 	return Change{Diff: diff}
+}
+
+const (
+	// previewLimit is the most lines or entries a preview shows.
+	previewLimit = 200
+	// previewWidth is the most characters of a line a preview shows.
+	previewWidth = 200
+)
+
+// previewPath describes what's at path for prune to show: the start of a
+// text file, a directory's entries, or what anything else is. The second
+// result says what was left out.
+func previewPath(sys Sys, path string) ([]string, string, error) {
+	info, err := sys.Lstat(path)
+	if err != nil {
+		return nil, "", err
+	}
+	switch {
+	case info.IsSymlink():
+		target, err := sys.Readlink(path)
+		if err != nil {
+			return nil, "", err
+		}
+		return []string{"link to " + target}, "", nil
+	case info.IsDir():
+		return previewDir(sys, path)
+	case info.IsRegular():
+		return previewFile(sys, path, info.Size)
+	default:
+		return []string{fileKind(info.Mode)}, "", nil
+	}
+}
+
+func previewFile(sys Sys, path string, size int64) ([]string, string, error) {
+	f, err := sys.Open(path)
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() { _ = f.Close() }()
+	r := bufio.NewReader(f)
+	head, err := r.Peek(r.Size())
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, "", err
+	}
+	if isBinary(head, len(head) == r.Size()) {
+		return []string{fmt.Sprintf("binary, %s, %s", byteSize(size), http.DetectContentType(head))}, "", nil
+	}
+
+	var lines []string
+	var line []byte
+	more, partial := 0, false
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, bufio.ErrBufferFull) {
+			return nil, "", err
+		}
+		// Enough bytes for previewWidth characters, however wide they are.
+		if len(lines) < previewLimit && len(line) < previewWidth*utf8.UTFMax {
+			line = append(line, chunk...)
+		}
+		partial = partial || len(chunk) > 0
+		if partial && (bytes.HasSuffix(chunk, []byte("\n")) || errors.Is(err, io.EOF)) {
+			if len(lines) < previewLimit {
+				lines = append(lines, previewLine(line))
+			} else {
+				more++
+			}
+			line, partial = line[:0], false
+		}
+		if errors.Is(err, io.EOF) {
+			return lines, moreOf(more, "line"), nil
+		}
+	}
+}
+
+// isBinary reports whether head, the start of a file, isn't text. If the
+// file goes on, head may end part way through a character.
+func isBinary(head []byte, goesOn bool) bool {
+	if bytes.IndexByte(head, 0) >= 0 {
+		return true
+	}
+	for i := 0; i < utf8.UTFMax && i < len(head); i++ {
+		if utf8.Valid(head[:len(head)-i]) {
+			return false
+		}
+		if !goesOn {
+			break
+		}
+	}
+	return len(head) > 0
+}
+
+func previewLine(line []byte) string {
+	s := strings.TrimRight(string(line), "\r\n")
+	if utf8.RuneCountInString(s) <= previewWidth {
+		return s
+	}
+	return string([]rune(s)[:previewWidth]) + "…"
+}
+
+func previewDir(sys Sys, dir string) ([]string, string, error) {
+	var lines []string
+	more := 0
+	var walk func(rel string) error
+	walk = func(rel string) error {
+		names, err := sys.ReadDir(filepath.Join(dir, rel))
+		if err != nil {
+			return err
+		}
+		for _, name := range names {
+			entry := filepath.Join(rel, name)
+			path := filepath.Join(dir, entry)
+			info, err := sys.Lstat(path)
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			line := entry
+			switch {
+			case info.IsDir():
+				line += "/"
+			case info.IsSymlink():
+				target, err := sys.Readlink(path)
+				if err != nil {
+					return err
+				}
+				line += " → " + target
+			default:
+			}
+			if len(lines) < previewLimit {
+				lines = append(lines, line)
+			} else {
+				more++
+			}
+			if info.IsDir() {
+				if err := walk(entry); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if err := walk(""); err != nil {
+		return nil, "", err
+	}
+	return lines, moreOf(more, "entry"), nil
+}
+
+func fileKind(mode fs.FileMode) string {
+	switch {
+	case mode&fs.ModeNamedPipe != 0:
+		return "named pipe"
+	case mode&fs.ModeSocket != 0:
+		return "socket"
+	case mode&fs.ModeCharDevice != 0:
+		return "character device"
+	case mode&fs.ModeDevice != 0:
+		return "block device"
+	default:
+		return "special file"
+	}
+}
+
+func moreOf(n int, what string) string {
+	switch {
+	case n == 0:
+		return ""
+	case n == 1:
+		return "1 more " + what
+	case strings.HasSuffix(what, "y"):
+		return fmt.Sprintf("%d more %sies", n, strings.TrimSuffix(what, "y"))
+	default:
+		return fmt.Sprintf("%d more %ss", n, what)
+	}
+}
+
+func byteSize(n int64) string {
+	if n < 1024 {
+		return fmt.Sprintf("%d bytes", n)
+	}
+	size, unit := float64(n)/1024, "KiB"
+	for _, next := range []string{"MiB", "GiB", "TiB"} {
+		if size < 1024 {
+			break
+		}
+		size, unit = size/1024, next
+	}
+	return fmt.Sprintf("%.1f %s", size, unit)
 }

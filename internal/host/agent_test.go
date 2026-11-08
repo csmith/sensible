@@ -242,6 +242,31 @@ func TestServe_PruneListsAndRemovesLeftovers(t *testing.T) {
 	assert.True(t, sys.exists("/etc/os-release"))
 }
 
+func TestServe_PreviewsOnlyListedLeftovers(t *testing.T) {
+	ta := startAgent(t, nil)
+	ta.receive(t)
+	ta.agent.sys.(*testSys).write("/srv/volumes/old/data", "")
+	require.NoError(t, ta.ctrl.Send(Check{Resources: ResourceList{Volumes{Path: "/srv/volumes"}}}))
+	ta.receive(t)
+	ta.receive(t)
+
+	require.NoError(t, ta.ctrl.Send(Preview{ID: "volumes:/srv/volumes", Item: "/srv/volumes/old"}))
+	assert.Equal(
+		t,
+		Previewed{ID: "volumes:/srv/volumes", Item: "/srv/volumes/old", Lines: []string{"data"}},
+		ta.receive(t),
+	)
+
+	require.NoError(t, ta.ctrl.Send(Preview{ID: "volumes:/srv/volumes", Item: "/etc/shadow"}))
+	previewed := ta.receive(t).(Previewed)
+	assert.Contains(t, previewed.Error, "no longer a leftover")
+	assert.Empty(t, previewed.Lines)
+
+	require.NoError(t, ta.ctrl.Send(Preview{ID: "volumes:/srv/volumes", Item: "user alice"}))
+	previewed = ta.receive(t).(Previewed)
+	assert.Contains(t, previewed.Error, "isn't a path")
+}
+
 func TestServe_PruneWithoutCheckIsAnError(t *testing.T) {
 	ta := startAgent(t, nil)
 	ta.receive(t)
