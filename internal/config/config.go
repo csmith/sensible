@@ -407,7 +407,7 @@ type JobConfig struct {
 }
 
 // BackupConfig is something to back up: a directory, or what a command
-// prints.
+// prints. A command needs restic 0.17 or later on the host.
 type BackupConfig struct {
 	Path    string  `yaml:"path"`
 	Command Command `yaml:"command"`
