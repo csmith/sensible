@@ -52,6 +52,9 @@ type HostEntry struct {
 	// Ignored are leftovers that are meant to stay on the host, as items by
 	// the ID of the resource that lists them.
 	Ignored map[string][]string `yaml:"ignored"`
+	// OIDCClients are the OIDC provider's clients sensible created for the
+	// host, each with the ID of the secret it registered, if any.
+	OIDCClients map[string]string `yaml:"oidc_clients"`
 }
 
 // HostKeys drops duplicate keys, as a key is often in both a hand-written
@@ -143,6 +146,9 @@ type Config struct {
 	Files      []FileConfig             `yaml:"files"`
 	Services   map[string]ServiceState  `yaml:"services"`
 	Leftovers  *LeftoversConfig         `yaml:"leftovers"`
+	// OIDCClients are the OIDC provider's clients, by client ID. They're set
+	// up from the controller, not on the host.
+	OIDCClients map[string]OIDCClientConfig `yaml:"oidc_clients"`
 	// Stacks come from the host's roles that have a docker-compose.yml,
 	// rather than from a module, and are in name order.
 	Stacks []Stack `yaml:"-"`
@@ -304,6 +310,77 @@ type LeftoversConfig struct {
 type KeptConfig struct {
 	Paths    Set `yaml:"paths"`
 	Packages Set `yaml:"packages"`
+}
+
+// OIDCClientConfig is a client of sensible.yml's OIDC provider.
+type OIDCClientConfig struct {
+	// Name defaults to the client ID.
+	Name               string `yaml:"name"`
+	CallbackURLs       Set    `yaml:"callback_urls"`
+	LogoutCallbackURLs Set    `yaml:"logout_callback_urls"`
+	// Public clients have no secret, and always use PKCE.
+	Public bool `yaml:"public"`
+	PKCE   bool `yaml:"pkce"`
+	// Groups are the names of the user groups that may use the client.
+	// Empty allows everyone.
+	Groups Set `yaml:"groups"`
+	// Secret names the !generated value, from the declaring role's stack,
+	// that's the client's secret. Confidential clients need one.
+	Secret GeneratedName `yaml:"secret"`
+
+	// SecretValue is Secret's value. HostConfig sets it.
+	SecretValue string `yaml:"-"`
+}
+
+// GeneratedName is the name in a !generated tag.
+type GeneratedName string
+
+func (g *GeneratedName) UnmarshalYAML(_ context.Context, node ast.Node) error {
+	if isNull(node) {
+		*g = ""
+		return nil
+	}
+	tag, ok := node.(*ast.TagNode)
+	if !ok || tag.Start.Value != generatedTag {
+		return nodeError(node, "expected a !generated value")
+	}
+	v, ok := tag.Value.(*ast.StringNode)
+	if !ok || !generatedName.MatchString(v.Value) {
+		return nodeError(tag, "!generated needs a name of letters, digits, \"-\" and \"_\"")
+	}
+	*g = GeneratedName(v.Value)
+	return nil
+}
+
+// finishOIDCClients sets the OIDC clients' secrets from the stacks that
+// generated them, checks the clients, and fills in their default names.
+func (c *Config) finishOIDCClients() error {
+	clients := c.OIDCClients
+	for _, s := range c.Stacks {
+		for id, secret := range s.OIDCSecrets {
+			client := clients[id]
+			client.SecretValue = secret
+			clients[id] = client
+		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(clients)) {
+		client := clients[id]
+		switch {
+		case len(client.CallbackURLs) == 0:
+			return fmt.Errorf("oidc_clients.%s: needs callback_urls", id)
+		case client.Public && client.Secret != "":
+			return fmt.Errorf("oidc_clients.%s: a public client has no secret", id)
+		case !client.Public && client.Secret == "":
+			return fmt.Errorf("oidc_clients.%s: needs a !generated secret, or public: true", id)
+		case !client.Public && len(client.SecretValue) < 16:
+			return fmt.Errorf("oidc_clients.%s: secret must be at least 16 characters", id)
+		}
+		if client.Name == "" {
+			client.Name = id
+		}
+		clients[id] = client
+	}
+	return nil
 }
 
 // ServiceState is what a systemd unit in services should be: enabled and
@@ -543,6 +620,36 @@ func (s DNSSettings) check() error {
 	return nil
 }
 
+// OIDCSettings are the OIDC provider that oidc_clients are set up in, and
+// its settings.
+type OIDCSettings struct {
+	// Provider names the OIDC provider. Its settings are under its name.
+	Provider string           `yaml:"provider"`
+	PocketID PocketIDSettings `yaml:"pocketid"`
+}
+
+type PocketIDSettings struct {
+	// URL is where Pocket ID is served, e.g. "https://id.example.com".
+	URL    string `yaml:"url"`
+	APIKey Secret `yaml:"api_key"`
+}
+
+func (s OIDCSettings) check() error {
+	switch s.Provider {
+	case "":
+		if s.PocketID.URL != "" || !s.PocketID.APIKey.IsZero() {
+			return errors.New("oidc.provider isn't set")
+		}
+	case "pocketid":
+		if s.PocketID.URL == "" || s.PocketID.APIKey.IsZero() {
+			return errors.New("oidc.pocketid: needs a url and api_key")
+		}
+	default:
+		return fmt.Errorf("oidc.provider: unknown provider %q", s.Provider)
+	}
+	return nil
+}
+
 // Repo is a configuration directory.
 type Repo struct {
 	dir             string
@@ -551,6 +658,7 @@ type Repo struct {
 	recipients      []age.Recipient
 	identityCommand []string
 	dns             DNSSettings
+	oidc            OIDCSettings
 	keys            *keyring
 	// roles maps every role, including child roles, to its children.
 	roles map[string][]string
@@ -625,6 +733,11 @@ func (r *Repo) Inventory() Inventory {
 // DNS is the DNS settings from sensible.yml.
 func (r *Repo) DNS() DNSSettings {
 	return r.dns
+}
+
+// OIDC is the OIDC provider's settings from sensible.yml.
+func (r *Repo) OIDC() OIDCSettings {
+	return r.oidc
 }
 
 // Vhosts maps each vhost, as written with !vhost, to the hosts serving it.
@@ -726,6 +839,35 @@ func (r *Repo) DropGenerated(name, stack string, keys []string) error {
 			}
 		},
 	)
+}
+
+// SaveOIDCClient records in the host's state file that sensible manages the
+// OIDC client for it, with the ID of the secret it registered, if any.
+func (r *Repo) SaveOIDCClient(name, id, secretID string) error {
+	if err := r.checkHost(name); err != nil {
+		return err
+	}
+	return r.updateState(
+		name,
+		func(s *hostState) {
+			if s.OIDCClients == nil {
+				s.OIDCClients = map[string]string{}
+			}
+			s.OIDCClients[id] = secretID
+		},
+	)
+}
+
+// DropOIDCClient removes the OIDC client from the host's state file.
+func (r *Repo) DropOIDCClient(name, id string) error {
+	if err := r.checkHost(name); err != nil {
+		return err
+	}
+	file := stateFile(name)
+	if s, ok := r.sources[joinPath(name, "oidc_clients", id)]; ok && s.source != r.path(file) {
+		return fmt.Errorf("%s sets %s's oidc_clients %s, so it can't be removed", s.source, name, id)
+	}
+	return r.updateState(name, func(s *hostState) { delete(s.OIDCClients, id) })
 }
 
 // IgnoreLeftover records in the host's state file that the item the
@@ -832,6 +974,7 @@ type hostState struct {
 	Generated    map[string]map[string]Secret `yaml:"generated"`
 	Certs        map[string]savedCert         `yaml:"certs"`
 	Ignored      map[string][]string          `yaml:"ignored"`
+	OIDCClients  map[string]string            `yaml:"oidc_clients"`
 }
 
 // write adds the state to a state file, under its host's key.
@@ -873,6 +1016,12 @@ func (s hostState) write(out *strings.Builder) {
 			for _, item := range slices.Sorted(slices.Values(s.Ignored[id])) {
 				out.WriteString("      - " + strconv.Quote(item) + "\n")
 			}
+		}
+	}
+	if len(s.OIDCClients) > 0 {
+		out.WriteString("  oidc_clients:\n")
+		for _, id := range slices.Sorted(maps.Keys(s.OIDCClients)) {
+			out.WriteString("    " + strconv.Quote(id) + ": " + strconv.Quote(s.OIDCClients[id]) + "\n")
 		}
 	}
 }

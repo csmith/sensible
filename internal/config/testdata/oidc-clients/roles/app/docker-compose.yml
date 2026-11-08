@@ -1,0 +1,4 @@
+services:
+  app:
+    environment:
+      OIDC_SECRET: !generated oidc

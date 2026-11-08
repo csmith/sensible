@@ -576,6 +576,16 @@ func TestOpen(t *testing.T) {
 			map[string]string{"sensible.yml": "dns:\n  provider: mydnshost\n"},
 			"dns.mydnshost: needs an auth_user and auth_key",
 		},
+		{
+			"OIDC without a provider",
+			map[string]string{"sensible.yml": "oidc:\n  pocketid:\n    url: https://id.example.com\n"},
+			"sensible.yml: oidc.provider isn't set",
+		},
+		{
+			"Pocket ID without an API key",
+			map[string]string{"sensible.yml": "oidc:\n  provider: pocketid\n  pocketid:\n    url: https://id.example.com\n"},
+			"oidc.pocketid: needs a url and api_key",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(

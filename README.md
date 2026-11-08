@@ -143,6 +143,45 @@ dns:
       content: "{host}"
 ```
 
+### OIDC clients
+
+`oidc_clients` sets up clients, by client ID, in the OIDC provider. Each needs
+`callback_urls`. A confidential client's `secret` is a `!generated` value of
+the role's stack, which the stack can use too, and it's the only secret the
+client keeps. Public clients have no secret, and always use PKCE. `name`
+defaults to the client ID, and without `groups` any user can sign in. The
+provider must be set, with its settings under its name. Pocket ID is
+supported, with an admin's API key.
+
+```yaml
+# sensible.yml
+oidc:
+  provider: pocketid
+  pocketid:
+    url: https://id.example.com
+    api_key: !age ...   # From `sensible secret encrypt`
+```
+
+```yaml
+# roles/grafana/role.yml
+oidc_clients:
+  grafana:
+    name: Grafana
+    callback_urls: [https://grafana.example.com/login/generic_oauth]
+    logout_callback_urls: [https://grafana.example.com/login]
+    pkce: true
+    groups: [admins]
+    secret: !generated oidc_secret
+
+compose:
+  env:
+    OIDC_CLIENT_SECRET: !generated oidc_secret
+```
+
+A client that's already there is taken over. Once nothing declares a client,
+prune offers to delete it. To move a client to another host, apply
+both hosts together.
+
 ## Using
 
 ```sh

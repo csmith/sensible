@@ -34,10 +34,14 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 	expansions := map[string]expansion{}
 	set := map[string]setBy{}
 	written := map[string]string{}
+	secretRoles := map[string]string{}
 	for _, role := range slices.Sorted(maps.Keys(roles)) {
 		e, err := r.expandRole(name, role, osFamily, roles[role])
 		if err != nil {
 			return Config{}, fmt.Errorf("%s: role %s: %w", name, role, err)
+		}
+		if e.oidcSecrets, err = r.roleOIDCSecrets(role, e.node, secretRoles); err != nil {
+			return Config{}, fmt.Errorf("%s: %w", name, err)
 		}
 		if _, ok := r.stacks[role]; ok {
 			expansions[role] = e
@@ -80,6 +84,9 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 			return Config{}, fmt.Errorf("%s: role %s: %w", name, role, err)
 		}
 		c.Stacks = append(c.Stacks, s)
+	}
+	if err := c.finishOIDCClients(); err != nil {
+		return Config{}, fmt.Errorf("%s: %w", name, err)
 	}
 	slices.SortFunc(c.Stacks, func(a, b Stack) int { return strings.Compare(a.Name, b.Name) })
 	c.Volumes = r.hostVolumes(slices.Collect(maps.Keys(roles)))
@@ -138,6 +145,9 @@ type expansion struct {
 	migrations ast.Node
 	// placeholders fill the stack's compose file.
 	placeholders roleFiller
+	// oidcSecrets are the !generated secrets of the OIDC clients in node,
+	// by client ID.
+	oidcSecrets map[string]*ast.TagNode
 }
 
 func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (expansion, error) {
@@ -420,14 +430,93 @@ func checkEnv(env ast.Node) error {
 }
 
 // checkStackTags rejects the tags that are only resolved for stacks, where
-// they would be read as their values.
+// they would be read as their values. OIDC clients' secrets are left to
+// HostConfig.
 func checkStackTags(node ast.Node) error {
-	for _, name := range []string{generatedTag, certTag} {
-		if tag := findTag(node, name); tag != nil {
-			return nodeError(tag, name+" only works in a stack's compose file, compose.env and migrations' on")
+	nodes := []ast.Node{node}
+	if clients := oidcClientsSetting(node); clients != nil {
+		nodes = []ast.Node{withoutSetting(node, clients)}
+		for _, c := range mappingValues(clients.Value) {
+			for _, field := range mappingValues(c.Value) {
+				if keyString(field.Key) != "secret" {
+					nodes = append(nodes, field.Value)
+				}
+			}
+		}
+	}
+	for _, n := range nodes {
+		for _, name := range []string{generatedTag, certTag} {
+			if tag := findTag(n, name); tag != nil {
+				return nodeError(
+					tag,
+					name+" only works in a stack's compose file, compose.env, migrations' on and oidc_clients' secret",
+				)
+			}
 		}
 	}
 	return nil
+}
+
+const oidcClientsKey = "oidc_clients"
+
+func oidcClientsSetting(node ast.Node) *ast.MappingValueNode {
+	for _, v := range mappingValues(node) {
+		if keyString(v.Key) == oidcClientsKey {
+			return v
+		}
+	}
+	return nil
+}
+
+// withoutSetting is a mapping with node's values other than setting.
+func withoutSetting(node ast.Node, setting *ast.MappingValueNode) ast.Node {
+	m := ast.Mapping(node.GetToken(), false)
+	for _, v := range mappingValues(node) {
+		if v != setting {
+			m.Values = append(m.Values, v)
+		}
+	}
+	return m
+}
+
+// roleOIDCSecrets are the !generated secrets of the OIDC clients in node,
+// the role's settings, by client ID. Only a role with a stack has values
+// for them, and only one role may set each. secretRoles maps each client to
+// the role that set its secret so far.
+func (r *Repo) roleOIDCSecrets(
+	role string,
+	node ast.Node,
+	secretRoles map[string]string,
+) (map[string]*ast.TagNode, error) {
+	secrets := oidcSecrets(node)
+	for _, id := range slices.Sorted(maps.Keys(secrets)) {
+		if prev, ok := secretRoles[id]; ok {
+			return nil, fmt.Errorf("roles %s and %s both set %s.%s.secret", prev, role, oidcClientsKey, id)
+		}
+		secretRoles[id] = role
+		if _, ok := r.stacks[role]; !ok {
+			return nil, fmt.Errorf("role %s: %s.%s.secret: !generated needs a role with a stack", role, oidcClientsKey, id)
+		}
+	}
+	return secrets, nil
+}
+
+// oidcSecrets are the !generated tags that are the secrets of the OIDC
+// clients in node, a role's settings, by client ID.
+func oidcSecrets(node ast.Node) map[string]*ast.TagNode {
+	clients := oidcClientsSetting(node)
+	if clients == nil {
+		return nil
+	}
+	secrets := map[string]*ast.TagNode{}
+	for _, c := range mappingValues(clients.Value) {
+		for _, field := range mappingValues(c.Value) {
+			if tag, ok := field.Value.(*ast.TagNode); ok && keyString(field.Key) == "secret" && tag.Start.Value == generatedTag {
+				secrets[keyString(c.Key)] = tag
+			}
+		}
+	}
+	return secrets
 }
 
 // splitParams separates a role file's parameters from the settings it

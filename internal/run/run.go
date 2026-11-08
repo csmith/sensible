@@ -62,6 +62,10 @@ func Run(ctx context.Context, opts Options) error {
 		Vhosts:      repo.Vhosts(),
 		DNSNames:    dnsNames(repo.Inventory()),
 
+		OIDC:         newOIDCProvider,
+		OIDCSettings: repo.OIDC(),
+		OIDCOwners:   oidcOwners(repo.Inventory()),
+
 		UpdatePackages: opts.UpdatePackages,
 	}
 	return r.Execute(ctx, targets, opts.Yes)
@@ -98,6 +102,12 @@ func compiler(repo *config.Repo) func(target, host.Facts) (compiled, error) {
 		c.unusedSecrets = unusedSecrets(repo, t.name, cfg)
 		c.ignored = repo.Inventory().Hosts[t.name].Ignored
 		c.ignore = func(id, item string) error { return repo.IgnoreLeftover(t.name, id, item) }
+		c.oidcClients = cfg.OIDCClients
+		c.oidc = oidcRecords{
+			clients: repo.Inventory().Hosts[t.name].OIDCClients,
+			save:    func(id, secretID string) error { return repo.SaveOIDCClient(t.name, id, secretID) },
+			drop:    func(id string) error { return repo.DropOIDCClient(t.name, id) },
+		}
 		return c, nil
 	}
 }
@@ -293,6 +303,10 @@ type compiled struct {
 	// of the resource that lists them, and ignore records another.
 	ignored map[string][]string
 	ignore  func(id, item string) error
+	// oidcClients are the OIDC clients the host declares, and oidc those
+	// sensible manages for it.
+	oidcClients map[string]config.OIDCClientConfig
+	oidc        oidcRecords
 }
 
 // savedSecrets are the generated values saved for one of a host's stacks.
@@ -318,8 +332,13 @@ type Runner struct {
 	DNSSettings config.DNSSettings
 	// Vhosts maps each vhost to the hosts serving it, and DNSNames each
 	// host to its dns_name, for all hosts, not just those in the run.
-	Vhosts   map[string][]string
-	DNSNames map[string]string
+	Vhosts       map[string][]string
+	DNSNames     map[string]string
+	OIDC         func(settings config.OIDCSettings) (oidcProvider, error)
+	OIDCSettings config.OIDCSettings
+	// OIDCOwners maps each OIDC client sensible manages to the host it's
+	// for, for all hosts.
+	OIDCOwners map[string]string
 	// UpdatePackages puts a PackageUpdate before each host's resources.
 	UpdatePackages bool
 }
@@ -336,8 +355,15 @@ type hostRun struct {
 	unusedSecrets []savedSecrets
 	ignored       map[string][]string
 	ignore        func(id, item string) error
-	checked       []host.Checked
-	failed        bool
+	oidcClients   map[string]config.OIDCClientConfig
+	oidc          oidcRecords
+	// oidcChanged is set when the OIDC changes register a secret generated
+	// for the host, and saveFailed when its generated values couldn't be
+	// saved.
+	oidcChanged bool
+	saveFailed  bool
+	checked     []host.Checked
+	failed      bool
 	// leftovers are what prune offers to remove, and unlisted the
 	// resources whose leftovers couldn't be listed.
 	leftovers []*leftover
@@ -366,8 +392,18 @@ func (r *Runner) Execute(ctx context.Context, targets []target, yes bool) error 
 		out.finish(t, out.dnsLines(dns)...)
 	}
 
-	failed := len(dns.errs) > 0 || anyFailed(runs)
-	steps := slices.DeleteFunc([]crossHostStep{dns.step()}, func(s crossHostStep) bool { return s.changes == 0 })
+	var oidc oidcPlan
+	if slices.ContainsFunc(runs, func(h *hostRun) bool { return len(h.oidcClients) > 0 }) {
+		t := out.beginSection("Resolving OIDC changes")
+		oidc = r.planOIDC(ctx, runs)
+		out.finish(t, out.crossHostLines(oidc.lines(), nil, oidc.errs, oidc.unchanged)...)
+	}
+
+	failed := len(dns.errs) > 0 || len(oidc.errs) > 0 || anyFailed(runs)
+	steps := slices.DeleteFunc(
+		[]crossHostStep{dns.step(), oidc.step()},
+		func(s crossHostStep) bool { return s.changes == 0 },
+	)
 	if anyFailed(runs) && len(steps) > 0 {
 		out.line("")
 		for _, st := range steps {
@@ -488,6 +524,7 @@ func (r *Runner) checkAll(runs []*hostRun) {
 		}
 		h.resources, h.save, h.unusedSecrets = c.resources, c.save, c.unusedSecrets
 		h.ignored, h.ignore = c.ignored, c.ignore
+		h.oidcClients, h.oidc = c.oidcClients, c.oidc
 		go func() {
 			defer close(h.done)
 			h.check()
@@ -510,12 +547,13 @@ func (h *hostRun) check() {
 }
 
 // saveGenerated saves the values generated for each host about to be
-// applied, so they're used from then on. A host whose values can't be saved
-// isn't applied.
+// applied, or whose OIDC clients' secrets are about to be registered, so
+// they're used from then on. A host whose values can't be saved isn't
+// applied.
 func saveGenerated(runs []*hostRun, out *renderer) {
 	var saving []*hostRun
 	for _, h := range runs {
-		if h.agent != nil && h.pending() && h.save != nil {
+		if h.agent != nil && (h.pending() || h.oidcChanged) && h.save != nil {
 			saving = append(saving, h)
 		}
 	}
@@ -525,7 +563,7 @@ func saveGenerated(runs []*hostRun, out *renderer) {
 	out.section("Saving generated secrets")
 	for _, h := range saving {
 		if err := h.save(); err != nil {
-			h.err = err
+			h.err, h.saveFailed = err, true
 			out.item(out.p.failure(h.name + ": " + err.Error())...)
 			continue
 		}

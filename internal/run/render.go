@@ -433,29 +433,37 @@ func indentItems(lines []string) []string {
 }
 
 func (r *renderer) dnsLines(dns dnsPlan) []string {
-	lines := make([]string, 0, len(dns.changes)+len(dns.warnings)+len(dns.errs)+1)
+	var changes []string
 	for _, c := range dns.changes {
-		for _, l := range c.lines() {
-			mark, rest, _ := strings.Cut(l, " ")
-			switch mark {
-			case "+":
-				mark = r.p.ok(mark)
-			case "-":
-				mark = r.p.fail(mark)
-			default:
-				mark = r.p.change(mark)
-			}
-			lines = append(lines, mark+" "+rest)
-		}
+		changes = append(changes, c.lines()...)
 	}
-	for _, w := range dns.warnings {
+	return r.crossHostLines(changes, dns.warnings, dns.errs, dns.unchanged)
+}
+
+// crossHostLines shows the planned changes of a cross-host step. Each
+// change starts with "+", "-" or "~" and a space.
+func (r *renderer) crossHostLines(changes, warnings []string, errs []error, unchanged int) []string {
+	lines := make([]string, 0, len(changes)+len(warnings)+len(errs)+1)
+	for _, l := range changes {
+		mark, rest, _ := strings.Cut(l, " ")
+		switch mark {
+		case "+":
+			mark = r.p.ok(mark)
+		case "-":
+			mark = r.p.fail(mark)
+		default:
+			mark = r.p.change(mark)
+		}
+		lines = append(lines, mark+" "+rest)
+	}
+	for _, w := range warnings {
 		lines = append(lines, r.p.warning(w)...)
 	}
-	for _, err := range dns.errs {
+	for _, err := range errs {
 		lines = append(lines, r.p.failure(err.Error())...)
 	}
-	if dns.unchanged > 0 {
-		lines = append(lines, r.p.dim(fmt.Sprintf("✓ %d unchanged", dns.unchanged)))
+	if unchanged > 0 {
+		lines = append(lines, r.p.dim(fmt.Sprintf("✓ %d unchanged", unchanged)))
 	}
 	return indentItems(lines)
 }
@@ -635,7 +643,11 @@ func (r *renderer) applyDone(h *hostRun) {
 
 // dnsApply shows a DNS change with a spinner while apply makes it.
 func (r *renderer) dnsApply(c *dnsChange, apply func() error) error {
-	name := c.types() + " " + c.fqdn
+	return r.applyItem(c.types()+" "+c.fqdn, apply)
+}
+
+// applyItem shows a cross-host change with a spinner while apply makes it.
+func (r *renderer) applyItem(name string, apply func() error) error {
 	t := r.beginItem(name)
 	if err := apply(); err != nil {
 		r.finish(t, indentItems(r.p.failure(name+": "+err.Error()))...)

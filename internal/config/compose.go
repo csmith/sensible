@@ -57,6 +57,9 @@ type Stack struct {
 	// Unused are the names of the values saved for this stack on the host
 	// that it no longer uses, in order.
 	Unused []string
+	// OIDCSecrets are the values of the !generated secrets of the OIDC
+	// clients the role declares, by client ID.
+	OIDCSecrets map[string]string
 	// Migrations are in name order.
 	Migrations []Migration
 	// CertPaths are the certificate files the stack refers to with !cert,
@@ -420,6 +423,16 @@ func (r *Repo) renderStack(
 	}
 	if s.Migrations, err = c.renderMigrations(e.migrations); err != nil {
 		return Stack{}, fmt.Errorf("%s: %w", migrationsKey, err)
+	}
+	for id, tag := range e.oidcSecrets {
+		secret, err := c.gen.value(tag)
+		if err != nil {
+			return Stack{}, fmt.Errorf("%s.%s.secret: %w", oidcClientsKey, id, err)
+		}
+		if s.OIDCSecrets == nil {
+			s.OIDCSecrets = map[string]string{}
+		}
+		s.OIDCSecrets[id] = secret
 	}
 	s.Generated = c.gen.created
 	for name := range generated[def.name] {

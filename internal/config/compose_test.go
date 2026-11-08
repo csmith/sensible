@@ -855,7 +855,7 @@ func TestHostConfig_generatedErrors(t *testing.T) {
 		{
 			"in role settings",
 			map[string]string{"roles/web/role.yml": "jobs:\n  a: {command: [!generated x], schedule: daily}\n"},
-			"!generated only works in a stack's compose file, compose.env and migrations' on",
+			"!generated only works in a stack's compose file, compose.env, migrations' on and oidc_clients' secret",
 		},
 		{
 			"in role settings through a param",
@@ -1044,4 +1044,121 @@ func TestHostConfig_migrationErrors(t *testing.T) {
 			},
 		)
 	}
+}
+
+func TestHostConfig_oidcClientSecretIsTheStacksGeneratedValue(t *testing.T) {
+	tr := newTestRepo(t, readTestTree(t, "oidc-clients"))
+	r := tr.open(t)
+
+	c, err := r.HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	client := c.OIDCClients["app-alpha"]
+	secret := c.Stacks[0].Generated["oidc"]
+	require.NotEmpty(t, secret)
+	assert.Equal(t, secret, client.SecretValue)
+	assert.Contains(t, stackFile(t, c.Stacks[0], "docker-compose.yml").Content, secret)
+	assert.Equal(t, "app-alpha", client.Name)
+	assert.Equal(t, Set{"https://app.example.com/callback"}, client.CallbackURLs)
+	assert.Equal(t, Set{"admins"}, client.Groups)
+
+	require.NoError(t, r.SaveGenerated("alpha", c.Stacks))
+	saved, err := tr.open(t).HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	assert.Equal(t, secret, saved.OIDCClients["app-alpha"].SecretValue)
+	assert.Empty(t, saved.Stacks[0].Generated)
+	assert.Empty(t, saved.Stacks[0].Unused)
+}
+
+// oidcClientYAML is role settings with one OIDC client, app, with a callback
+// URL and the given settings.
+func oidcClientYAML(settings string) string {
+	return "oidc_clients:\n  app:\n    callback_urls: [https://app.example.com/cb]\n" + settings
+}
+
+func TestHostConfig_oidcClientSecretMayBeTheOnlyUse(t *testing.T) {
+	files := readTestTree(t, "oidc-clients")
+	files["roles/app/role.yml"] = oidcClientYAML("    secret: !generated other\n")
+
+	c, err := newTestRepo(t, files).open(t).HostConfig("alpha", "debian")
+
+	require.NoError(t, err)
+	assert.Equal(t, c.Stacks[0].Generated["other"], c.OIDCClients["app"].SecretValue)
+}
+
+func TestHostConfig_oidcClientErrors(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{
+			"generated secret without a stack",
+			map[string]string{"roles/plain/role.yml": oidcClientYAML("    secret: !generated x\n")},
+			"role plain: oidc_clients.app.secret: !generated needs a role with a stack",
+		},
+		{
+			"generated elsewhere in a client",
+			map[string]string{"roles/app/role.yml": oidcClientYAML("    name: !generated x\n")},
+			"!generated only works",
+		},
+		{
+			"plain secret",
+			map[string]string{"roles/app/role.yml": oidcClientYAML("    secret: hunter2\n")},
+			"expected a !generated value",
+		},
+		{
+			"no callback URLs",
+			map[string]string{"roles/app/role.yml": "oidc_clients:\n  app:\n    secret: !generated x\n"},
+			"oidc_clients.app: needs callback_urls",
+		},
+		{
+			"confidential without a secret",
+			map[string]string{"roles/app/role.yml": oidcClientYAML("    name: App\n")},
+			"oidc_clients.app: needs a !generated secret, or public: true",
+		},
+		{
+			"public with a secret",
+			map[string]string{"roles/app/role.yml": oidcClientYAML("    public: true\n    secret: !generated x\n")},
+			"oidc_clients.app: a public client has no secret",
+		},
+		{
+			"two roles set the secret",
+			map[string]string{
+				"roles/app/role.yml":             oidcClientYAML("    secret: !generated x\n"),
+				"roles/other/role.yml":           oidcClientYAML("    secret: !generated x\n"),
+				"roles/other/docker-compose.yml": "services: {}\n",
+			},
+			"roles app and other both set oidc_clients.app.secret",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				files := map[string]string{
+					"hosts.d/hosts.yml":            "alpha:\n  roles: {app: , plain: , other: }\n",
+					"roles/app/docker-compose.yml": "services: {}\n",
+					"roles/plain/role.yml":         "",
+					"roles/other/role.yml":         "",
+				}
+				maps.Copy(files, tt.files)
+				_, err := newTestRepo(t, files).open(t).HostConfig("alpha", "debian")
+				require.ErrorContains(t, err, tt.want)
+			},
+		)
+	}
+}
+
+func TestSaveOIDCClient_recordsClientsForTheHost(t *testing.T) {
+	tr := newTestRepo(t, readTestTree(t, "oidc-clients"))
+	r := tr.open(t)
+	clients := func() map[string]string { return tr.open(t).Inventory().Hosts["alpha"].OIDCClients }
+
+	require.NoError(t, r.SaveOIDCClient("alpha", "app", "secret-1"))
+	require.NoError(t, r.SaveOIDCClient("alpha", "public", ""))
+	require.NoError(t, r.SaveOIDCClient("alpha", "app", "secret-2"))
+	assert.Equal(t, map[string]string{"app": "secret-2", "public": ""}, clients())
+
+	require.NoError(t, r.DropOIDCClient("alpha", "app"))
+	assert.Equal(t, map[string]string{"public": ""}, clients())
 }

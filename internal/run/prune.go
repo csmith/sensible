@@ -42,6 +42,9 @@ func Prune(ctx context.Context, opts PruneOptions) error {
 		Ask:     askOnTerminal,
 		Builds:  NewEmbeddedBuilds(),
 		Compile: compiler(repo),
+
+		OIDC:         newOIDCProvider,
+		OIDCSettings: repo.OIDC(),
 	}
 	return r.Prune(ctx, targets)
 }
@@ -71,6 +74,7 @@ func (r *Runner) Prune(ctx context.Context, targets []target) error {
 	out.agents(runs)
 
 	r.checkAll(runs)
+	openOIDC := r.openOIDCOnce()
 	var wg sync.WaitGroup
 	for _, h := range runs {
 		if h.agent == nil {
@@ -82,6 +86,9 @@ func (r *Runner) Prune(ctx context.Context, targets []target) error {
 				<-h.done
 				if h.err == nil && !h.failed && !h.pending() {
 					h.findLeftovers()
+					if h.err == nil {
+						h.findUnusedOIDCClients(ctx, openOIDC)
+					}
 				}
 				out.finish(t, indentItems(leftoverLines(h, out.p))...)
 			},

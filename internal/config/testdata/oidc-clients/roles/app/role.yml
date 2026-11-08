@@ -1,0 +1,5 @@
+oidc_clients:
+  "app-{host}":
+    callback_urls: [https://app.example.com/callback]
+    groups: [admins]
+    secret: !generated oidc

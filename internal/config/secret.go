@@ -348,7 +348,8 @@ func (r *Repo) readSettings() error {
 			// IdentityCommand prints the age identity, e.g. [op, read, op://...].
 			IdentityCommand []string `yaml:"identity_command"`
 		} `yaml:"secrets"`
-		DNS DNSSettings `yaml:"dns"`
+		DNS  DNSSettings  `yaml:"dns"`
+		OIDC OIDCSettings `yaml:"oidc"`
 		// CAs are the certificate authorities that certs may name.
 		CAs []string `yaml:"cas"`
 	}
@@ -376,6 +377,11 @@ func (r *Repo) readSettings() error {
 		s.DNS.Vhosts[i].Type = strings.ToUpper(rec.Type)
 	}
 	r.dns = s.DNS
+	if err := s.OIDC.check(); err != nil {
+		return fmt.Errorf("%s: %w", file, err)
+	}
+	s.OIDC.PocketID.URL = strings.TrimSuffix(s.OIDC.PocketID.URL, "/")
+	r.oidc = s.OIDC
 	for _, id := range s.CAs {
 		if !generatedName.MatchString(id) {
 			return fmt.Errorf("%s: cas: %q must be letters, digits, \"-\" and \"_\"", file, id)
