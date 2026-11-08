@@ -53,8 +53,40 @@ type HostEntry struct {
 	// the ID of the resource that lists them.
 	Ignored map[string][]string `yaml:"ignored"`
 	// OIDCClients are the OIDC provider's clients sensible created for the
-	// host, each with the ID of the secret it registered, if any.
-	OIDCClients map[string]string `yaml:"oidc_clients"`
+	// host.
+	OIDCClients map[string]SavedOIDCClient `yaml:"oidc_clients"`
+}
+
+// SavedOIDCClient is what sensible registered with an OIDC client it
+// manages: the ID of its secret, if any, and the SHA-256 hashes of the logos
+// it uploaded, in hex.
+type SavedOIDCClient struct {
+	SecretID string `yaml:"secret_id"`
+	Logo     string `yaml:"logo"`
+	DarkLogo string `yaml:"dark_logo"`
+}
+
+// UnmarshalYAML also takes a bare secret ID, which is how a client without
+// logos is written.
+func (s *SavedOIDCClient) UnmarshalYAML(ctx context.Context, node ast.Node) error {
+	if str, ok := node.(*ast.StringNode); ok {
+		*s = SavedOIDCClient{SecretID: str.Value}
+		return nil
+	}
+	type plain SavedOIDCClient
+	return decode(ctx, node, (*plain)(s))
+}
+
+func (s SavedOIDCClient) yaml() string {
+	if s.Logo == "" && s.DarkLogo == "" {
+		return strconv.Quote(s.SecretID)
+	}
+	return fmt.Sprintf(
+		"{secret_id: %s, logo: %s, dark_logo: %s}",
+		strconv.Quote(s.SecretID),
+		strconv.Quote(s.Logo),
+		strconv.Quote(s.DarkLogo),
+	)
 }
 
 // HostKeys drops duplicate keys, as a key is often in both a hand-written
@@ -327,9 +359,32 @@ type OIDCClientConfig struct {
 	// Secret names the !generated value, from the declaring role's stack,
 	// that's the client's secret. Confidential clients need one.
 	Secret GeneratedName `yaml:"secret"`
+	// LaunchURL is where the provider's app list sends users. Empty leaves
+	// the client's as it is.
+	LaunchURL string `yaml:"launch_url"`
+	// Logo and DarkLogo are images in the files directory of the role or
+	// partial that declares the client, for light and dark themes. Empty
+	// leaves the client's as it is.
+	Logo     string `yaml:"logo"`
+	DarkLogo string `yaml:"dark_logo"`
 
-	// SecretValue is Secret's value. HostConfig sets it.
-	SecretValue string `yaml:"-"`
+	// SecretValue is Secret's value, and LogoData and DarkLogoData the
+	// logos' contents. HostConfig sets them.
+	SecretValue            string `yaml:"-"`
+	LogoData, DarkLogoData []byte `yaml:"-"`
+}
+
+// logoTypes are the image types OIDC client logos may be, by extension.
+var logoTypes = []string{".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp", ".ico"}
+
+func readLogo(path string) ([]byte, error) {
+	if path == "" {
+		return nil, nil
+	}
+	if !slices.Contains(logoTypes, strings.ToLower(filepath.Ext(path))) {
+		return nil, fmt.Errorf("%s: a logo must be one of %s", path, strings.Join(logoTypes, ", "))
+	}
+	return os.ReadFile(path)
 }
 
 // GeneratedName is the name in a !generated tag.
@@ -377,6 +432,13 @@ func (c *Config) finishOIDCClients() error {
 		}
 		if client.Name == "" {
 			client.Name = id
+		}
+		var err error
+		if client.LogoData, err = readLogo(client.Logo); err != nil {
+			return fmt.Errorf("oidc_clients.%s.logo: %w", id, err)
+		}
+		if client.DarkLogoData, err = readLogo(client.DarkLogo); err != nil {
+			return fmt.Errorf("oidc_clients.%s.dark_logo: %w", id, err)
 		}
 		clients[id] = client
 	}
@@ -846,8 +908,8 @@ func (r *Repo) DropGenerated(name, stack string, keys []string) error {
 }
 
 // SaveOIDCClient records in the host's state file that sensible manages the
-// OIDC client for it, with the ID of the secret it registered, if any.
-func (r *Repo) SaveOIDCClient(name, id, secretID string) error {
+// OIDC client for it, with what it registered.
+func (r *Repo) SaveOIDCClient(name, id string, saved SavedOIDCClient) error {
 	if err := r.checkHost(name); err != nil {
 		return err
 	}
@@ -855,9 +917,9 @@ func (r *Repo) SaveOIDCClient(name, id, secretID string) error {
 		name,
 		func(s *hostState) {
 			if s.OIDCClients == nil {
-				s.OIDCClients = map[string]string{}
+				s.OIDCClients = map[string]SavedOIDCClient{}
 			}
-			s.OIDCClients[id] = secretID
+			s.OIDCClients[id] = saved
 		},
 	)
 }
@@ -978,7 +1040,7 @@ type hostState struct {
 	Generated    map[string]map[string]Secret `yaml:"generated"`
 	Certs        map[string]savedCert         `yaml:"certs"`
 	Ignored      map[string][]string          `yaml:"ignored"`
-	OIDCClients  map[string]string            `yaml:"oidc_clients"`
+	OIDCClients  map[string]SavedOIDCClient   `yaml:"oidc_clients"`
 }
 
 // write adds the state to a state file, under its host's key.
@@ -1025,7 +1087,7 @@ func (s hostState) write(out *strings.Builder) {
 	if len(s.OIDCClients) > 0 {
 		out.WriteString("  oidc_clients:\n")
 		for _, id := range slices.Sorted(maps.Keys(s.OIDCClients)) {
-			out.WriteString("    " + strconv.Quote(id) + ": " + strconv.Quote(s.OIDCClients[id]) + "\n")
+			out.WriteString("    " + strconv.Quote(id) + ": " + s.OIDCClients[id].yaml() + "\n")
 		}
 	}
 }

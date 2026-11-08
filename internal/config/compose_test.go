@@ -1213,6 +1213,27 @@ func TestHostConfig_oidcClientSecretWithALength(t *testing.T) {
 	assert.Equal(t, GeneratedName("other"), c.OIDCClients["app"].Secret)
 }
 
+func TestHostConfig_oidcClientLogosAreReadFromTheDeclaringFilesDirectory(t *testing.T) {
+	files := readTestTree(t, "oidc-clients")
+	files["hosts.d/hosts.yml"] = "alpha:\n  roles: {app: , other: }\n"
+	files["roles/app/role.yml"] = oidcClientYAML(
+		"    secret: !generated oidc\n    launch_url: https://app.example.com\n    logo: logos/app.svg\n",
+	)
+	files["roles/app/files/logos/app.svg"] = "<svg/>"
+	files["roles/other/role.yml"] = "partials: [{partial: themed}]\n"
+	files["partials/themed/partial.yml"] = "oidc_clients:\n  app:\n    dark_logo: dark.PNG\n"
+	files["partials/themed/files/dark.PNG"] = "PNG"
+
+	c, err := newTestRepo(t, files).open(t).HostConfig("alpha", "debian")
+
+	require.NoError(t, err)
+	client := c.OIDCClients["app"]
+	assert.Equal(t, "https://app.example.com", client.LaunchURL)
+	assert.Equal(t, "app.svg", filepath.Base(client.Logo))
+	assert.Equal(t, []byte("<svg/>"), client.LogoData)
+	assert.Equal(t, []byte("PNG"), client.DarkLogoData)
+}
+
 func TestHostConfig_oidcClientErrors(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -1258,6 +1279,24 @@ func TestHostConfig_oidcClientErrors(t *testing.T) {
 			},
 			"roles app and other both set oidc_clients.app.secret",
 		},
+		{
+			"logo outside the files directory",
+			map[string]string{"roles/app/role.yml": oidcClientYAML("    public: true\n    logo: ../role.yml\n")},
+			`oidc_clients.app: logo "../role.yml" isn't a path in files`,
+		},
+		{
+			"logo that isn't an image",
+			map[string]string{
+				"roles/app/role.yml":      oidcClientYAML("    public: true\n    dark_logo: app.txt\n"),
+				"roles/app/files/app.txt": "text",
+			},
+			"a logo must be one of .png, .jpg",
+		},
+		{
+			"missing logo",
+			map[string]string{"roles/app/role.yml": oidcClientYAML("    public: true\n    logo: app.png\n")},
+			"no such file or directory",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(
@@ -1280,13 +1319,14 @@ func TestHostConfig_oidcClientErrors(t *testing.T) {
 func TestSaveOIDCClient_recordsClientsForTheHost(t *testing.T) {
 	tr := newTestRepo(t, readTestTree(t, "oidc-clients"))
 	r := tr.open(t)
-	clients := func() map[string]string { return tr.open(t).Inventory().Hosts["alpha"].OIDCClients }
+	clients := func() map[string]SavedOIDCClient { return tr.open(t).Inventory().Hosts["alpha"].OIDCClients }
+	logo := SavedOIDCClient{Logo: "abc"}
 
-	require.NoError(t, r.SaveOIDCClient("alpha", "app", "secret-1"))
-	require.NoError(t, r.SaveOIDCClient("alpha", "public", ""))
-	require.NoError(t, r.SaveOIDCClient("alpha", "app", "secret-2"))
-	assert.Equal(t, map[string]string{"app": "secret-2", "public": ""}, clients())
+	require.NoError(t, r.SaveOIDCClient("alpha", "app", SavedOIDCClient{SecretID: "secret-1"}))
+	require.NoError(t, r.SaveOIDCClient("alpha", "public", logo))
+	require.NoError(t, r.SaveOIDCClient("alpha", "app", SavedOIDCClient{SecretID: "secret-2"}))
+	assert.Equal(t, map[string]SavedOIDCClient{"app": {SecretID: "secret-2"}, "public": logo}, clients())
 
 	require.NoError(t, r.DropOIDCClient("alpha", "app"))
-	assert.Equal(t, map[string]string{"public": ""}, clients())
+	assert.Equal(t, map[string]SavedOIDCClient{"public": logo}, clients())
 }

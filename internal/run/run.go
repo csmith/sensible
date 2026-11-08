@@ -105,8 +105,10 @@ func compiler(repo *config.Repo) func(target, host.Facts) (compiled, error) {
 		c.oidcClients = cfg.OIDCClients
 		c.oidc = oidcRecords{
 			clients: repo.Inventory().Hosts[t.name].OIDCClients,
-			save:    func(id, secretID string) error { return repo.SaveOIDCClient(t.name, id, secretID) },
-			drop:    func(id string) error { return repo.DropOIDCClient(t.name, id) },
+			save: func(id string, saved config.SavedOIDCClient) error {
+				return repo.SaveOIDCClient(t.name, id, saved)
+			},
+			drop: func(id string) error { return repo.DropOIDCClient(t.name, id) },
 		}
 		return c, nil
 	}

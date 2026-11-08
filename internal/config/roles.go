@@ -263,33 +263,50 @@ func (r *Repo) prepareLayer(
 const sourcesDir = "files"
 
 // resolveSources makes each source in the files of node, a role or partial
-// file's settings, a path in dir, the files directory of that role or
-// partial.
+// file's settings, and each logo of its OIDC clients, a path in dir, the
+// files directory of that role or partial.
 func resolveSources(node ast.Node, dir string) error {
 	for _, v := range mappingValues(node) {
-		if keyString(v.Key) != "files" {
-			continue
-		}
-		for _, item := range sequenceValues(v.Value) {
-			for _, f := range mappingValues(item) {
-				if keyString(f.Key) != "source" {
-					continue
-				}
-				s, ok := f.Value.(*ast.StringNode)
-				if !ok {
-					return nodeError(f.Value, "files: source must be a path in "+sourcesDir)
-				}
-				clean := filepath.Clean(s.Value)
-				if s.Value == "" || filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
-					return nodeError(f.Value, fmt.Sprintf("files: source %q isn't a path in %s", s.Value, sourcesDir))
-				}
-				n, err := flowNode(filepath.Join(dir, clean))
-				if err != nil {
+		switch keyString(v.Key) {
+		case "files":
+			for _, item := range sequenceValues(v.Value) {
+				if err := resolveSourceFields(item, dir, "files", "source"); err != nil {
 					return err
 				}
-				f.Value = n
+			}
+		case oidcClientsKey:
+			for _, c := range mappingValues(v.Value) {
+				what := oidcClientsKey + "." + keyString(c.Key)
+				if err := resolveSourceFields(c.Value, dir, what, "logo", "dark_logo"); err != nil {
+					return err
+				}
 			}
 		}
+	}
+	return nil
+}
+
+// resolveSourceFields makes the fields of node with the given names paths
+// in dir. what names node in errors.
+func resolveSourceFields(node ast.Node, dir, what string, names ...string) error {
+	for _, f := range mappingValues(node) {
+		name := keyString(f.Key)
+		if !slices.Contains(names, name) {
+			continue
+		}
+		s, ok := f.Value.(*ast.StringNode)
+		if !ok {
+			return nodeError(f.Value, fmt.Sprintf("%s: %s must be a path in %s", what, name, sourcesDir))
+		}
+		clean := filepath.Clean(s.Value)
+		if s.Value == "" || filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+			return nodeError(f.Value, fmt.Sprintf("%s: %s %q isn't a path in %s", what, name, s.Value, sourcesDir))
+		}
+		n, err := flowNode(filepath.Join(dir, clean))
+		if err != nil {
+			return err
+		}
+		f.Value = n
 	}
 	return nil
 }

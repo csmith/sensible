@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -40,6 +41,9 @@ func (p *pocketID) Client(ctx context.Context, id string) (*oidcClient, error) {
 		IsPublic           bool     `json:"isPublic"`
 		PkceEnabled        bool     `json:"pkceEnabled"`
 		IsGroupRestricted  bool     `json:"isGroupRestricted"`
+		LaunchURL          *string  `json:"launchURL"`
+		HasLogo            bool     `json:"hasLogo"`
+		HasDarkLogo        bool     `json:"hasDarkLogo"`
 		AllowedUserGroups  []struct {
 			ID string `json:"id"`
 		} `json:"allowedUserGroups"`
@@ -59,6 +63,11 @@ func (p *pocketID) Client(ctx context.Context, id string) (*oidcClient, error) {
 		public:             res.IsPublic,
 		pkce:               res.PkceEnabled,
 		restricted:         res.IsGroupRestricted,
+		hasLogo:            res.HasLogo,
+		hasDarkLogo:        res.HasDarkLogo,
+	}
+	if res.LaunchURL != nil {
+		c.launchURL = *res.LaunchURL
 	}
 	for _, g := range res.AllowedUserGroups {
 		c.groups = append(c.groups, g.ID)
@@ -125,7 +134,7 @@ func (p *pocketID) Update(ctx context.Context, c oidcClient) error {
 }
 
 func clientSettings(c oidcClient) map[string]any {
-	return map[string]any{
+	settings := map[string]any{
 		"name":               c.name,
 		"callbackURLs":       nonNil(c.callbackURLs),
 		"logoutCallbackURLs": nonNil(c.logoutCallbackURLs),
@@ -133,6 +142,34 @@ func clientSettings(c oidcClient) map[string]any {
 		"pkceEnabled":        c.pkce,
 		"isGroupRestricted":  c.restricted,
 	}
+	if c.launchURL != "" {
+		settings["launchURL"] = c.launchURL
+	}
+	return settings
+}
+
+// SetLogo uploads a logo, taking its type from name's extension.
+func (p *pocketID) SetLogo(ctx context.Context, id string, dark bool, name string, data []byte) error {
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	part, err := w.CreateFormFile("file", name)
+	if err != nil {
+		return err
+	}
+	if _, err := part.Write(data); err != nil {
+		return err
+	}
+	if err := w.Close(); err != nil {
+		return err
+	}
+	return p.send(
+		ctx,
+		http.MethodPost,
+		clientPath(id)+"/logo?"+url.Values{"light": {strconv.FormatBool(!dark)}}.Encode(),
+		w.FormDataContentType(),
+		&body,
+		nil,
+	)
 }
 
 func (p *pocketID) SetGroups(ctx context.Context, id string, groups []string) error {
@@ -165,25 +202,30 @@ func (p *pocketID) Delete(ctx context.Context, id string) error {
 
 var errPocketIDNotFound = errors.New("not found")
 
-// do sends a request to the API, decoding the response into out if it's not
-// nil.
+// do sends a request to the API with body, if it's not nil, as JSON,
+// decoding the response into out if it's not nil.
 func (p *pocketID) do(ctx context.Context, method, path string, body, out any) error {
-	var reqBody io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		reqBody = bytes.NewReader(b)
+	if body == nil {
+		return p.send(ctx, method, path, "", nil, out)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, p.url+path, reqBody)
+	b, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	return p.send(ctx, method, path, "application/json", bytes.NewReader(b), out)
+}
+
+// send sends a request to the API, decoding the response into out if it's
+// not nil.
+func (p *pocketID) send(ctx context.Context, method, path, contentType string, body io.Reader, out any) error {
+	req, err := http.NewRequestWithContext(ctx, method, p.url+path, body)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("X-Api-Key", p.key)
 	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 	res, err := p.client.Do(req)
 	if err != nil {

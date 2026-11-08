@@ -3,9 +3,12 @@ package run
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,6 +29,9 @@ type oidcProvider interface {
 	// doesn't manage as they are.
 	Update(ctx context.Context, c oidcClient) error
 	SetGroups(ctx context.Context, id string, groups []string) error
+	// SetLogo sets the client's logo for the light or dark theme, taking
+	// its type from name's extension.
+	SetLogo(ctx context.Context, id string, dark bool, name string, data []byte) error
 	// AddSecret registers secret for the client, returning its ID.
 	AddSecret(ctx context.Context, id, secret string) (string, error)
 	DeleteSecret(ctx context.Context, id, secretID string) error
@@ -43,6 +49,10 @@ type oidcClient struct {
 	// groups, which are in order.
 	restricted bool
 	groups     []string
+	// launchURL is left as it is if it's empty in the client sensible
+	// wants.
+	launchURL            string
+	hasLogo, hasDarkLogo bool
 }
 
 // oidcSecret is one of a client's secrets. Its prefix is the start of its
@@ -65,10 +75,10 @@ func newOIDCProvider(s config.OIDCSettings) (oidcProvider, error) {
 }
 
 // oidcRecords are the OIDC clients sensible manages for a host, each with
-// the ID of the secret it registered, and the means to change them.
+// what it registered, and the means to change them.
 type oidcRecords struct {
-	clients map[string]string
-	save    func(id, secretID string) error
+	clients map[string]config.SavedOIDCClient
+	save    func(id string, saved config.SavedOIDCClient) error
 	drop    func(id string) error
 }
 
@@ -158,7 +168,11 @@ type oidcChange struct {
 	secret string
 	// secretID is the secret sensible registered that's kept.
 	secretID string
-	lines    []string
+	// logos are those to upload, and saved what's recorded for the client
+	// once it's changed, besides its secret.
+	logos []oidcLogo
+	saved config.SavedOIDCClient
+	lines []string
 
 	create, update, setGroups, addSecret bool
 	// pruneSecrets is set if the client may have secrets other than
@@ -186,6 +200,7 @@ func planClient(
 		// The provider may insist on it for public clients anyway.
 		pkce:       cfg.Public || cfg.PKCE,
 		restricted: len(cfg.Groups) > 0,
+		launchURL:  cfg.LaunchURL,
 	}
 	for _, g := range cfg.Groups {
 		gid, ok := groups[g]
@@ -200,11 +215,13 @@ func planClient(
 	recorded, managed := h.oidc.clients[id]
 	if from != nil {
 		managed = false
+		recorded = from.oidc.clients[id]
 	}
 	existing, err := provider.Client(ctx, id)
 	if err != nil {
 		return nil, err
 	}
+	c.planLogos(cfg, recorded, existing)
 	if existing == nil {
 		c.create, c.setGroups, c.addSecret, c.pruneSecrets, c.record = true, want.restricted, !want.public, true, true
 		c.lines = []string{"+ client " + id}
@@ -212,25 +229,10 @@ func planClient(
 	}
 
 	label := "~ client " + id + "  "
-	for _, f := range []struct {
-		name          string
-		before, after string
-	}{
-		{"name", existing.name, want.name},
-		{"callback_urls", strings.Join(existing.callbackURLs, ", "), strings.Join(want.callbackURLs, ", ")},
-		{
-			"logout_callback_urls",
-			strings.Join(existing.logoutCallbackURLs, ", "),
-			strings.Join(want.logoutCallbackURLs, ", "),
-		},
-		{"public", strconv.FormatBool(existing.public), strconv.FormatBool(want.public)},
-		{"pkce", strconv.FormatBool(existing.pkce), strconv.FormatBool(want.pkce)},
-	} {
-		if f.before != f.after {
-			c.update = true
-			c.lines = append(c.lines, label+f.name+": "+f.before+" → "+f.after)
-		}
+	for _, l := range c.logos {
+		c.lines = append(c.lines, label+l.setting())
 	}
+	c.planSettings(existing, label)
 	existingGroups := slices.Sorted(slices.Values(existing.groups))
 	if existing.restricted != want.restricted || (want.restricted && !slices.Equal(existingGroups, want.groups)) {
 		c.update = c.update || existing.restricted != want.restricted
@@ -249,11 +251,11 @@ func planClient(
 		i := slices.IndexFunc(
 			secrets,
 			func(s oidcSecret) bool {
-				return s.id == recorded && s.active && s.prefix != "" && strings.HasPrefix(c.secret, s.prefix)
+				return s.id == recorded.SecretID && s.active && s.prefix != "" && strings.HasPrefix(c.secret, s.prefix)
 			},
 		)
 		if i >= 0 {
-			c.secretID = recorded
+			c.secretID = recorded.SecretID
 		}
 	}
 	if !want.public && c.secretID == "" {
@@ -279,8 +281,79 @@ func planClient(
 	if len(c.lines) == 0 {
 		return nil, nil
 	}
-	c.record = c.record || c.addSecret
+	c.record = c.record || c.addSecret || len(c.logos) > 0
 	return c, nil
+}
+
+// planSettings notes the settings, besides groups, in which existing isn't
+// the client c wants.
+func (c *oidcChange) planSettings(existing *oidcClient, label string) {
+	want := c.want
+	fields := []struct {
+		name          string
+		before, after string
+	}{
+		{"name", existing.name, want.name},
+		{"callback_urls", strings.Join(existing.callbackURLs, ", "), strings.Join(want.callbackURLs, ", ")},
+		{
+			"logout_callback_urls",
+			strings.Join(existing.logoutCallbackURLs, ", "),
+			strings.Join(want.logoutCallbackURLs, ", "),
+		},
+		{"public", strconv.FormatBool(existing.public), strconv.FormatBool(want.public)},
+		{"pkce", strconv.FormatBool(existing.pkce), strconv.FormatBool(want.pkce)},
+	}
+	if want.launchURL != "" {
+		fields = append(fields, struct{ name, before, after string }{"launch_url", existing.launchURL, want.launchURL})
+	}
+	for _, f := range fields {
+		if f.before != f.after {
+			c.update = true
+			c.lines = append(c.lines, label+f.name+": "+f.before+" → "+f.after)
+		}
+	}
+}
+
+// oidcLogo is a client logo to upload, with the hash that's recorded for it.
+type oidcLogo struct {
+	dark bool
+	name string
+	data []byte
+	hash string
+}
+
+func (l oidcLogo) setting() string {
+	if l.dark {
+		return "dark_logo"
+	}
+	return "logo"
+}
+
+// planLogos sets the logos to upload: those the client declares that aren't
+// the ones sensible last uploaded, or that existing has lost. Those it
+// doesn't declare are left as they are.
+func (c *oidcChange) planLogos(cfg config.OIDCClientConfig, recorded config.SavedOIDCClient, existing *oidcClient) {
+	c.saved = config.SavedOIDCClient{Logo: recorded.Logo, DarkLogo: recorded.DarkLogo}
+	for _, l := range []struct {
+		dark     bool
+		path     string
+		data     []byte
+		recorded string
+		has      bool
+	}{
+		{false, cfg.Logo, cfg.LogoData, recorded.Logo, existing != nil && existing.hasLogo},
+		{true, cfg.DarkLogo, cfg.DarkLogoData, recorded.DarkLogo, existing != nil && existing.hasDarkLogo},
+	} {
+		if l.path == "" {
+			continue
+		}
+		sum := sha256.Sum256(l.data)
+		hash := hex.EncodeToString(sum[:])
+		if l.has && hash == l.recorded {
+			continue
+		}
+		c.logos = append(c.logos, oidcLogo{dark: l.dark, name: filepath.Base(l.path), data: l.data, hash: hash})
+	}
 }
 
 // groupNames describes who may use the client.
@@ -322,6 +395,9 @@ func (c *oidcChange) apply(ctx context.Context) error {
 			return err
 		}
 	}
+	if err := c.uploadLogos(ctx); err != nil {
+		return err
+	}
 	if c.addSecret {
 		if c.host.saveFailed {
 			return fmt.Errorf("%s's generated secrets weren't saved", c.host.name)
@@ -338,7 +414,8 @@ func (c *oidcChange) apply(ctx context.Context) error {
 		}
 	}
 	if c.record {
-		if err := c.host.oidc.save(id, c.secretID); err != nil {
+		c.saved.SecretID = c.secretID
+		if err := c.host.oidc.save(id, c.saved); err != nil {
 			return err
 		}
 	}
@@ -355,6 +432,21 @@ func (c *oidcChange) apply(ctx context.Context) error {
 		}
 		if err := p.DeleteSecret(ctx, id, s.id); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// uploadLogos uploads the logos that changed, noting their hashes to record.
+func (c *oidcChange) uploadLogos(ctx context.Context) error {
+	for _, l := range c.logos {
+		if err := c.provider.SetLogo(ctx, c.want.id, l.dark, l.name, l.data); err != nil {
+			return fmt.Errorf("%s: %w", l.setting(), err)
+		}
+		if l.dark {
+			c.saved.DarkLogo = l.hash
+		} else {
+			c.saved.Logo = l.hash
 		}
 	}
 	return nil
