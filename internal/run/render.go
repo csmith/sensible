@@ -539,6 +539,12 @@ func (r *renderer) applied(h *hostRun, a host.Applied) {
 		} else {
 			r.applyLineLocked(h, r.p.ok("✓")+" "+name)
 		}
+		if a.Warning != "" {
+			r.applyLineLocked(h, r.p.change("!")+" "+name)
+			for _, l := range indent(a.Warning, "  ") {
+				r.applyLineLocked(h, l)
+			}
+		}
 	case host.StatusInSync:
 		if deferred {
 			r.applyLineLocked(h, r.p.dim("✓ "+name+"  unchanged"))

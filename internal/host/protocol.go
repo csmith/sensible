@@ -10,7 +10,7 @@ import (
 // ProtocolVersion is bumped whenever a message or resource changes, so a
 // controller can refuse an agent built from older code. Hello and Upgrade
 // must never change shape, so any controller can upgrade any agent.
-const ProtocolVersion = 21
+const ProtocolVersion = 22
 
 // Hello is the first message an agent sends, and the first after it re-execs
 // following an Upgrade.
@@ -68,6 +68,9 @@ type Applied struct {
 	Handler bool   `json:"handler,omitempty"`
 	Diff    string `json:"diff,omitempty"`
 	Output  string `json:"output,omitempty"`
+	// Warning is something a changed resource found once applied, such as
+	// the host needing a reboot.
+	Warning string `json:"warning,omitempty"`
 	Error   string `json:"error,omitempty"`
 }
 

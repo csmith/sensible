@@ -86,6 +86,7 @@ dns:
 sensible bootstrap web1 --user root   # Set up a new host for management
 sensible apply web1                   # Show the changes for a host and apply them
 sensible apply                        # The same, for all hosts
+sensible apply web1 --update-packages # Update all its packages first
 sensible prune web1                   # Offer to remove what a host has left over
 sensible render web1                  # Show everything a host should have
 ```
@@ -93,6 +94,10 @@ sensible render web1                  # Show everything a host should have
 The machine sensible runs on is managed like any other host, over SSH to
 loopback. Bootstrap it without `--user`: it only needs sudo, and installs sshd
 if it's missing.
+
+`--update-packages` runs `pacman -Syu` or `apt-get full-upgrade` before
+anything else, which fixes installs failing with a 404 from a stale package
+index. It never reboots, but says when a host needs to.
 
 Prune asks about each leftover. Answering `i` keeps it and stops apply and
 prune mentioning it again, by adding it under `ignored` in the host's

@@ -103,6 +103,7 @@ var resourceTypes = registry(
 	DisownedAptSources{},
 	AURPackage{},
 	DisownedPackages{},
+	PackageUpdate{},
 	Service{},
 	ServiceAction{},
 	User{},
@@ -242,6 +243,14 @@ type AURPackage struct {
 // forgets the records of packages that have gone since, and never removes
 // the packages, but pruning does.
 type DisownedPackages struct{}
+
+// PackageUpdate brings every installed package up to date: pacman -Syu on
+// Arch, which doesn't rebuild AUR packages, and apt-get full-upgrade on
+// Debian, so upgrades that need new packages, such as a new kernel's, aren't
+// held back. It's always drifted, so it's only added on request. It never
+// reboots, but warns once applied if the host needs a reboot to run its
+// newest kernel.
+type PackageUpdate struct{}
 
 // Service manages a systemd unit's state.
 type Service struct {
@@ -465,6 +474,8 @@ func (r DisownedAptSources) ID() string { return "disowned-apt-sources" }
 func (r AURPackage) ID() string { return "aur:" + r.Name }
 
 func (r DisownedPackages) ID() string { return "disowned-packages" }
+
+func (r PackageUpdate) ID() string { return "package-update" }
 
 func (r Service) ID() string { return "service:" + r.Name }
 

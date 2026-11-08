@@ -166,8 +166,17 @@ func (e *engine) applyOne(
 			st.modified[r.ID()] = true
 		}
 		st.changed()
+		if w, ok := r.(applyWarner); ok && res.Status == StatusChanged {
+			res.Warning = w.appliedWarning(ctx, e.sys)
+		}
 	}
 	return res
+}
+
+// applyWarner is implemented by resources that have something to warn about
+// once they've been applied.
+type applyWarner interface {
+	appliedWarning(ctx context.Context, sys Sys) string
 }
 
 // leftovers lists each Pruner's leftovers. Like check, it doesn't stop at

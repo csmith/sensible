@@ -23,7 +23,7 @@ const usage = `Usage: sensible [flags] <command> [args]
 
 Commands:
   bootstrap <host> [--user account] [--rotate] [--host-key SHA256:...]
-  apply [hosts...] [--yes]
+  apply [hosts...] [--yes] [--update-packages]
   prune [hosts...]
   facts [hosts...]
   render [hosts...] [--facts file] [--json]
@@ -69,6 +69,7 @@ var errUsage = errors.New("usage")
 func command(ctx context.Context, name string, args []string) error {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
 	user, rotate, yes, hostKey, raw := new(string), new(bool), new(bool), new(string), new(bool)
+	updatePackages := new(bool)
 	facts, asJSON := new(string), new(bool)
 	switch name {
 	case "bootstrap":
@@ -77,6 +78,7 @@ func command(ctx context.Context, name string, args []string) error {
 		hostKey = fs.String("host-key", "", "Expected SHA256 fingerprint of a new host's key, instead of asking")
 	case "apply":
 		yes = fs.Bool("yes", false, "Apply without asking")
+		updatePackages = fs.Bool("update-packages", false, "Bring each host's packages up to date first")
 	case "render":
 		facts = fs.String("facts", "", "Read facts from this `file`, as the facts command prints them")
 		asJSON = fs.Bool("json", false, "Print JSON")
@@ -105,6 +107,8 @@ func command(ctx context.Context, name string, args []string) error {
 				ConfigDir: *configDir,
 				Hosts:     args,
 				Yes:       *yes,
+
+				UpdatePackages: *updatePackages,
 			},
 		)
 	case name == "prune":

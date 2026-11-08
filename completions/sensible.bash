@@ -97,7 +97,7 @@ _sensible() {
             ;;
         apply | prune | facts | render)
             if [[ $cur == -* ]]; then
-                [[ $cmd == apply ]] && COMPREPLY=($(compgen -W '--yes' -- "$cur"))
+                [[ $cmd == apply ]] && COMPREPLY=($(compgen -W '--yes --update-packages' -- "$cur"))
                 [[ $cmd == render ]] && COMPREPLY=($(compgen -W '--facts --json' -- "$cur"))
             else
                 COMPREPLY=($(compgen -W "$(_sensible_hosts "$config")" -- "$cur"))

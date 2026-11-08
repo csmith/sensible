@@ -568,3 +568,171 @@ func TestDisownedPackages_LeavesOutDebianBaseSystem(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"package htop", "package less"}, got)
 }
+
+// withKernels scripts the running kernel and installs modules for each of
+// installed.
+func withKernels(sys *testSys, running string, installed ...string) {
+	sys.on("uname -r", running+"\n", 0)
+	for _, k := range installed {
+		sys.write("/lib/modules/"+k+"/kernel/.keep", "")
+	}
+}
+
+// applyAll applies list in one run, returning its results and whether any
+// failed.
+func applyAll(t *testing.T, sys Sys, list ResourceList) ([]Applied, bool) {
+	t.Helper()
+	e := newTestEngine()
+	e.sys = sys
+	var applied []Applied
+	failed, err := e.apply(
+		context.Background(),
+		list,
+		-1,
+		func(msg any) error {
+			if a, ok := msg.(Applied); ok {
+				applied = append(applied, a)
+			}
+			return nil
+		},
+	)
+	require.NoError(t, err)
+	return applied, failed
+}
+
+func TestPackageUpdate_ArchUpgradesBeforeOtherResources(t *testing.T) {
+	sys := newArchSys(t)
+	withKernels(sys, "6.17.7-arch1-1", "6.17.7-arch1-1")
+	sys.on("pacman -Syu --noconfirm", "", 0)
+	sys.on("pacman -S --needed --noconfirm git", "", 0)
+
+	_, failed := applyAll(t, sys, ResourceList{PackageUpdate{}, Package{Name: "git"}})
+
+	assert.False(t, failed)
+	assert.Equal(
+		t,
+		[]string{
+			"pacman -Syu --noconfirm",
+			"uname -r",
+			"pacman -Sp --noconfirm --print-format %n git",
+			"pacman -S --needed --noconfirm git",
+		},
+		sys.ran,
+	)
+}
+
+func TestPackageUpdate_DebianUpgradesBeforeOtherResources(t *testing.T) {
+	sys := newDebianSys(t)
+	// An index this old would otherwise be refreshed before installing.
+	require.NoError(t, os.Chtimes(sys.path("/var/lib/apt/lists"), sys.now, sys.now.Add(-2*time.Hour)))
+	withKernels(sys, "6.12.48+deb13-amd64", "6.12.48+deb13-amd64")
+	sys.on("apt-get -y -q update", "", 0)
+	sys.on("apt-get -y -q full-upgrade *", "", 0)
+	sys.on("apt-cache policy git", "  Candidate: 1:2.47-1\n", 0)
+	sys.on("apt-get -y -q install *", "", 0)
+
+	_, failed := applyAll(t, sys, ResourceList{PackageUpdate{}, Package{Name: "git"}})
+
+	assert.False(t, failed)
+	assert.Equal(
+		t,
+		[]string{
+			"apt-get -y -q update",
+			"apt-get -y -q full-upgrade -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold",
+			"uname -r",
+			"apt-cache policy git",
+			"apt-get -y -q install -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold git",
+		},
+		sys.ran,
+	)
+}
+
+func TestPackageUpdate_DefersPackagesMissingFromTheSyncDatabase(t *testing.T) {
+	sys := newArchSys(t)
+	sys.commands["pacman -Sp --noconfirm --print-format %n strace"] = func(Cmd) Result {
+		return Result{Stderr: "error: target not found: strace\n", Code: 1}
+	}
+
+	e := newTestEngine()
+	e.sys = sys
+	var checked []Status
+	failedAt, err := e.check(
+		context.Background(),
+		ResourceList{PackageUpdate{}, Package{Name: "strace"}},
+		func(c Checked) error {
+			checked = append(checked, c.Status)
+			return nil
+		},
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, -1, failedAt)
+	assert.Equal(t, []Status{StatusDrifted, StatusDeferred}, checked)
+}
+
+func TestPackageUpdate_WarnsWhenTheHostNeedsAReboot(t *testing.T) {
+	tests := []struct {
+		name      string
+		running   string
+		installed []string
+		want      string
+	}{
+		{
+			name:      "running the newest",
+			running:   "6.1.0-20-amd64",
+			installed: []string{"6.1.0-18-amd64", "6.1.0-20-amd64"},
+		},
+		{
+			name:      "newer kernel installed",
+			running:   "6.1.0-9-amd64",
+			installed: []string{"6.1.0-9-amd64", "6.1.0-20-amd64"},
+			want:      "6.1.0-20-amd64, instead of 6.1.0-9-amd64",
+		},
+		{
+			name:      "newer kernel only of another flavour",
+			running:   "6.12.47+rpt-rpi-v8",
+			installed: []string{"6.12.47+rpt-rpi-v8", "6.12.62+rpt-rpi-2712"},
+		},
+		{
+			name:      "running kernel removed",
+			running:   "6.17.7-arch1-1",
+			installed: []string{"6.12.57-1-lts"},
+			want:      "6.17.7-arch1-1, is no longer installed",
+		},
+		{
+			name:    "no kernels, as in a container",
+			running: "6.17.7-arch1-1",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				sys := newArchSys(t)
+				withKernels(sys, tt.running, tt.installed...)
+				sys.on("pacman -Syu --noconfirm", "", 0)
+
+				applied, failed := applyAll(t, sys, ResourceList{PackageUpdate{}})
+
+				require.False(t, failed)
+				require.Len(t, applied, 1)
+				if tt.want == "" {
+					assert.Empty(t, applied[0].Warning)
+				} else {
+					assert.Contains(t, applied[0].Warning, tt.want)
+				}
+			},
+		)
+	}
+}
+
+func TestPackageUpdate_FailedUpgradeDoesNotCheckTheKernel(t *testing.T) {
+	sys := newArchSys(t)
+	sys.on("pacman -Syu --noconfirm", "", 1)
+
+	applied, failed := applyAll(t, sys, ResourceList{PackageUpdate{}})
+
+	assert.True(t, failed)
+	assert.Empty(t, applied[0].Warning)
+	assert.NotContains(t, sys.ran, "uname -r")
+}

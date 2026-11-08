@@ -2,6 +2,7 @@ package host
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -106,8 +107,12 @@ func (r Package) checkPacman(ctx context.Context, sys Sys) (Change, error) {
 func (r Package) checkPacmanSync(ctx context.Context, sys Sys) (Change, error) {
 	res, err := runOK(ctx, sys, argv("pacman", "-Sp", "--noconfirm", "--print-format", "%n", r.Name))
 	if err != nil && strings.Contains(res.Stderr, "target not found") {
+		if state(ctx).modified[PackageUpdate{}.ID()] {
+			return Change{}, fmt.Errorf("%s isn't in pacman's sync database: %w", r.Name, ErrNotYetCheckable)
+		}
 		return Change{}, fmt.Errorf(
-			"%s isn't in pacman's sync database; if it's a new package, run pacman -Syu on the host",
+			"%s isn't in pacman's sync database; if it's a new package, run pacman -Syu on the host, "+
+				"or apply with --update-packages",
 			r.Name,
 		)
 	}
@@ -578,9 +583,147 @@ func explainStaleSyncDB(res Result, err error) error {
 	// Mirrors only keep current versions, so a stale sync database names
 	// files they've deleted.
 	if out := output(res); err != nil && strings.Contains(out, "failed retrieving file") && strings.Contains(out, "404") {
-		return fmt.Errorf("%w\npacman's sync database is out of date; run pacman -Syu on the host", err)
+		return fmt.Errorf("%w\n%s", err, staleSyncDBAdvice)
 	}
 	return err
+}
+
+const staleSyncDBAdvice = "pacman's sync database is out of date; run pacman -Syu on the host, " +
+	"or apply with --update-packages"
+
+func (r PackageUpdate) Check(ctx context.Context, sys Sys) (Change, error) {
+	family, err := osFamily(ctx, sys)
+	if err != nil {
+		return Change{}, err
+	}
+	if family == familyArch {
+		return drift("update all packages with pacman -Syu\n"), nil
+	}
+	return drift("update all packages with apt-get full-upgrade\n"), nil
+}
+
+func (r PackageUpdate) Apply(ctx context.Context, sys Sys) error {
+	family, err := osFamily(ctx, sys)
+	if err != nil {
+		return err
+	}
+	if family == familyArch {
+		_, err := runOK(ctx, sys, argv("pacman", "-Syu", "--noconfirm"))
+		return err
+	}
+	st := state(ctx)
+	if _, err := runOK(ctx, sys, aptGet("update")); err != nil {
+		return err
+	}
+	st.aptUpdated = true
+	_, err = runOK(
+		ctx,
+		sys,
+		aptGet(
+			"full-upgrade",
+			"-o",
+			"Dpkg::Options::=--force-confdef",
+			"-o",
+			"Dpkg::Options::=--force-confold",
+		),
+	)
+	return err
+}
+
+// appliedWarning says when the running kernel isn't the newest installed
+// one of its flavour, or isn't installed at all any more, as after Arch
+// upgrades it.
+func (r PackageUpdate) appliedWarning(ctx context.Context, sys Sys) string {
+	warning, err := rebootWarning(ctx, sys)
+	if err != nil {
+		return "couldn't tell whether the host needs a reboot: " + err.Error() + "\n"
+	}
+	return warning
+}
+
+func rebootWarning(ctx context.Context, sys Sys) (string, error) {
+	res, err := runOK(ctx, sys, argv("uname", "-r"))
+	if err != nil {
+		return "", err
+	}
+	running := strings.TrimSpace(res.Stdout)
+	installed, err := installedKernels(sys)
+	if err != nil {
+		return "", err
+	}
+	newest := ""
+	for _, k := range installed {
+		if kernelFlavour(k) == kernelFlavour(running) && (newest == "" || compareVersions(k, newest) > 0) {
+			newest = k
+		}
+	}
+	switch {
+	case len(installed) == 0:
+		// A container's kernel belongs to its host.
+		return "", nil
+	case newest != "" && compareVersions(newest, running) > 0:
+		return fmt.Sprintf("the host needs a reboot to run its newest kernel, %s, instead of %s\n", newest, running), nil
+	case !slices.Contains(installed, running):
+		return fmt.Sprintf("the host needs a reboot, as its running kernel, %s, is no longer installed\n", running), nil
+	default:
+		return "", nil
+	}
+}
+
+// installedKernels are the releases with modules in /lib/modules. A release
+// whose package has gone can leave behind files it didn't own, but not its
+// kernel directory.
+func installedKernels(sys Sys) ([]string, error) {
+	names, err := sys.ReadDir("/lib/modules")
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var kernels []string
+	for _, name := range names {
+		if info, err := sys.Stat(filepath.Join("/lib/modules", name, "kernel")); err == nil && info.Mode.IsDir() {
+			kernels = append(kernels, name)
+		}
+	}
+	return kernels, nil
+}
+
+// kernelFlavour is what follows a release's last hyphen, e.g. "amd64".
+func kernelFlavour(release string) string {
+	return release[strings.LastIndex(release, "-")+1:]
+}
+
+// compareVersions compares a and b with runs of digits compared as numbers.
+func compareVersions(a, b string) int {
+	for a != "" && b != "" {
+		da, db := leadingDigits(a), leadingDigits(b)
+		switch {
+		case da != "" && db != "":
+			na, nb := strings.TrimLeft(da, "0"), strings.TrimLeft(db, "0")
+			if c := cmp.Compare(len(na), len(nb)); c != 0 {
+				return c
+			}
+			if c := strings.Compare(na, nb); c != 0 {
+				return c
+			}
+			a, b = a[len(da):], b[len(db):]
+		case a[0] != b[0]:
+			return cmp.Compare(a[0], b[0])
+		default:
+			a, b = a[1:], b[1:]
+		}
+	}
+	return cmp.Compare(len(a), len(b))
+}
+
+func leadingDigits(s string) string {
+	i := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	return s[:i]
 }
 
 func (r DisownedPackages) Check(ctx context.Context, sys Sys) (Change, error) {

@@ -39,6 +39,9 @@ type fakeAgent struct {
 	status func(r host.Resource) host.Status
 	// applyFailure, if set, fails the resource with this ID during apply.
 	applyFailure string
+	// applyWarnings are reported once each changed resource, by ID, is
+	// applied.
+	applyWarnings map[string]string
 	// upgradeError, if set, is reported instead of upgrading.
 	upgradeError string
 	// silent exits before Hello, as sudo does when it rejects a password.
@@ -169,7 +172,7 @@ func (f *fakeAgent) apply(conn *host.Conn, resources host.ResourceList, checked 
 		case res.ID() == f.applyFailure:
 			a.Status, a.Error, failed = host.StatusFailed, "boom", true
 		case checked[i].Status != host.StatusInSync:
-			a.Status = host.StatusChanged
+			a.Status, a.Warning = host.StatusChanged, f.applyWarnings[res.ID()]
 			_ = conn.Send(host.Applying{ID: res.ID()})
 		}
 		_ = conn.Send(a)
@@ -1140,4 +1143,36 @@ func TestCompiler_findsUnusedSecrets(t *testing.T) {
 	generated := open().Inventory().Hosts["alpha"].Generated
 	assert.ElementsMatch(t, []string{"app", "data"}, slices.Collect(maps.Keys(generated)))
 	assert.Equal(t, []string{"db"}, slices.Collect(maps.Keys(generated["app"])))
+}
+
+func TestExecute_updatePackagesComesFirstAndWarnsOnceApplied(t *testing.T) {
+	f := newRunnerFixture(t, testResources)
+	f.runner.UpdatePackages = true
+	agent := &fakeAgent{
+		status: func(r host.Resource) host.Status {
+			if _, ok := r.(host.PackageUpdate); ok {
+				return host.StatusDrifted
+			}
+			return host.StatusInSync
+		},
+		applyWarnings: map[string]string{"package-update": "the host needs a reboot\n"},
+	}
+
+	require.NoError(t, f.runner.Execute(t.Context(), []target{f.target("acidburn", agent)}, false))
+
+	require.Len(t, agent.checks, 1)
+	assert.Equal(t, append(host.ResourceList{host.PackageUpdate{}}, testResources...), agent.checks[0])
+	assert.Contains(t, f.out.String(), "  ~ package-update\n")
+	assert.Equal(t, []string{"Apply 1 change on 1 target? [y/N] "}, f.confirmed)
+	assert.Contains(t, f.out.String(), "✓ package-update\n  ! package-update\n    the host needs a reboot\n")
+}
+
+func TestExecute_packagesAreOnlyUpdatedOnRequest(t *testing.T) {
+	f := newRunnerFixture(t, testResources)
+	agent := &fakeAgent{}
+
+	require.NoError(t, f.runner.Execute(t.Context(), []target{f.target("acidburn", agent)}, false))
+
+	require.Len(t, agent.checks, 1)
+	assert.Equal(t, testResources, agent.checks[0])
 }

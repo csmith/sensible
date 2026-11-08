@@ -56,6 +56,7 @@ _sensible() {
         apply)
           _arguments \
             '--yes[apply without asking]' \
+            '--update-packages[bring packages up to date first]' \
             '*:host:_sensible_hosts' && ret=0
           ;;
         facts|prune)

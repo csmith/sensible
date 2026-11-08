@@ -30,6 +30,9 @@ type Options struct {
 	Hosts []string
 	// Yes applies without asking for confirmation.
 	Yes bool
+	// UpdatePackages brings each host's packages up to date before anything
+	// else.
+	UpdatePackages bool
 }
 
 // Run plans the selected hosts and applies the plan once confirmed.
@@ -58,6 +61,8 @@ func Run(ctx context.Context, opts Options) error {
 		DNSSettings: repo.DNS(),
 		Vhosts:      repo.Vhosts(),
 		DNSNames:    dnsNames(repo.Inventory()),
+
+		UpdatePackages: opts.UpdatePackages,
 	}
 	return r.Execute(ctx, targets, opts.Yes)
 }
@@ -315,6 +320,8 @@ type Runner struct {
 	// host to its dns_name, for all hosts, not just those in the run.
 	Vhosts   map[string][]string
 	DNSNames map[string]string
+	// UpdatePackages puts a PackageUpdate before each host's resources.
+	UpdatePackages bool
 }
 
 // hostRun is one target's progress through a run.
@@ -475,6 +482,9 @@ func (r *Runner) checkAll(runs []*hostRun) {
 			h.err = err
 			close(h.done)
 			continue
+		}
+		if r.UpdatePackages {
+			c.resources = append(host.ResourceList{host.PackageUpdate{}}, c.resources...)
 		}
 		h.resources, h.save, h.unusedSecrets = c.resources, c.save, c.unusedSecrets
 		h.ignored, h.ignore = c.ignored, c.ignore
