@@ -992,6 +992,8 @@ func TestHostPlanLines_leavesOutRecordsOfChangingFiles(t *testing.T) {
 		{ID: recordID(files, "/etc/c"), Status: host.StatusDrifted, Diff: "change mode\n"},
 		{ID: "file:/etc/d", Status: host.StatusDrifted, Diff: "create file\n"},
 		{ID: recordID(files, "/etc/d"), Status: host.StatusFailed, Error: "denied"},
+		{ID: "dir:/srv/e", Status: host.StatusDrifted, Diff: "create directory\n"},
+		{ID: recordID(host.WrittenDir+"/directories", "/srv/e"), Status: host.StatusDrifted, Diff: "create file\n"},
 	}
 	h := &hostRun{resources: make(host.ResourceList, len(checked)), checked: checked}
 
@@ -1004,12 +1006,14 @@ func TestHostPlanLines_leavesOutRecordsOfChangingFiles(t *testing.T) {
 			"~ file /etc/d",
 			"  create file",
 			"✗ " + displayID(recordID(files, "/etc/d")) + ": denied",
+			"~ dir /srv/e",
+			"  create directory",
 			"~ 2 write records",
 			"✓ 2 unchanged",
 		},
 		hostPlanLines(h, false),
 	)
-	assert.Equal(t, summary{changes: 4, targets: 1, deferred: 1}, summarise([]*hostRun{h}, nil))
+	assert.Equal(t, summary{changes: 5, targets: 1, deferred: 1}, summarise([]*hostRun{h}, nil))
 }
 
 func TestRendererLeavesOutRecordsOfChangedFiles(t *testing.T) {
@@ -1025,6 +1029,8 @@ func TestRendererLeavesOutRecordsOfChangedFiles(t *testing.T) {
 	r.applied(h, host.Applied{ID: recordID(host.WrittenDir, "/etc/docker/daemon.json"), Status: host.StatusChanged})
 	r.applied(h, host.Applied{ID: recordID(files, "/etc/c"), Status: host.StatusInSync})
 	r.applied(h, host.Applied{ID: recordID(files, "/etc/d"), Status: host.StatusFailed, Error: "denied"})
+	r.applied(h, host.Applied{ID: "dir:/srv/e", Status: host.StatusChanged})
+	r.applied(h, host.Applied{ID: recordID(host.WrittenDir+"/directories", "/srv/e"), Status: host.StatusChanged})
 	r.applyDone(h)
 
 	assert.Equal(
@@ -1032,6 +1038,7 @@ func TestRendererLeavesOutRecordsOfChangedFiles(t *testing.T) {
 		"> Applying changes on acidburn\n"+
 			"  ✓ file /etc/a\n"+
 			"  ✗ "+displayID(recordID(files, "/etc/d"))+": denied\n"+
+			"  ✓ dir /srv/e\n"+
 			"  ✓ 2 write records\n",
 		buf.String(),
 	)

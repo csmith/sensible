@@ -483,7 +483,7 @@ func hostPlanLines(h *hostRun, p palette) []string {
 	quiet := quietRecords(h.checked)
 	for i, c := range h.checked {
 		name := displayID(c.ID)
-		_, record := recordedFileID(c.ID)
+		_, record := recordedPath(c.ID)
 		switch {
 		case quiet[c.ID]:
 		case record && pendingStatus(c.Status):
@@ -519,8 +519,9 @@ func hostPlanLines(h *hostRun, p palette) []string {
 	return lines
 }
 
-// quietRecords picks out the pending WrittenRecords whose files are pending
-// too, as showing them would only repeat those files' changes.
+// quietRecords picks out the pending WrittenRecords whose files or
+// directories are pending too, as showing them would only repeat those
+// changes.
 func quietRecords(checked []host.Checked) map[string]bool {
 	pending := map[string]bool{}
 	for _, c := range checked {
@@ -530,7 +531,7 @@ func quietRecords(checked []host.Checked) map[string]bool {
 	}
 	quiet := map[string]bool{}
 	for _, c := range checked {
-		if file, ok := recordedFileID(c.ID); ok && pending[c.ID] && pending[file] && c.Warning == "" {
+		if path, ok := recordedPath(c.ID); ok && pending[c.ID] && hasRecorded(pending, path) && c.Warning == "" {
 			quiet[c.ID] = true
 		}
 	}
@@ -541,15 +542,19 @@ func pendingStatus(s host.Status) bool {
 	return s == host.StatusDrifted || s == host.StatusDeferred
 }
 
-// recordedFileID returns the ID of the file recorded by the WrittenRecord
-// with the given ID, if it's one.
-func recordedFileID(id string) (string, bool) {
+// recordedPath returns the path of the file or directory recorded by the
+// WrittenRecord with the given ID, if it's one.
+func recordedPath(id string) (string, bool) {
 	path, ok := strings.CutPrefix(id, "file:")
 	if !ok {
 		return "", false
 	}
-	file, ok := host.RecordedFile(path)
-	return "file:" + file, ok
+	return host.RecordedFile(path)
+}
+
+// hasRecorded reports whether ids holds the file or directory at path.
+func hasRecorded(ids map[string]bool, path string) bool {
+	return ids["file:"+path] || ids["dir:"+path]
 }
 
 type applyingItem struct {
@@ -566,7 +571,7 @@ func (r *renderer) applying(h *hostRun, a host.Applying) {
 		return
 	}
 	r.stopApplyingLocked(h)
-	if _, ok := recordedFileID(a.ID); ok {
+	if _, ok := recordedPath(a.ID); ok {
 		return
 	}
 	r.inProgress = append(r.inProgress, applyingItem{h: h, name: displayID(a.ID)})
@@ -627,16 +632,16 @@ func (r *renderer) applied(h *hostRun, a host.Applied) {
 }
 
 // quietRecordLocked reports whether a is a WrittenRecord to leave out, as
-// it's unchanged or its file's change is shown. One changed without its
-// file is counted in a total shown at the end instead.
+// it's unchanged or its file's or directory's change is shown. One changed
+// without it is counted in a total shown at the end instead.
 func (r *renderer) quietRecordLocked(h *hostRun, a host.Applied) bool {
-	file, ok := recordedFileID(a.ID)
+	path, ok := recordedPath(a.ID)
 	if !ok || a.Handler || a.Warning != "" {
 		return false
 	}
 	switch a.Status {
 	case host.StatusChanged:
-		if !r.changed[h][file] {
+		if !hasRecorded(r.changed[h], path) {
 			r.records[h]++
 		}
 		return true
