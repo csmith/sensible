@@ -1,6 +1,7 @@
 package run
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha256"
@@ -127,15 +128,16 @@ type oidcPlan struct {
 }
 
 // planOIDC works out the changes the clients and APIs the running hosts
-// declare need. One sensible manages for another host can only move to this
-// one if that host is in the run and no longer declares it.
+// declare need. A client is only planned if every host sensible manages it
+// for is in the run, and an API only moves from another host if that host is
+// in the run and no longer declares it.
 func (r *Runner) planOIDC(ctx context.Context, runs []*hostRun) oidcPlan {
 	var p oidcPlan
 	byName := map[string]*hostRun{}
 	for _, h := range runs {
 		byName[h.name] = h
 	}
-	clients := p.declared(runs, "client", func(h *hostRun) []string { return slices.Collect(maps.Keys(h.oidcClients)) })
+	clients := p.declaredClients(runs)
 	apis := p.declared(runs, "api", func(h *hostRun) []string { return slices.Collect(maps.Keys(h.oidcAPIs)) })
 	if len(clients) == 0 && len(apis) == 0 {
 		return p
@@ -178,14 +180,103 @@ func (p *oidcPlan) declared(runs []*hostRun, kind string, ids func(h *hostRun) [
 	return declared
 }
 
+// declaredClient is a client as the running hosts that declare it want it:
+// with each host's callback URLs, and its other settings the same on each.
+type declaredClient struct {
+	cfg config.OIDCClientConfig
+	// hosts are those that declare it, by name.
+	hosts []*hostRun
+}
+
+// declaredClients merges the clients that the running hosts declare, by
+// ID, noting those the hosts disagree about as errors.
+func (p *oidcPlan) declaredClients(runs []*hostRun) map[string]*declaredClient {
+	declared := map[string]*declaredClient{}
+	conflicted := map[string]bool{}
+	byHostName := func(a, b *hostRun) int { return strings.Compare(a.name, b.name) }
+	for _, h := range slices.SortedFunc(slices.Values(runs), byHostName) {
+		if h.agent == nil || h.err != nil {
+			continue
+		}
+		for _, id := range slices.Sorted(maps.Keys(h.oidcClients)) {
+			cfg := h.oidcClients[id]
+			d, ok := declared[id]
+			switch {
+			case !ok:
+				declared[id] = &declaredClient{cfg: cfg, hosts: []*hostRun{h}}
+				continue
+			case conflicted[id]:
+				continue
+			}
+			if field := clientDifference(d.cfg, cfg); field != "" {
+				p.errs = append(
+					p.errs,
+					fmt.Errorf("client %s: %s and %s set different %s", id, d.hosts[0].name, h.name, field),
+				)
+				conflicted[id] = true
+				continue
+			}
+			d.cfg.CallbackURLs = union(d.cfg.CallbackURLs, cfg.CallbackURLs)
+			d.cfg.LogoutCallbackURLs = union(d.cfg.LogoutCallbackURLs, cfg.LogoutCallbackURLs)
+			d.hosts = append(d.hosts, h)
+		}
+	}
+	for id := range conflicted {
+		delete(declared, id)
+	}
+	return declared
+}
+
+// clientDifference is a setting, besides the callback URLs, that a and b
+// don't agree on, or is empty if they agree.
+func clientDifference(a, b config.OIDCClientConfig) string {
+	for _, f := range []struct {
+		name string
+		same bool
+	}{
+		{"name", a.Name == b.Name},
+		{"public", a.Public == b.Public},
+		{"pkce", a.PKCE == b.PKCE},
+		{"skip_consent", a.SkipConsent == b.SkipConsent},
+		{"groups", slices.Equal(sortedSet(a.Groups), sortedSet(b.Groups))},
+		{"secret", a.SecretValue == b.SecretValue},
+		{"launch_url", a.LaunchURL == b.LaunchURL},
+		{"logo", sameLogo(a.Logo, b.Logo, a.LogoData, b.LogoData)},
+		{"dark_logo", sameLogo(a.DarkLogo, b.DarkLogo, a.DarkLogoData, b.DarkLogoData)},
+	} {
+		if !f.same {
+			return f.name
+		}
+	}
+	return ""
+}
+
+func sortedSet(s config.Set) []string { return slices.Sorted(slices.Values(s)) }
+
+// sameLogo is whether two logos would be uploaded the same.
+func sameLogo(pathA, pathB string, dataA, dataB []byte) bool {
+	return filepath.Base(pathA) == filepath.Base(pathB) && bytes.Equal(dataA, dataB)
+}
+
+// union is a followed by the items of b it doesn't have.
+func union(a, b config.Set) config.Set {
+	out := slices.Clone(a)
+	for _, item := range b {
+		if !slices.Contains(out, item) {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 // planClients plans the declared clients, returning whether each that could
 // be planned is public, by ID, and whether the provider could be read.
 func (p *oidcPlan) planClients(
 	ctx context.Context,
 	provider oidcProvider,
-	declared map[string]*hostRun,
+	declared map[string]*declaredClient,
 	byName map[string]*hostRun,
-	owners map[string]string,
+	owners map[string][]string,
 ) (map[string]bool, bool) {
 	planned := map[string]bool{}
 	if len(declared) == 0 {
@@ -198,13 +289,13 @@ func (p *oidcPlan) planClients(
 	}
 
 	for _, id := range slices.Sorted(maps.Keys(declared)) {
-		h := declared[id]
-		from, err := previousHost(owners[id], h, byName)
+		d := declared[id]
+		from, err := previousHosts(owners[id], d.hosts, byName)
 		if err != nil {
 			p.errs = append(p.errs, fmt.Errorf("client %s: %w", id, err))
 			continue
 		}
-		c, err := planClient(ctx, provider, groups, id, h, from)
+		c, err := planClient(ctx, provider, groups, id, d, from)
 		switch {
 		case err != nil:
 			p.errs = append(p.errs, fmt.Errorf("client %s: %w", id, err))
@@ -214,12 +305,66 @@ func (p *oidcPlan) planClients(
 		default:
 			p.changes = append(p.changes, c)
 			if c.addSecret {
-				h.oidcChanged = true
+				for _, h := range d.hosts {
+					h.oidcChanged = true
+				}
 			}
 		}
-		planned[id] = h.oidcClients[id].Public
+		planned[id] = d.cfg.Public
 	}
 	return planned, true
+}
+
+// previousHosts are the hosts in the run that sensible managed a client for
+// until now, given its owners, that don't declare it. They and hosts, which
+// do, must be all its owners, as applying some of them would drop the
+// others' callback URLs.
+func previousHosts(owners []string, hosts []*hostRun, byName map[string]*hostRun) ([]*hostRun, error) {
+	var from []*hostRun
+	var missing []string
+	for _, owner := range owners {
+		switch {
+		case slices.ContainsFunc(hosts, func(h *hostRun) bool { return h.name == owner }):
+		case byName[owner] != nil:
+			from = append(from, byName[owner])
+		default:
+			missing = append(missing, owner)
+		}
+	}
+	if len(missing) == 0 {
+		return from, nil
+	}
+	all := slices.Clone(missing)
+	for _, h := range hosts {
+		all = append(all, h.name)
+	}
+	slices.Sort(all)
+	return nil, fmt.Errorf(
+		"sensible manages it for %s; apply %s together, as every host that declares it must be",
+		joinAnd(missing),
+		joinAnd(all),
+	)
+}
+
+// joinAnd lists names as "a, b and c".
+func joinAnd(names []string) string {
+	if len(names) < 2 {
+		return strings.Join(names, "")
+	}
+	return strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
+}
+
+// hostNames lists the hosts' names, or "none".
+func hostNames(hosts []*hostRun) string {
+	if len(hosts) == 0 {
+		return "none"
+	}
+	names := make([]string, len(hosts))
+	for i, h := range hosts {
+		names[i] = h.name
+	}
+	slices.Sort(names)
+	return strings.Join(names, ", ")
 }
 
 // previousHost is the host in the run that sensible managed something h
@@ -237,10 +382,10 @@ func previousHost(owner string, h *hostRun, byName map[string]*hostRun) (*hostRu
 // oidcChange is a planned change to one client.
 type oidcChange struct {
 	provider oidcProvider
-	host     *hostRun
-	// from is the host sensible managed the client for until now, if it's
-	// another.
-	from   *hostRun
+	// hosts are those that declare the client, and from those sensible
+	// managed it for until now that no longer do.
+	hosts  []*hostRun
+	from   []*hostRun
 	want   oidcClient
 	secret string
 	// secretID is the secret sensible registered that's kept.
@@ -258,16 +403,17 @@ type oidcChange struct {
 	record       bool
 }
 
-// planClient compares the client that h declares with the provider's,
-// returning nil if it needs no change.
+// planClient compares the client that the hosts declare with the
+// provider's, returning nil if it needs no change.
 func planClient(
 	ctx context.Context,
 	provider oidcProvider,
 	groups map[string]string,
 	id string,
-	h, from *hostRun,
+	d *declaredClient,
+	from []*hostRun,
 ) (*oidcChange, error) {
-	cfg := h.oidcClients[id]
+	cfg := d.cfg
 	want := oidcClient{
 		id:                 id,
 		name:               cfg.Name,
@@ -289,11 +435,22 @@ func planClient(
 	}
 	slices.Sort(want.groups)
 
-	c := &oidcChange{provider: provider, host: h, from: from, want: want, secret: cfg.SecretValue}
-	recorded, managed := h.oidc.clients[id]
-	if from != nil {
-		managed = false
-		recorded = from.oidc.clients[id]
+	c := &oidcChange{provider: provider, hosts: d.hosts, from: from, want: want, secret: cfg.SecretValue}
+	// It's managed if it's recorded for the hosts that declare it and no
+	// others.
+	managed := len(from) == 0
+	var recorded config.SavedOIDCClient
+	var recordedFor []*hostRun
+	for _, h := range append(slices.Clone(d.hosts), from...) {
+		r, ok := h.oidc.clients[id]
+		if !ok {
+			managed = false
+			continue
+		}
+		if len(recordedFor) == 0 {
+			recorded = r
+		}
+		recordedFor = append(recordedFor, h)
 	}
 	existing, err := provider.Client(ctx, id)
 	if err != nil {
@@ -350,11 +507,7 @@ func planClient(
 	}
 	if !managed {
 		c.record = true
-		before := "none"
-		if from != nil {
-			before = from.name
-		}
-		c.lines = append(c.lines, label+"host: "+before+" → "+h.name)
+		c.lines = append(c.lines, label+"hosts: "+hostNames(recordedFor)+" → "+hostNames(d.hosts))
 	}
 	if len(c.lines) == 0 {
 		return nil, nil
@@ -478,25 +631,12 @@ func (c *oidcChange) apply(ctx context.Context) error {
 		return err
 	}
 	if c.addSecret {
-		if c.host.saveFailed {
-			return fmt.Errorf("%s's generated secrets weren't saved", c.host.name)
-		}
-		secretID, err := p.AddSecret(ctx, id, c.secret)
-		if err != nil {
-			return err
-		}
-		c.secretID = secretID
-	}
-	if c.from != nil {
-		if err := c.from.oidc.drop(id); err != nil {
+		if err := c.registerSecret(ctx); err != nil {
 			return err
 		}
 	}
-	if c.record {
-		c.saved.SecretID = c.secretID
-		if err := c.host.oidc.save(id, c.saved); err != nil {
-			return err
-		}
+	if err := c.updateRecords(); err != nil {
+		return err
 	}
 	if !c.pruneSecrets {
 		return nil
@@ -510,6 +650,39 @@ func (c *oidcChange) apply(ctx context.Context) error {
 			continue
 		}
 		if err := p.DeleteSecret(ctx, id, s.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// registerSecret adds the client's secret to the provider, unless a host
+// that declares it couldn't save the secrets generated for it.
+func (c *oidcChange) registerSecret(ctx context.Context) error {
+	for _, h := range c.hosts {
+		if h.saveFailed {
+			return fmt.Errorf("%s's generated secrets weren't saved", h.name)
+		}
+	}
+	secretID, err := c.provider.AddSecret(ctx, c.want.id, c.secret)
+	c.secretID = secretID
+	return err
+}
+
+// updateRecords drops the client from the hosts that no longer declare it,
+// and records it for those that do if it changed.
+func (c *oidcChange) updateRecords() error {
+	for _, h := range c.from {
+		if err := h.oidc.drop(c.want.id); err != nil {
+			return err
+		}
+	}
+	if !c.record {
+		return nil
+	}
+	c.saved.SecretID = c.secretID
+	for _, h := range c.hosts {
+		if err := h.oidc.save(c.want.id, c.saved); err != nil {
 			return err
 		}
 	}
@@ -564,10 +737,19 @@ func (p *oidcPlan) step() crossHostStep {
 }
 
 // findUnusedOIDCClients offers the clients sensible manages for the host
-// that it no longer declares. The provider is only opened to remove one.
-func (h *hostRun) findUnusedOIDCClients(ctx context.Context, open func() (oidcProvider, error)) {
+// that no host it manages them for declares. Those it manages for other
+// hosts too are only offered by the first, and only if the others are in
+// the run, as otherwise they may still declare them. The provider is only
+// opened to remove one.
+func (h *hostRun) findUnusedOIDCClients(
+	ctx context.Context,
+	open func() (oidcProvider, error),
+	owners map[string][]string,
+	byName map[string]*hostRun,
+) {
 	for _, id := range slices.Sorted(maps.Keys(h.oidc.clients)) {
-		if _, ok := h.oidcClients[id]; ok {
+		hosts, ok := unusedClientHosts(id, h, owners[id], byName)
+		if !ok {
 			continue
 		}
 		h.leftovers = append(
@@ -583,11 +765,47 @@ func (h *hostRun) findUnusedOIDCClients(ctx context.Context, open func() (oidcPr
 					if err := p.Delete(ctx, id); err != nil {
 						return err
 					}
-					return h.oidc.drop(id)
+					for _, o := range hosts {
+						if err := o.oidc.drop(id); err != nil {
+							return err
+						}
+					}
+					return nil
 				},
 			},
 		)
 	}
+}
+
+// unusedClientHosts are the hosts sensible manages the client for, which
+// are h and its other owners, if none of them declares it and h is the first
+// of them.
+func unusedClientHosts(id string, h *hostRun, owners []string, byName map[string]*hostRun) ([]*hostRun, bool) {
+	if _, ok := h.oidcClients[id]; ok {
+		return nil, false
+	}
+	hosts := []*hostRun{h}
+	for _, owner := range owners {
+		if owner == h.name {
+			continue
+		}
+		if owner < h.name {
+			return nil, false
+		}
+		o := byName[owner]
+		if o == nil {
+			return nil, false
+		}
+		<-o.done
+		if o.agent == nil || o.err != nil {
+			return nil, false
+		}
+		if _, ok := o.oidcClients[id]; ok {
+			return nil, false
+		}
+		hosts = append(hosts, o)
+	}
+	return hosts, true
 }
 
 // openOIDCOnce opens the OIDC provider the first time it's needed.
@@ -595,11 +813,13 @@ func (r *Runner) openOIDCOnce() func() (oidcProvider, error) {
 	return sync.OnceValues(func() (oidcProvider, error) { return r.OIDC(r.OIDCSettings) })
 }
 
-func oidcOwners(inv config.Inventory) map[string]string {
-	owners := map[string]string{}
-	for name, e := range inv.Hosts {
-		for id := range e.OIDCClients {
-			owners[id] = name
+// oidcOwners maps each OIDC client sensible manages to the hosts it's
+// for, by name.
+func oidcOwners(inv config.Inventory) map[string][]string {
+	owners := map[string][]string{}
+	for _, name := range slices.Sorted(maps.Keys(inv.Hosts)) {
+		for id := range inv.Hosts[name].OIDCClients {
+			owners[id] = append(owners[id], name)
 		}
 	}
 	return owners

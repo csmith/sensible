@@ -247,7 +247,7 @@ func newOIDCFixture(t *testing.T) *oidcFixture {
 	f.runner.OIDC = func(config.OIDCSettings) (oidcProvider, error) {
 		return &pocketID{url: srv.URL, key: "key", client: srv.Client()}, nil
 	}
-	f.runner.OIDCOwners = map[string]string{}
+	f.runner.OIDCOwners = map[string][]string{}
 	f.runner.OIDCAPIOwners = map[string]string{}
 	f.runner.Compile = func(tg target, _ host.Facts) (compiled, error) {
 		if f.records[tg.name] == nil {
@@ -296,7 +296,7 @@ func (f *oidcFixture) manage(id, secretID string) {
 		f.records["acidburn"] = map[string]config.SavedOIDCClient{}
 	}
 	f.records["acidburn"][id] = config.SavedOIDCClient{SecretID: secretID}
-	f.runner.OIDCOwners[id] = "acidburn"
+	f.runner.OIDCOwners[id] = []string{"acidburn"}
 }
 
 // existing puts a client in Pocket ID with one secret, which is the test
@@ -425,7 +425,7 @@ func TestExecute_oidcClientMadeByHandIsTakenOver(t *testing.T) {
 			"  ~ client app  public: false → true\n"+
 			"  ~ client app  pkce: false → true\n"+
 			"  - client app  1 other secret\n"+
-			"  ~ client app  host: none → acidburn\n",
+			"  ~ client app  hosts: none → acidburn\n",
 	)
 	assert.Equal(t, true, f.pocketID.clients["app"]["isPublic"])
 	assert.Empty(t, f.pocketID.appSecretIDs())
@@ -448,7 +448,7 @@ func TestExecute_oidcClientMovesBetweenHostsInTheSameRun(t *testing.T) {
 	assert.Contains(
 		t,
 		f.out.String(),
-		"  ~ client app  secret\n  - client app  1 other secret\n  ~ client app  host: acidburn → smarts\n",
+		"  ~ client app  secret\n  - client app  1 other secret\n  ~ client app  hosts: acidburn → smarts\n",
 	)
 	assert.Empty(t, f.records["acidburn"])
 	assert.Equal(t, map[string]config.SavedOIDCClient{"app": {SecretID: "s1"}}, f.records["smarts"])
@@ -470,20 +470,33 @@ func TestExecute_oidcPlanErrors(t *testing.T) {
 			`client app: no user group named "nobody"`,
 		},
 		{
-			"declared by two hosts",
+			"hosts disagree",
 			func(f *oidcFixture) {
+				c := testClient
+				c.SkipConsent = true
 				f.declared["acidburn"] = map[string]config.OIDCClientConfig{"app": testClient}
-				f.declared["smarts"] = map[string]config.OIDCClientConfig{"app": testClient}
+				f.declared["smarts"] = map[string]config.OIDCClientConfig{"app": c}
 			},
-			"client app: both acidburn and smarts declare it",
+			"client app: acidburn and smarts set different skip_consent",
+		},
+		{
+			"secrets differ",
+			func(f *oidcFixture) {
+				c := testClient
+				c.SecretValue = "another-secret-value"
+				f.declared["acidburn"] = map[string]config.OIDCClientConfig{"app": testClient}
+				f.declared["smarts"] = map[string]config.OIDCClientConfig{"app": c}
+			},
+			"client app: acidburn and smarts set different secret",
 		},
 		{
 			"managed for a host outside the run",
 			func(f *oidcFixture) {
 				f.declared["acidburn"] = map[string]config.OIDCClientConfig{"app": testClient}
-				f.runner.OIDCOwners["app"] = "penderghast"
+				f.runner.OIDCOwners["app"] = []string{"penderghast"}
 			},
-			"client app: sensible manages it for penderghast; apply penderghast and acidburn together to move it",
+			"client app: sensible manages it for penderghast; apply acidburn and penderghast together, " +
+				"as every host that declares it must be",
 		},
 	}
 	for _, tt := range tests {
@@ -632,7 +645,7 @@ func TestExecute_oidcLogoIsOnlyUploadedWhenItsNotTheOneSensibleUploaded(t *testi
 				f.records["acidburn"] = map[string]config.SavedOIDCClient{
 					"app": {SecretID: "ours", Logo: tt.recorded, DarkLogo: "dark"},
 				}
-				f.runner.OIDCOwners["app"] = "acidburn"
+				f.runner.OIDCOwners["app"] = []string{"acidburn"}
 
 				err := f.runner.Execute(t.Context(), []target{f.target("acidburn", &fakeAgent{})}, true)
 
@@ -678,4 +691,160 @@ func TestExecute_oidcSkipConsentSetByHandIsPutBack(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, f.out.String(), "> Resolving OIDC changes\n  ~ client app  skip_consent: true → false\n")
 	assert.Equal(t, false, f.pocketID.clients["app"]["skipConsent"])
+}
+
+// shareApp records that sensible manages app, with our secret, for each
+// host.
+func (f *oidcFixture) shareApp(hosts ...string) {
+	for _, h := range hosts {
+		if f.records[h] == nil {
+			f.records[h] = map[string]config.SavedOIDCClient{}
+		}
+		f.records[h]["app"] = config.SavedOIDCClient{SecretID: "ours"}
+	}
+	f.runner.OIDCOwners["app"] = hosts
+}
+
+// withCallback is the test client with another callback URL.
+func withCallback(url string) config.OIDCClientConfig {
+	c := testClient
+	c.CallbackURLs = config.Set{url}
+	return c
+}
+
+func TestExecute_oidcClientDeclaredByTwoHostsHasBothCallbacks(t *testing.T) {
+	f := newOIDCFixture(t)
+	f.declared["smarts"] = map[string]config.OIDCClientConfig{"app": withCallback("https://b.example.com/cb")}
+	f.declared["acidburn"] = map[string]config.OIDCClientConfig{"app": withCallback("https://a.example.com/cb")}
+
+	err := f.runner.Execute(
+		t.Context(),
+		[]target{f.target("smarts", &fakeAgent{}), f.target("acidburn", &fakeAgent{})},
+		true,
+	)
+
+	require.NoError(t, err)
+	assert.Contains(t, f.out.String(), "> Resolving OIDC changes\n  + client app\n")
+	assert.Equal(
+		t,
+		[]any{"https://a.example.com/cb", "https://b.example.com/cb"},
+		f.pocketID.clients["app"]["callbackURLs"],
+	)
+	assert.Equal(t, []string{"s1"}, f.pocketID.appSecretIDs())
+	assert.Equal(t, map[string]config.SavedOIDCClient{"app": {SecretID: "s1"}}, f.records["acidburn"])
+	assert.Equal(t, map[string]config.SavedOIDCClient{"app": {SecretID: "s1"}}, f.records["smarts"])
+}
+
+func TestExecute_oidcClientGainsAHost(t *testing.T) {
+	f := newOIDCFixture(t)
+	f.declared["acidburn"] = map[string]config.OIDCClientConfig{"app": testClient}
+	f.declared["smarts"] = map[string]config.OIDCClientConfig{"app": withCallback("https://b.example.com/cb")}
+	f.existing("app", nil, "ours")
+	f.manage("app", "ours")
+
+	err := f.runner.Execute(
+		t.Context(),
+		[]target{f.target("acidburn", &fakeAgent{}), f.target("smarts", &fakeAgent{})},
+		true,
+	)
+
+	require.NoError(t, err)
+	assert.Contains(
+		t,
+		f.out.String(),
+		"  ~ client app  callback_urls: https://app.example.com/callback → "+
+			"https://app.example.com/callback, https://b.example.com/cb\n",
+	)
+	assert.Contains(t, f.out.String(), "  ~ client app  hosts: acidburn → acidburn, smarts\n")
+	assert.Equal(t, map[string]config.SavedOIDCClient{"app": {SecretID: "s1"}}, f.records["smarts"])
+	assert.Equal(t, map[string]config.SavedOIDCClient{"app": {SecretID: "s1"}}, f.records["acidburn"])
+}
+
+func TestExecute_oidcClientLosesAHost(t *testing.T) {
+	f := newOIDCFixture(t)
+	f.declared["acidburn"] = map[string]config.OIDCClientConfig{"app": testClient}
+	f.existing(
+		"app",
+		map[string]any{"callbackURLs": []any{"https://app.example.com/callback", "https://b.example.com/cb"}},
+		"ours",
+	)
+	f.shareApp("acidburn", "smarts")
+
+	err := f.runner.Execute(
+		t.Context(),
+		[]target{f.target("acidburn", &fakeAgent{}), f.target("smarts", &fakeAgent{})},
+		true,
+	)
+
+	require.NoError(t, err)
+	assert.Contains(t, f.out.String(), "  ~ client app  hosts: acidburn, smarts → acidburn\n")
+	assert.Equal(t, []any{"https://app.example.com/callback"}, f.pocketID.clients["app"]["callbackURLs"])
+	assert.Empty(t, f.records["smarts"])
+	assert.Contains(t, f.records["acidburn"], "app")
+}
+
+func TestExecute_oidcClientSharedWithAHostOutsideTheRunIsntPlanned(t *testing.T) {
+	f := newOIDCFixture(t)
+	f.declared["acidburn"] = map[string]config.OIDCClientConfig{"app": testClient}
+	f.existing("app", nil, "ours")
+	f.shareApp("acidburn", "smarts")
+
+	err := f.runner.Execute(t.Context(), []target{f.target("acidburn", &fakeAgent{})}, true)
+
+	require.ErrorIs(t, err, errFailed)
+	assert.Contains(
+		t,
+		f.out.String(),
+		"client app: sensible manages it for smarts; apply acidburn and smarts together, "+
+			"as every host that declares it must be",
+	)
+	assert.Contains(t, f.records["smarts"], "app")
+}
+
+func TestPrune_oidcClientIsKeptWhileAnotherHostMayDeclareIt(t *testing.T) {
+	tests := []struct {
+		name    string
+		targets []string
+		smarts  bool
+	}{
+		{"other host outside the run", []string{"acidburn"}, false},
+		{"other host declares it", []string{"acidburn", "smarts"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				f := newOIDCFixture(t)
+				f.existing("app", nil, "ours")
+				f.shareApp("acidburn", "smarts")
+				if tt.smarts {
+					f.declared["smarts"] = map[string]config.OIDCClientConfig{"app": testClient}
+				}
+				var targets []target
+				for _, name := range tt.targets {
+					targets = append(targets, f.target(name, &fakeAgent{}))
+				}
+
+				err := f.runner.Prune(t.Context(), targets)
+
+				require.NoError(t, err)
+				assert.Empty(t, f.confirmed)
+				assert.Contains(t, f.pocketID.clients, "app")
+			},
+		)
+	}
+}
+
+func TestPrune_oidcClientNoHostDeclaresIsOfferedOnce(t *testing.T) {
+	f := newOIDCFixture(t)
+	f.existing("app", nil, "ours")
+	f.shareApp("acidburn", "smarts")
+
+	err := f.runner.Prune(t.Context(), []target{f.target("smarts", &fakeAgent{}), f.target("acidburn", &fakeAgent{})})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"Remove OIDC client app from acidburn? [y/N] "}, f.confirmed)
+	assert.NotContains(t, f.pocketID.clients, "app")
+	assert.Empty(t, f.records["acidburn"])
+	assert.Empty(t, f.records["smarts"])
 }

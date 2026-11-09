@@ -45,6 +45,7 @@ func Prune(ctx context.Context, opts PruneOptions) error {
 
 		OIDC:         newOIDCProvider,
 		OIDCSettings: repo.OIDC(),
+		OIDCOwners:   oidcOwners(repo.Inventory()),
 	}
 	return r.Prune(ctx, targets)
 }
@@ -77,6 +78,10 @@ func (r *Runner) Prune(ctx context.Context, targets []target) error {
 
 	r.checkAll(runs)
 	openOIDC := r.openOIDCOnce()
+	byName := map[string]*hostRun{}
+	for _, h := range runs {
+		byName[h.name] = h
+	}
 	var wg sync.WaitGroup
 	for _, h := range runs {
 		if h.agent == nil {
@@ -89,7 +94,7 @@ func (r *Runner) Prune(ctx context.Context, targets []target) error {
 				if h.err == nil && !h.failed && !h.pending() {
 					h.findLeftovers()
 					if h.err == nil {
-						h.findUnusedOIDCClients(ctx, openOIDC)
+						h.findUnusedOIDCClients(ctx, openOIDC, r.OIDCOwners, byName)
 						h.findUnusedOIDCAPIs(ctx, openOIDC)
 					}
 				}

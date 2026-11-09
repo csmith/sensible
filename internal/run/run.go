@@ -343,9 +343,9 @@ type Runner struct {
 	DNSNames     map[string]string
 	OIDC         func(settings config.OIDCSettings) (oidcProvider, error)
 	OIDCSettings config.OIDCSettings
-	// OIDCOwners and OIDCAPIOwners map each OIDC client and API sensible
-	// manages to the host it's for, for all hosts.
-	OIDCOwners    map[string]string
+	// OIDCOwners maps each OIDC client sensible manages to the hosts it's
+	// for, and OIDCAPIOwners each API to its host, for all hosts.
+	OIDCOwners    map[string][]string
 	OIDCAPIOwners map[string]string
 	// UpdatePackages puts a PackageUpdate before each host's resources.
 	UpdatePackages bool

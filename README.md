@@ -243,15 +243,22 @@ dns:
 `oidc_clients` sets up clients, by client ID, in the OIDC provider. Each needs
 `callback_urls`. A confidential client's `secret` is a `!generated` value of
 the role's stack, which the stack can use too, or an `!age` secret, and it's
-the only secret the client keeps. Public clients have no secret, and always use PKCE. `name`
-defaults to the client ID, and without `groups` any user can sign in. With
-`skip_consent: true`, signed-in users go straight back to the client instead
-of being asked to approve it first, which needs Pocket ID 2.10 or later.
-`launch_url` is where the provider's app list sends users, and `logo` and
-`dark_logo` are images in the `files` directory of the role or partial that
-declares the client. Without them, the client keeps what it has. The provider
-must be set, with its settings under its name. Pocket ID is supported, with an
-admin's API key.
+the only secret the client keeps. Public clients have no secret, and always
+use PKCE. `name` defaults to the client ID, and without `groups` any user can
+sign in. With `skip_consent: true`, signed-in users go straight back to the
+client instead of being asked to approve it first, which needs Pocket ID 2.10
+or later. `launch_url` is where the provider's app list sends users, and
+`logo` and `dark_logo` are images in the `files` directory of the role or
+partial that declares the client. Without them, the client keeps what it has.
+The provider must be set, with its settings under its name. Pocket ID is
+supported, with an admin's API key.
+
+Several hosts can declare the same client, such as a service with an instance
+on each. The client gets every host's `callback_urls` and
+`logout_callback_urls`, and its other settings must be the same on each host,
+so its secret has to be `!age`, as `!generated` values differ between hosts.
+The hosts that declare a client, and those sensible managed it for, must be
+applied together, or the client isn't changed.
 
 ```yaml
 # sensible.yml
