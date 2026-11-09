@@ -1210,7 +1210,46 @@ func TestHostConfig_oidcClientSecretWithALength(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Len(t, c.OIDCClients["app"].SecretValue, 48)
-	assert.Equal(t, GeneratedName("other"), c.OIDCClients["app"].Secret)
+}
+
+func TestHostConfig_oidcClientSecretMayBeAnAgeSecret(t *testing.T) {
+	tr := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml":    "alpha:\n  roles: {plain: }\n",
+			"roles/plain/role.yml": "",
+		},
+	)
+	secret, err := tr.open(t).Encrypt("a-secret-from-elsewhere")
+	require.NoError(t, err)
+	tr.write(t, "roles/plain/role.yml", oidcClientYAML("    secret: "+strings.ReplaceAll(secret, "\n", "\n    ")+"\n"))
+
+	c, err := tr.open(t).HostConfig("alpha", "debian")
+
+	require.NoError(t, err)
+	assert.Equal(t, "a-secret-from-elsewhere", c.OIDCClients["app"].SecretValue)
+	assert.Empty(t, c.Stacks)
+}
+
+func TestHostConfig_oidcClientAgeSecretPreviewsWithoutTheIdentity(t *testing.T) {
+	tr := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml":    "alpha:\n  roles: {plain: }\n",
+			"roles/plain/role.yml": "",
+		},
+	)
+	secret, err := tr.open(t).Encrypt("a-secret-from-elsewhere")
+	require.NoError(t, err)
+	tr.write(t, "roles/plain/role.yml", oidcClientYAML("    secret: "+strings.ReplaceAll(secret, "\n", "\n    ")+"\n"))
+	r, err := Open(tr.dir, func() (age.Identity, error) { return nil, errors.New("locked") })
+	require.NoError(t, err)
+	r.Preview(func(string) {})
+
+	c, err := r.HostConfig("alpha", "debian")
+
+	require.NoError(t, err)
+	assert.Regexp(t, `^<age:[0-9a-f]{8}>$`, c.OIDCClients["app"].SecretValue)
 }
 
 func TestHostConfig_oidcClientLogosAreReadFromTheDeclaringFilesDirectory(t *testing.T) {
@@ -1253,7 +1292,7 @@ func TestHostConfig_oidcClientErrors(t *testing.T) {
 		{
 			"plain secret",
 			map[string]string{"roles/app/role.yml": oidcClientYAML("    secret: hunter2\n")},
-			"expected a !generated value",
+			"expected a !generated or !age value",
 		},
 		{
 			"no callback URLs",
@@ -1263,7 +1302,7 @@ func TestHostConfig_oidcClientErrors(t *testing.T) {
 		{
 			"confidential without a secret",
 			map[string]string{"roles/app/role.yml": oidcClientYAML("    name: App\n")},
-			"oidc_clients.app: needs a !generated secret, or public: true",
+			"oidc_clients.app: needs a !generated or !age secret, or public: true",
 		},
 		{
 			"public with a secret",

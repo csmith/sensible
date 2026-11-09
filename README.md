@@ -242,8 +242,8 @@ dns:
 
 `oidc_clients` sets up clients, by client ID, in the OIDC provider. Each needs
 `callback_urls`. A confidential client's `secret` is a `!generated` value of
-the role's stack, which the stack can use too, and it's the only secret the
-client keeps. Public clients have no secret, and always use PKCE. `name`
+the role's stack, which the stack can use too, or an `!age` secret, and it's
+the only secret the client keeps. Public clients have no secret, and always use PKCE. `name`
 defaults to the client ID, and without `groups` any user can sign in. With
 `skip_consent: true`, signed-in users go straight back to the client instead
 of being asked to approve it first, which needs Pocket ID 2.10 or later.

@@ -326,7 +326,6 @@ var testClient = config.OIDCClientConfig{
 	Name:         "App",
 	CallbackURLs: config.Set{"https://app.example.com/callback"},
 	Groups:       config.Set{"admins"},
-	Secret:       "oidc",
 	SecretValue:  testSecret,
 }
 

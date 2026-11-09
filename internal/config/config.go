@@ -381,9 +381,9 @@ type OIDCClientConfig struct {
 	// Groups are the names of the user groups that may use the client.
 	// Empty allows everyone.
 	Groups Set `yaml:"groups"`
-	// Secret names the !generated value, from the declaring role's stack,
-	// that's the client's secret. Confidential clients need one.
-	Secret GeneratedName `yaml:"secret"`
+	// Secret is the client's secret: a !generated value of the declaring
+	// role's stack, or an !age secret. Confidential clients need one.
+	Secret ClientSecret `yaml:"secret"`
 	// LaunchURL is where the provider's app list sends users. Empty leaves
 	// the client's as it is.
 	LaunchURL string `yaml:"launch_url"`
@@ -412,28 +412,36 @@ func readLogo(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-// GeneratedName is the name in a !generated tag.
-type GeneratedName string
-
-func (g *GeneratedName) UnmarshalYAML(_ context.Context, node ast.Node) error {
-	if isNull(node) {
-		*g = ""
-		return nil
-	}
-	tag, ok := node.(*ast.TagNode)
-	if !ok || tag.Start.Value != generatedTag {
-		return nodeError(node, "expected a !generated value")
-	}
-	name, _, err := parseGenerated(tag)
-	if err != nil {
-		return err
-	}
-	*g = GeneratedName(name)
-	return nil
+// ClientSecret is an OIDC client's secret as it's written: the name in a
+// !generated tag, or an !age secret.
+type ClientSecret struct {
+	generated string
+	secret    Secret
 }
 
-// finishOIDCClients sets the OIDC clients' secrets from the stacks that
-// generated them, checks the clients, and fills in their default names.
+func (s *ClientSecret) UnmarshalYAML(ctx context.Context, node ast.Node) error {
+	*s = ClientSecret{}
+	if isNull(node) {
+		return nil
+	}
+	if tag, ok := node.(*ast.TagNode); ok {
+		switch tag.Start.Value {
+		case generatedTag:
+			name, _, err := parseGenerated(tag)
+			s.generated = name
+			return err
+		case ageTag:
+			return s.secret.UnmarshalYAML(ctx, node)
+		}
+	}
+	return nodeError(node, "expected a !generated or !age value")
+}
+
+func (s ClientSecret) IsZero() bool { return s.generated == "" && s.secret.IsZero() }
+
+// finishOIDCClients sets the OIDC clients' secrets, from the stacks that
+// generated them or by revealing them, checks the clients, and fills in
+// their default names.
 func (c *Config) finishOIDCClients() error {
 	clients := c.OIDCClients
 	for _, s := range c.Stacks {
@@ -445,14 +453,24 @@ func (c *Config) finishOIDCClients() error {
 	}
 	for _, id := range slices.Sorted(maps.Keys(clients)) {
 		client := clients[id]
+		// A secret that can't be decrypted in a preview is its placeholder,
+		// which needn't be long enough.
+		placeholder := false
+		if s := client.Secret.secret; !s.IsZero() {
+			var err error
+			if client.SecretValue, err = s.Reveal(); err != nil {
+				return fmt.Errorf("oidc_clients.%s.secret: %w", id, err)
+			}
+			placeholder = client.SecretValue == s.Placeholder()
+		}
 		switch {
 		case len(client.CallbackURLs) == 0:
 			return fmt.Errorf("oidc_clients.%s: needs callback_urls", id)
-		case client.Public && client.Secret != "":
+		case client.Public && !client.Secret.IsZero():
 			return fmt.Errorf("oidc_clients.%s: a public client has no secret", id)
-		case !client.Public && client.Secret == "":
-			return fmt.Errorf("oidc_clients.%s: needs a !generated secret, or public: true", id)
-		case !client.Public && len(client.SecretValue) < 16:
+		case !client.Public && client.Secret.IsZero():
+			return fmt.Errorf("oidc_clients.%s: needs a !generated or !age secret, or public: true", id)
+		case !client.Public && !placeholder && len(client.SecretValue) < 16:
 			return fmt.Errorf("oidc_clients.%s: secret must be at least 16 characters", id)
 		}
 		if client.Name == "" {
