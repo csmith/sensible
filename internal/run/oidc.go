@@ -44,7 +44,7 @@ type oidcClient struct {
 	id                               string
 	name                             string
 	callbackURLs, logoutCallbackURLs []string
-	public, pkce                     bool
+	public, pkce, skipConsent        bool
 	// restricted limits the client to the user groups with the IDs in
 	// groups, which are in order.
 	restricted bool
@@ -198,9 +198,10 @@ func planClient(
 		logoutCallbackURLs: slices.Clone(cfg.LogoutCallbackURLs),
 		public:             cfg.Public,
 		// The provider may insist on it for public clients anyway.
-		pkce:       cfg.Public || cfg.PKCE,
-		restricted: len(cfg.Groups) > 0,
-		launchURL:  cfg.LaunchURL,
+		pkce:        cfg.Public || cfg.PKCE,
+		skipConsent: cfg.SkipConsent,
+		restricted:  len(cfg.Groups) > 0,
+		launchURL:   cfg.LaunchURL,
 	}
 	for _, g := range cfg.Groups {
 		gid, ok := groups[g]
@@ -302,6 +303,7 @@ func (c *oidcChange) planSettings(existing *oidcClient, label string) {
 		},
 		{"public", strconv.FormatBool(existing.public), strconv.FormatBool(want.public)},
 		{"pkce", strconv.FormatBool(existing.pkce), strconv.FormatBool(want.pkce)},
+		{"skip_consent", strconv.FormatBool(existing.skipConsent), strconv.FormatBool(want.skipConsent)},
 	}
 	if want.launchURL != "" {
 		fields = append(fields, struct{ name, before, after string }{"launch_url", existing.launchURL, want.launchURL})

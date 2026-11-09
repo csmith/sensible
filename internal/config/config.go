@@ -369,6 +369,9 @@ type OIDCClientConfig struct {
 	// Public clients have no secret, and always use PKCE.
 	Public bool `yaml:"public"`
 	PKCE   bool `yaml:"pkce"`
+	// SkipConsent sends signed-in users straight back to the client,
+	// without asking them to approve it first.
+	SkipConsent bool `yaml:"skip_consent"`
 	// Groups are the names of the user groups that may use the client.
 	// Empty allows everyone.
 	Groups Set `yaml:"groups"`

@@ -630,3 +630,28 @@ func TestExecute_oidcLogoIsOnlyUploadedWhenItsNotTheOneSensibleUploaded(t *testi
 		)
 	}
 }
+
+func TestExecute_oidcClientIsCreatedSkippingConsent(t *testing.T) {
+	f := newOIDCFixture(t)
+	c := testClient
+	c.SkipConsent = true
+	f.declared["acidburn"] = map[string]config.OIDCClientConfig{"app": c}
+
+	err := f.runner.Execute(t.Context(), []target{f.target("acidburn", &fakeAgent{})}, true)
+
+	require.NoError(t, err)
+	assert.Equal(t, true, f.pocketID.clients["app"]["skipConsent"])
+}
+
+func TestExecute_oidcSkipConsentSetByHandIsPutBack(t *testing.T) {
+	f := newOIDCFixture(t)
+	f.declared["acidburn"] = map[string]config.OIDCClientConfig{"app": testClient}
+	f.existing("app", map[string]any{"skipConsent": true}, "ours")
+	f.manage("app", "ours")
+
+	err := f.runner.Execute(t.Context(), []target{f.target("acidburn", &fakeAgent{})}, true)
+
+	require.NoError(t, err)
+	assert.Contains(t, f.out.String(), "> Resolving OIDC changes\n  ~ client app  skip_consent: true → false\n")
+	assert.Equal(t, false, f.pocketID.clients["app"]["skipConsent"])
+}

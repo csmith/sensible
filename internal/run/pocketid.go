@@ -40,6 +40,7 @@ func (p *pocketID) Client(ctx context.Context, id string) (*oidcClient, error) {
 		LogoutCallbackURLs []string `json:"logoutCallbackURLs"`
 		IsPublic           bool     `json:"isPublic"`
 		PkceEnabled        bool     `json:"pkceEnabled"`
+		SkipConsent        bool     `json:"skipConsent"`
 		IsGroupRestricted  bool     `json:"isGroupRestricted"`
 		LaunchURL          *string  `json:"launchURL"`
 		HasLogo            bool     `json:"hasLogo"`
@@ -62,6 +63,7 @@ func (p *pocketID) Client(ctx context.Context, id string) (*oidcClient, error) {
 		logoutCallbackURLs: res.LogoutCallbackURLs,
 		public:             res.IsPublic,
 		pkce:               res.PkceEnabled,
+		skipConsent:        res.SkipConsent,
 		restricted:         res.IsGroupRestricted,
 		hasLogo:            res.HasLogo,
 		hasDarkLogo:        res.HasDarkLogo,
@@ -140,6 +142,7 @@ func clientSettings(c oidcClient) map[string]any {
 		"logoutCallbackURLs": nonNil(c.logoutCallbackURLs),
 		"isPublic":           c.public,
 		"pkceEnabled":        c.pkce,
+		"skipConsent":        c.skipConsent,
 		"isGroupRestricted":  c.restricted,
 	}
 	if c.launchURL != "" {
