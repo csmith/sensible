@@ -42,7 +42,10 @@ type fakePocketID struct {
 	secrets map[string][]fakeSecret
 	// logos are the uploaded logos' file names and contents, by client ID
 	// and then "light" or "dark".
-	logos    map[string]map[string]string
+	logos map[string]map[string]string
+	apis  map[string]*fakeAPI
+	// grants are the clients' grants on each API, by API and client ID.
+	grants   map[string]map[string]fakeGrant
 	requests []string
 	nextID   int
 }
@@ -54,6 +57,8 @@ func newFakePocketID(t *testing.T) (*fakePocketID, *httptest.Server) {
 		clients: map[string]map[string]any{},
 		secrets: map[string][]fakeSecret{},
 		logos:   map[string]map[string]string{},
+		apis:    map[string]*fakeAPI{},
+		grants:  map[string]map[string]fakeGrant{},
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/user-groups", f.listGroups)
@@ -66,6 +71,7 @@ func newFakePocketID(t *testing.T) (*fakePocketID, *httptest.Server) {
 	mux.HandleFunc("POST /api/oidc/clients/{id}/secrets", f.client(f.addSecret))
 	mux.HandleFunc("DELETE /api/oidc/clients/{id}/secrets/{secret}", f.client(f.deleteSecret))
 	mux.HandleFunc("POST /api/oidc/clients/{id}/logo", f.client(f.setLogo))
+	f.routeAPIs(mux)
 	srv := httptest.NewServer(
 		http.HandlerFunc(
 			func(w http.ResponseWriter, r *http.Request) {
@@ -221,7 +227,10 @@ type oidcFixture struct {
 	pocketID *fakePocketID
 	declared map[string]map[string]config.OIDCClientConfig
 	records  map[string]map[string]config.SavedOIDCClient
-	saved    []string
+	// declaredAPIs and apiRecords are the same for APIs.
+	declaredAPIs map[string]map[string]config.OIDCAPIConfig
+	apiRecords   map[string][]string
+	saved        []string
 }
 
 func newOIDCFixture(t *testing.T) *oidcFixture {
@@ -232,11 +241,14 @@ func newOIDCFixture(t *testing.T) *oidcFixture {
 		pocketID:      pid,
 		declared:      map[string]map[string]config.OIDCClientConfig{},
 		records:       map[string]map[string]config.SavedOIDCClient{},
+		declaredAPIs:  map[string]map[string]config.OIDCAPIConfig{},
+		apiRecords:    map[string][]string{},
 	}
 	f.runner.OIDC = func(config.OIDCSettings) (oidcProvider, error) {
 		return &pocketID{url: srv.URL, key: "key", client: srv.Client()}, nil
 	}
 	f.runner.OIDCOwners = map[string]string{}
+	f.runner.OIDCAPIOwners = map[string]string{}
 	f.runner.Compile = func(tg target, _ host.Facts) (compiled, error) {
 		if f.records[tg.name] == nil {
 			f.records[tg.name] = map[string]config.SavedOIDCClient{}
@@ -245,6 +257,7 @@ func newOIDCFixture(t *testing.T) *oidcFixture {
 		return compiled{
 			resources:   testResources,
 			oidcClients: f.declared[tg.name],
+			oidcAPIs:    f.declaredAPIs[tg.name],
 			oidc: oidcRecords{
 				clients: maps.Clone(records),
 				save: func(id string, saved config.SavedOIDCClient) error {
@@ -253,6 +266,18 @@ func newOIDCFixture(t *testing.T) *oidcFixture {
 				},
 				drop: func(id string) error {
 					delete(records, id)
+					return nil
+				},
+				apis: slices.Clone(f.apiRecords[tg.name]),
+				saveAPI: func(identifier string) error {
+					f.apiRecords[tg.name] = append(f.apiRecords[tg.name], identifier)
+					return nil
+				},
+				dropAPI: func(identifier string) error {
+					f.apiRecords[tg.name] = slices.DeleteFunc(
+						f.apiRecords[tg.name],
+						func(a string) bool { return a == identifier },
+					)
 					return nil
 				},
 			},

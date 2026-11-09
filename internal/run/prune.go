@@ -90,6 +90,7 @@ func (r *Runner) Prune(ctx context.Context, targets []target) error {
 					h.findLeftovers()
 					if h.err == nil {
 						h.findUnusedOIDCClients(ctx, openOIDC)
+						h.findUnusedOIDCAPIs(ctx, openOIDC)
 					}
 				}
 				out.finish(t, indentItems(leftoverLines(h, out.p))...)

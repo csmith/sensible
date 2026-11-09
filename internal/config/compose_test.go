@@ -1330,3 +1330,78 @@ func TestSaveOIDCClient_recordsClientsForTheHost(t *testing.T) {
 	require.NoError(t, r.DropOIDCClient("alpha", "app"))
 	assert.Equal(t, map[string]SavedOIDCClient{"public": logo}, clients())
 }
+
+func TestHostConfig_oidcAPIGrantsMergeAcrossRoles(t *testing.T) {
+	files := map[string]string{
+		"hosts.d/hosts.yml": "alpha:\n  roles: {pb: , app: }\n",
+		"roles/pb/role.yml": "oidc_apis:\n" +
+			"  https://pb.example.net/:\n" +
+			"    permissions:\n" +
+			"      read: {name: Read records}\n" +
+			"      write: {description: Change records}\n" +
+			"    clients:\n" +
+			"      backup:\n",
+		"roles/app/role.yml": "oidc_apis:\n  https://pb.example.net/:\n    clients:\n      app: [read, write]\n",
+	}
+
+	c, err := newTestRepo(t, files).open(t).HostConfig("alpha", "debian")
+
+	require.NoError(t, err)
+	assert.Equal(
+		t,
+		map[string]OIDCAPIConfig{
+			"https://pb.example.net": {
+				Name: "https://pb.example.net",
+				Permissions: map[string]OIDCPermissionConfig{
+					"read":  {Name: "Read records"},
+					"write": {Name: "write", Description: "Change records"},
+				},
+				Clients: map[string]Set{"app": {"read", "write"}, "backup": nil},
+			},
+		},
+		c.OIDCAPIs,
+	)
+}
+
+func TestHostConfig_oidcAPIErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			"grant of an undeclared permission",
+			"oidc_apis:\n  https://pb.example.net:\n    clients:\n      app: [read]\n",
+			`oidc_apis.https://pb.example.net.clients.app: no permission "read"`,
+		},
+		{
+			"identifier declared twice",
+			"oidc_apis:\n  https://pb.example.net: {}\n  https://pb.example.net/: {}\n",
+			"oidc_apis.https://pb.example.net/: https://pb.example.net is already declared",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				files := map[string]string{"hosts.d/hosts.yml": "alpha:\n  roles: {pb: }\n", "roles/pb/role.yml": tt.yaml}
+				_, err := newTestRepo(t, files).open(t).HostConfig("alpha", "debian")
+				require.ErrorContains(t, err, tt.want)
+			},
+		)
+	}
+}
+
+func TestSaveOIDCAPI_recordsAPIsForTheHost(t *testing.T) {
+	tr := newTestRepo(t, readTestTree(t, "oidc-clients"))
+	r := tr.open(t)
+	apis := func() Set { return tr.open(t).Inventory().Hosts["alpha"].OIDCAPIs }
+
+	require.NoError(t, r.SaveOIDCAPI("alpha", "https://b.example.net"))
+	require.NoError(t, r.SaveOIDCAPI("alpha", "https://a.example.net"))
+	require.NoError(t, r.SaveOIDCAPI("alpha", "https://b.example.net"))
+	assert.ElementsMatch(t, Set{"https://a.example.net", "https://b.example.net"}, apis())
+
+	require.NoError(t, r.DropOIDCAPI("alpha", "https://b.example.net"))
+	assert.Equal(t, Set{"https://a.example.net"}, apis())
+}

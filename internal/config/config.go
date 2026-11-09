@@ -56,6 +56,9 @@ type HostEntry struct {
 	// OIDCClients are the OIDC provider's clients sensible created for the
 	// host.
 	OIDCClients map[string]SavedOIDCClient `yaml:"oidc_clients"`
+	// OIDCAPIs are the identifiers of the OIDC provider's APIs sensible
+	// manages for the host.
+	OIDCAPIs Set `yaml:"oidc_apis"`
 }
 
 // SavedOIDCClient is what sensible registered with an OIDC client it
@@ -185,6 +188,9 @@ type Config struct {
 	// OIDCClients are the OIDC provider's clients, by client ID. They're set
 	// up from the controller, not on the host.
 	OIDCClients map[string]OIDCClientConfig `yaml:"oidc_clients"`
+	// OIDCAPIs are the OIDC provider's APIs, by identifier, which are also
+	// set up from the controller.
+	OIDCAPIs map[string]OIDCAPIConfig `yaml:"oidc_apis"`
 	// Stacks come from the host's roles that have a docker-compose.yml,
 	// rather than from a module, and are in name order.
 	Stacks []Stack `yaml:"-"`
@@ -461,6 +467,61 @@ func (c *Config) finishOIDCClients() error {
 		}
 		clients[id] = client
 	}
+	return nil
+}
+
+// OIDCAPIConfig is an API, or resource server, of sensible.yml's OIDC
+// provider.
+type OIDCAPIConfig struct {
+	// Name defaults to the identifier.
+	Name        string                          `yaml:"name"`
+	Permissions map[string]OIDCPermissionConfig `yaml:"permissions"`
+	// Clients are the IDs of the OIDC clients that may call the API, each
+	// with the keys of the permissions it's granted.
+	Clients map[string]Set `yaml:"clients"`
+}
+
+type OIDCPermissionConfig struct {
+	// Name defaults to the permission's key.
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+}
+
+// finishOIDCAPIs checks the APIs, fills in their default names, and drops
+// trailing slashes from their identifiers, as the provider does.
+func (c *Config) finishOIDCAPIs() error {
+	if len(c.OIDCAPIs) == 0 {
+		return nil
+	}
+	apis := map[string]OIDCAPIConfig{}
+	for _, id := range slices.Sorted(maps.Keys(c.OIDCAPIs)) {
+		api := c.OIDCAPIs[id]
+		trimmed := strings.TrimRight(id, "/")
+		if trimmed == "" {
+			return fmt.Errorf("oidc_apis.%s: the identifier must be a URL", id)
+		}
+		if _, ok := apis[trimmed]; ok {
+			return fmt.Errorf("oidc_apis.%s: %s is already declared", id, trimmed)
+		}
+		if api.Name == "" {
+			api.Name = trimmed
+		}
+		for key, p := range api.Permissions {
+			if p.Name == "" {
+				p.Name = key
+				api.Permissions[key] = p
+			}
+		}
+		for _, client := range slices.Sorted(maps.Keys(api.Clients)) {
+			for _, key := range api.Clients[client] {
+				if _, ok := api.Permissions[key]; !ok {
+					return fmt.Errorf("oidc_apis.%s.clients.%s: no permission %q", id, client, key)
+				}
+			}
+		}
+		apis[trimmed] = api
+	}
+	c.OIDCAPIs = apis
 	return nil
 }
 
@@ -1017,6 +1078,40 @@ func (r *Repo) DropOIDCClient(name, id string) error {
 	return r.updateState(name, func(s *hostState) { delete(s.OIDCClients, id) })
 }
 
+// SaveOIDCAPI records in the host's state file that sensible manages the
+// OIDC API with the identifier for it.
+func (r *Repo) SaveOIDCAPI(name, id string) error {
+	if err := r.checkHost(name); err != nil {
+		return err
+	}
+	return r.updateState(
+		name,
+		func(s *hostState) {
+			if !slices.Contains(s.OIDCAPIs, id) {
+				s.OIDCAPIs = append(s.OIDCAPIs, id)
+			}
+		},
+	)
+}
+
+// DropOIDCAPI removes the OIDC API from the host's state file.
+func (r *Repo) DropOIDCAPI(name, id string) error {
+	if err := r.checkHost(name); err != nil {
+		return err
+	}
+	err := r.updateState(
+		name,
+		func(s *hostState) { s.OIDCAPIs = slices.DeleteFunc(s.OIDCAPIs, func(a string) bool { return a == id }) },
+	)
+	if err != nil {
+		return err
+	}
+	if slices.Contains(r.inventory.Hosts[name].OIDCAPIs, id) {
+		return fmt.Errorf("another file in %s sets %s's oidc_apis %s, so it can't be removed", r.path("hosts.d"), name, id)
+	}
+	return nil
+}
+
 // IgnoreLeftover records in the host's state file that the item the
 // resource with the given ID lists as a leftover is meant to stay.
 func (r *Repo) IgnoreLeftover(name, id, item string) error {
@@ -1122,6 +1217,7 @@ type hostState struct {
 	Certs        map[string]savedCert         `yaml:"certs"`
 	Ignored      map[string][]string          `yaml:"ignored"`
 	OIDCClients  map[string]SavedOIDCClient   `yaml:"oidc_clients"`
+	OIDCAPIs     []string                     `yaml:"oidc_apis"`
 }
 
 // write adds the state to a state file, under its host's key.
@@ -1169,6 +1265,12 @@ func (s hostState) write(out *strings.Builder) {
 		out.WriteString("  oidc_clients:\n")
 		for _, id := range slices.Sorted(maps.Keys(s.OIDCClients)) {
 			out.WriteString("    " + strconv.Quote(id) + ": " + s.OIDCClients[id].yaml() + "\n")
+		}
+	}
+	if len(s.OIDCAPIs) > 0 {
+		out.WriteString("  oidc_apis:\n")
+		for _, id := range slices.Sorted(slices.Values(s.OIDCAPIs)) {
+			out.WriteString("    - " + strconv.Quote(id) + "\n")
 		}
 	}
 }

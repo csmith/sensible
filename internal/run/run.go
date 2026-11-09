@@ -62,9 +62,10 @@ func Run(ctx context.Context, opts Options) error {
 		Vhosts:      repo.Vhosts(),
 		DNSNames:    dnsNames(repo.Inventory()),
 
-		OIDC:         newOIDCProvider,
-		OIDCSettings: repo.OIDC(),
-		OIDCOwners:   oidcOwners(repo.Inventory()),
+		OIDC:          newOIDCProvider,
+		OIDCSettings:  repo.OIDC(),
+		OIDCOwners:    oidcOwners(repo.Inventory()),
+		OIDCAPIOwners: oidcAPIOwners(repo.Inventory()),
 
 		UpdatePackages: opts.UpdatePackages,
 	}
@@ -102,13 +103,16 @@ func compiler(repo *config.Repo) func(target, host.Facts) (compiled, error) {
 		c.unusedSecrets = unusedSecrets(repo, t.name, cfg)
 		c.ignored = repo.Inventory().Hosts[t.name].Ignored
 		c.ignore = func(id, item string) error { return repo.IgnoreLeftover(t.name, id, item) }
-		c.oidcClients = cfg.OIDCClients
+		c.oidcClients, c.oidcAPIs = cfg.OIDCClients, cfg.OIDCAPIs
 		c.oidc = oidcRecords{
 			clients: repo.Inventory().Hosts[t.name].OIDCClients,
 			save: func(id string, saved config.SavedOIDCClient) error {
 				return repo.SaveOIDCClient(t.name, id, saved)
 			},
-			drop: func(id string) error { return repo.DropOIDCClient(t.name, id) },
+			drop:    func(id string) error { return repo.DropOIDCClient(t.name, id) },
+			apis:    repo.Inventory().Hosts[t.name].OIDCAPIs,
+			saveAPI: func(identifier string) error { return repo.SaveOIDCAPI(t.name, identifier) },
+			dropAPI: func(identifier string) error { return repo.DropOIDCAPI(t.name, identifier) },
 		}
 		return c, nil
 	}
@@ -305,9 +309,10 @@ type compiled struct {
 	// of the resource that lists them, and ignore records another.
 	ignored map[string][]string
 	ignore  func(id, item string) error
-	// oidcClients are the OIDC clients the host declares, and oidc those
-	// sensible manages for it.
+	// oidcClients and oidcAPIs are the OIDC clients and APIs the host
+	// declares, and oidc those sensible manages for it.
 	oidcClients map[string]config.OIDCClientConfig
+	oidcAPIs    map[string]config.OIDCAPIConfig
 	oidc        oidcRecords
 }
 
@@ -338,9 +343,10 @@ type Runner struct {
 	DNSNames     map[string]string
 	OIDC         func(settings config.OIDCSettings) (oidcProvider, error)
 	OIDCSettings config.OIDCSettings
-	// OIDCOwners maps each OIDC client sensible manages to the host it's
-	// for, for all hosts.
-	OIDCOwners map[string]string
+	// OIDCOwners and OIDCAPIOwners map each OIDC client and API sensible
+	// manages to the host it's for, for all hosts.
+	OIDCOwners    map[string]string
+	OIDCAPIOwners map[string]string
 	// UpdatePackages puts a PackageUpdate before each host's resources.
 	UpdatePackages bool
 }
@@ -358,6 +364,7 @@ type hostRun struct {
 	ignored       map[string][]string
 	ignore        func(id, item string) error
 	oidcClients   map[string]config.OIDCClientConfig
+	oidcAPIs      map[string]config.OIDCAPIConfig
 	oidc          oidcRecords
 	// oidcChanged is set when the OIDC changes register a secret generated
 	// for the host, and saveFailed when its generated values couldn't be
@@ -395,7 +402,7 @@ func (r *Runner) Execute(ctx context.Context, targets []target, yes bool) error 
 	}
 
 	var oidc oidcPlan
-	if slices.ContainsFunc(runs, func(h *hostRun) bool { return len(h.oidcClients) > 0 }) {
+	if slices.ContainsFunc(runs, func(h *hostRun) bool { return len(h.oidcClients) > 0 || len(h.oidcAPIs) > 0 }) {
 		t := out.beginSection("Resolving OIDC changes")
 		oidc = r.planOIDC(ctx, runs)
 		out.finish(t, out.crossHostLines(oidc.lines(), nil, oidc.errs, oidc.unchanged)...)
@@ -526,7 +533,7 @@ func (r *Runner) checkAll(runs []*hostRun) {
 		}
 		h.resources, h.save, h.unusedSecrets = c.resources, c.save, c.unusedSecrets
 		h.ignored, h.ignore = c.ignored, c.ignore
-		h.oidcClients, h.oidc = c.oidcClients, c.oidc
+		h.oidcClients, h.oidcAPIs, h.oidc = c.oidcClients, c.oidcAPIs, c.oidc
 		go func() {
 			defer close(h.done)
 			h.check()

@@ -11,7 +11,9 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"chameth.com/sensible/internal/config"
@@ -94,28 +96,20 @@ func (p *pocketID) Secrets(ctx context.Context, id string) ([]oidcSecret, error)
 }
 
 func (p *pocketID) Groups(ctx context.Context) (map[string]string, error) {
-	groups := map[string]string{}
-	for page := 1; ; page++ {
-		var res struct {
-			Data []struct {
-				ID   string `json:"id"`
-				Name string `json:"name"`
-			} `json:"data"`
-			Pagination struct {
-				TotalPages int `json:"totalPages"`
-			} `json:"pagination"`
-		}
-		q := url.Values{"pagination[page]": {strconv.Itoa(page)}, "pagination[limit]": {"100"}}
-		if err := p.do(ctx, http.MethodGet, "/api/user-groups?"+q.Encode(), nil, &res); err != nil {
-			return nil, err
-		}
-		for _, g := range res.Data {
-			groups[g.Name] = g.ID
-		}
-		if page >= res.Pagination.TotalPages {
-			return groups, nil
-		}
+	type group struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
 	}
+	groups := map[string]string{}
+	err := eachPage(
+		ctx,
+		p,
+		"/api/user-groups",
+		func(g group) {
+			groups[g.Name] = g.ID
+		},
+	)
+	return groups, err
 }
 
 func (p *pocketID) Create(ctx context.Context, c oidcClient) error {
@@ -203,6 +197,135 @@ func (p *pocketID) Delete(ctx context.Context, id string) error {
 	return err
 }
 
+// pocketIDAPI is an API as Pocket ID gives it.
+type pocketIDAPI struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Resource    string `json:"resource"`
+	Permissions []struct {
+		ID          string `json:"id"`
+		Key         string `json:"key"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	} `json:"permissions"`
+}
+
+func (a pocketIDAPI) api() *oidcAPI {
+	api := &oidcAPI{id: a.ID, name: a.Name}
+	for _, perm := range a.Permissions {
+		api.permissions = append(
+			api.permissions,
+			oidcPermission{id: perm.ID, key: perm.Key, name: perm.Name, description: perm.Description},
+		)
+	}
+	slices.SortFunc(api.permissions, func(a, b oidcPermission) int { return strings.Compare(a.key, b.key) })
+	return api
+}
+
+func (p *pocketID) APIs(ctx context.Context) (map[string]*oidcAPI, error) {
+	apis := map[string]*oidcAPI{}
+	err := eachPage(ctx, p, "/api/apis", func(a pocketIDAPI) { apis[a.Resource] = a.api() })
+	return apis, err
+}
+
+func (p *pocketID) CreateAPI(ctx context.Context, identifier, name string) (string, error) {
+	var res pocketIDAPI
+	err := p.do(ctx, http.MethodPost, "/api/apis", map[string]string{"name": name, "resource": identifier}, &res)
+	if err == nil && res.ID == "" {
+		err = errors.New("pocket ID didn't give the new API's ID")
+	}
+	return res.ID, err
+}
+
+func (p *pocketID) RenameAPI(ctx context.Context, id, name string) error {
+	return p.do(ctx, http.MethodPut, apiPath(id), map[string]string{"name": name}, nil)
+}
+
+func (p *pocketID) SetPermissions(
+	ctx context.Context,
+	id string,
+	permissions []oidcPermission,
+) (map[string]string, error) {
+	type permission struct {
+		Key         string  `json:"key"`
+		Name        string  `json:"name"`
+		Description *string `json:"description"`
+	}
+	body := struct {
+		Permissions []permission `json:"permissions"`
+	}{Permissions: []permission{}}
+	for _, perm := range permissions {
+		var description *string
+		if perm.description != "" {
+			description = &perm.description
+		}
+		body.Permissions = append(body.Permissions, permission{Key: perm.key, Name: perm.name, Description: description})
+	}
+	var res pocketIDAPI
+	if err := p.do(ctx, http.MethodPut, apiPath(id)+"/permissions", body, &res); err != nil {
+		return nil, err
+	}
+	ids := map[string]string{}
+	for _, perm := range res.Permissions {
+		ids[perm.Key] = perm.ID
+	}
+	return ids, nil
+}
+
+// Grants leaves out clients that can only call the API through Pocket ID's
+// access for clients registered with a metadata document, which sensible
+// doesn't manage.
+func (p *pocketID) Grants(ctx context.Context, id string) (map[string]oidcGrant, error) {
+	type access struct {
+		Client struct {
+			ID string `json:"id"`
+		} `json:"client"`
+		UserDelegatedAccess        bool     `json:"userDelegatedAccess"`
+		ClientAccess               bool     `json:"clientAccess"`
+		UserDelegatedPermissionIDs []string `json:"userDelegatedPermissionIds"`
+		ClientPermissionIDs        []string `json:"clientPermissionIds"`
+	}
+	grants := map[string]oidcGrant{}
+	err := eachPage(
+		ctx,
+		p,
+		apiPath(id)+"/clients",
+		func(a access) {
+			g := oidcGrant{
+				user:        a.UserDelegatedAccess || len(a.UserDelegatedPermissionIDs) > 0,
+				client:      a.ClientAccess || len(a.ClientPermissionIDs) > 0,
+				permissions: slices.Sorted(slices.Values(a.ClientPermissionIDs)),
+			}
+			if g.user || g.client {
+				grants[a.Client.ID] = g
+			}
+		},
+	)
+	return grants, err
+}
+
+func (p *pocketID) Grant(ctx context.Context, id, clientID string, permissionIDs []string) error {
+	body := map[string]any{
+		"userDelegatedAccess":        false,
+		"clientAccess":               true,
+		"userDelegatedPermissionIds": []string{},
+		"clientPermissionIds":        nonNil(permissionIDs),
+	}
+	return p.do(ctx, http.MethodPut, apiPath(id)+"/clients/"+url.PathEscape(clientID), body, nil)
+}
+
+func (p *pocketID) Revoke(ctx context.Context, id, clientID string) error {
+	return p.do(ctx, http.MethodDelete, apiPath(id)+"/clients/"+url.PathEscape(clientID), nil, nil)
+}
+
+func (p *pocketID) DeleteAPI(ctx context.Context, id string) error {
+	err := p.do(ctx, http.MethodDelete, apiPath(id), nil, nil)
+	if errors.Is(err, errPocketIDNotFound) {
+		return nil
+	}
+	return err
+}
+
 var errPocketIDNotFound = errors.New("not found")
 
 // do sends a request to the API with body, if it's not nil, as JSON,
@@ -258,8 +381,34 @@ func (p *pocketID) send(ctx context.Context, method, path, contentType string, b
 	return nil
 }
 
+// eachPage gets every page of a paginated list, passing each item to add.
+func eachPage[T any](ctx context.Context, p *pocketID, path string, add func(T)) error {
+	for page := 1; ; page++ {
+		var res struct {
+			Data       []T `json:"data"`
+			Pagination struct {
+				TotalPages int `json:"totalPages"`
+			} `json:"pagination"`
+		}
+		q := url.Values{"pagination[page]": {strconv.Itoa(page)}, "pagination[limit]": {"100"}}
+		if err := p.do(ctx, http.MethodGet, path+"?"+q.Encode(), nil, &res); err != nil {
+			return err
+		}
+		for _, item := range res.Data {
+			add(item)
+		}
+		if page >= res.Pagination.TotalPages {
+			return nil
+		}
+	}
+}
+
 func clientPath(id string) string {
 	return "/api/oidc/clients/" + url.PathEscape(id)
+}
+
+func apiPath(id string) string {
+	return "/api/apis/" + url.PathEscape(id)
 }
 
 func nonNil(s []string) []string {

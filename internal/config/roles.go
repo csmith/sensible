@@ -89,6 +89,9 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 	if err := c.finishOIDCClients(); err != nil {
 		return Config{}, fmt.Errorf("%s: %w", name, err)
 	}
+	if err := c.finishOIDCAPIs(); err != nil {
+		return Config{}, fmt.Errorf("%s: %w", name, err)
+	}
 	slices.SortFunc(c.Stacks, func(a, b Stack) int { return strings.Compare(a.Name, b.Name) })
 	c.Volumes = r.hostVolumes(slices.Collect(maps.Keys(roles)))
 	return c, nil

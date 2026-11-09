@@ -281,9 +281,32 @@ compose:
     OIDC_CLIENT_SECRET: !generated oidc_secret
 ```
 
-A client that's already there is taken over. Once nothing declares a client,
-prune offers to delete it. To move a client to another host, apply
-both hosts together.
+`oidc_apis` sets up APIs, the services clients get access tokens for, by
+their identifier, which is usually the service's URL. `name` defaults to the
+identifier, and each permission's `name` to its key. `clients` are the IDs of
+the confidential clients that may get tokens for the API as themselves, with
+`grant_type=client_credentials` and the identifier as `resource`, each with
+the permissions it's granted, which are the token's scopes. Other access to
+the API, including on behalf of users, is removed. A client can be one that
+another role or host declares, or one that's only in the provider. APIs need
+Pocket ID 2.14 or later.
+
+```yaml
+# roles/pocketbase/role.yml
+oidc_apis:
+  https://pb.example.com:
+    name: PocketBase
+    permissions:
+      records.read: {name: Read records}
+      records.write: {name: Write records, description: Create and change records}
+    clients:
+      grafana: [records.read]
+      backup: []
+```
+
+A client or API that's already there is taken over. Once nothing declares
+one, prune offers to delete it. To move one to another host, apply both hosts
+together.
 
 ## Using
 

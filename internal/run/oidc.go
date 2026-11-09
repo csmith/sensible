@@ -19,6 +19,12 @@ import (
 
 // oidcProvider is an admin account with an OIDC provider.
 type oidcProvider interface {
+	oidcClientAdmin
+	oidcAPIAdmin
+}
+
+// oidcClientAdmin manages a provider's clients.
+type oidcClientAdmin interface {
 	// Client returns nil if there's no client with the ID.
 	Client(ctx context.Context, id string) (*oidcClient, error)
 	Secrets(ctx context.Context, id string) ([]oidcSecret, error)
@@ -37,6 +43,30 @@ type oidcProvider interface {
 	DeleteSecret(ctx context.Context, id, secretID string) error
 	// Delete succeeds if the client is already gone.
 	Delete(ctx context.Context, id string) error
+}
+
+// oidcAPIAdmin manages a provider's APIs and which clients may call them.
+type oidcAPIAdmin interface {
+	// APIs are the provider's APIs, by identifier.
+	APIs(ctx context.Context) (map[string]*oidcAPI, error)
+	// CreateAPI returns the new API's ID, which the other API methods take.
+	CreateAPI(ctx context.Context, identifier, name string) (string, error)
+	RenameAPI(ctx context.Context, id, name string) error
+	// SetPermissions replaces the API's permissions, returning each one's ID
+	// by key.
+	SetPermissions(
+		ctx context.Context,
+		id string,
+		permissions []oidcPermission,
+	) (map[string]string, error)
+	// Grants are the clients that may call the API, by client ID.
+	Grants(ctx context.Context, id string) (map[string]oidcGrant, error)
+	// Grant lets the client call the API as itself, with client
+	// credentials, with the permissions, and nothing else.
+	Grant(ctx context.Context, id, clientID string, permissionIDs []string) error
+	Revoke(ctx context.Context, id, clientID string) error
+	// DeleteAPI succeeds if the API is already gone.
+	DeleteAPI(ctx context.Context, id string) error
 }
 
 // oidcClient is a client's settings that sensible manages.
@@ -75,44 +105,39 @@ func newOIDCProvider(s config.OIDCSettings) (oidcProvider, error) {
 }
 
 // oidcRecords are the OIDC clients sensible manages for a host, each with
-// what it registered, and the means to change them.
+// what it registered, and the APIs, by identifier, with the means to change
+// them.
 type oidcRecords struct {
 	clients map[string]config.SavedOIDCClient
 	save    func(id string, saved config.SavedOIDCClient) error
 	drop    func(id string) error
+
+	apis    []string
+	saveAPI func(identifier string) error
+	dropAPI func(identifier string) error
 }
 
-// oidcPlan is the OIDC client changes for a run, with how many clients are
-// already as they should be.
+// oidcPlan is the OIDC client and API changes for a run, with how many
+// clients and APIs are already as they should be.
 type oidcPlan struct {
-	changes   []*oidcChange
-	unchanged int
-	errs      []error
+	changes    []*oidcChange
+	apiChanges []*oidcAPIChange
+	unchanged  int
+	errs       []error
 }
 
-// planOIDC works out the changes the clients the running hosts declare
-// need. A client sensible manages for another host can only move to this
+// planOIDC works out the changes the clients and APIs the running hosts
+// declare need. One sensible manages for another host can only move to this
 // one if that host is in the run and no longer declares it.
 func (r *Runner) planOIDC(ctx context.Context, runs []*hostRun) oidcPlan {
 	var p oidcPlan
-	declared := map[string]*hostRun{}
-	conflicted := map[string]bool{}
 	byName := map[string]*hostRun{}
 	for _, h := range runs {
 		byName[h.name] = h
-		if h.agent == nil || h.err != nil {
-			continue
-		}
-		for _, id := range slices.Sorted(maps.Keys(h.oidcClients)) {
-			if other, ok := declared[id]; ok {
-				p.errs = append(p.errs, fmt.Errorf("client %s: both %s and %s declare it", id, other.name, h.name))
-				conflicted[id] = true
-				continue
-			}
-			declared[id] = h
-		}
 	}
-	if len(declared) == 0 {
+	clients := p.declared(runs, "client", func(h *hostRun) []string { return slices.Collect(maps.Keys(h.oidcClients)) })
+	apis := p.declared(runs, "api", func(h *hostRun) []string { return slices.Collect(maps.Keys(h.oidcAPIs)) })
+	if len(clients) == 0 && len(apis) == 0 {
 		return p
 	}
 	provider, err := r.OIDC(r.OIDCSettings)
@@ -120,31 +145,70 @@ func (r *Runner) planOIDC(ctx context.Context, runs []*hostRun) oidcPlan {
 		p.errs = append(p.errs, err)
 		return p
 	}
+	planned, ok := p.planClients(ctx, provider, clients, byName, r.OIDCOwners)
+	if ok && len(apis) > 0 {
+		p.planAPIs(ctx, provider, apis, byName, r.OIDCAPIOwners, planned)
+	}
+	return p
+}
+
+// declared maps each ID that a running host declares to that host, noting
+// those that more than one declares as errors.
+func (p *oidcPlan) declared(runs []*hostRun, kind string, ids func(h *hostRun) []string) map[string]*hostRun {
+	declared := map[string]*hostRun{}
+	conflicted := map[string]bool{}
+	for _, h := range runs {
+		if h.agent == nil || h.err != nil {
+			continue
+		}
+		for _, id := range slices.Sorted(slices.Values(ids(h))) {
+			if other, ok := declared[id]; ok {
+				if !conflicted[id] {
+					p.errs = append(p.errs, fmt.Errorf("%s %s: both %s and %s declare it", kind, id, other.name, h.name))
+				}
+				conflicted[id] = true
+				continue
+			}
+			declared[id] = h
+		}
+	}
+	for id := range conflicted {
+		delete(declared, id)
+	}
+	return declared
+}
+
+// planClients plans the declared clients, returning whether each that could
+// be planned is public, by ID, and whether the provider could be read.
+func (p *oidcPlan) planClients(
+	ctx context.Context,
+	provider oidcProvider,
+	declared map[string]*hostRun,
+	byName map[string]*hostRun,
+	owners map[string]string,
+) (map[string]bool, bool) {
+	planned := map[string]bool{}
+	if len(declared) == 0 {
+		return planned, true
+	}
 	groups, err := provider.Groups(ctx)
 	if err != nil {
 		p.errs = append(p.errs, fmt.Errorf("listing user groups: %w", err))
-		return p
+		return nil, false
 	}
 
 	for _, id := range slices.Sorted(maps.Keys(declared)) {
-		if conflicted[id] {
-			continue
-		}
 		h := declared[id]
-		var from *hostRun
-		if owner := r.OIDCOwners[id]; owner != "" && owner != h.name {
-			if from = byName[owner]; from == nil {
-				p.errs = append(
-					p.errs,
-					fmt.Errorf("client %s: sensible manages it for %s; apply %s and %s together to move it", id, owner, owner, h.name),
-				)
-				continue
-			}
+		from, err := previousHost(owners[id], h, byName)
+		if err != nil {
+			p.errs = append(p.errs, fmt.Errorf("client %s: %w", id, err))
+			continue
 		}
 		c, err := planClient(ctx, provider, groups, id, h, from)
 		switch {
 		case err != nil:
 			p.errs = append(p.errs, fmt.Errorf("client %s: %w", id, err))
+			continue
 		case c == nil:
 			p.unchanged++
 		default:
@@ -153,8 +217,21 @@ func (r *Runner) planOIDC(ctx context.Context, runs []*hostRun) oidcPlan {
 				h.oidcChanged = true
 			}
 		}
+		planned[id] = h.oidcClients[id].Public
 	}
-	return p
+	return planned, true
+}
+
+// previousHost is the host in the run that sensible managed something h
+// declares for until now, given its owner, or nil if that's h or no host.
+func previousHost(owner string, h *hostRun, byName map[string]*hostRun) (*hostRun, error) {
+	if owner == "" || owner == h.name {
+		return nil, nil
+	}
+	if from := byName[owner]; from != nil {
+		return from, nil
+	}
+	return nil, fmt.Errorf("sensible manages it for %s; apply %s and %s together to move it", owner, owner, h.name)
 }
 
 // oidcChange is a planned change to one client.
@@ -454,15 +531,18 @@ func (c *oidcChange) uploadLogos(ctx context.Context) error {
 	return nil
 }
 
-func (p oidcPlan) lines() []string {
+func (p *oidcPlan) lines() []string {
 	var lines []string
 	for _, c := range p.changes {
+		lines = append(lines, c.lines...)
+	}
+	for _, c := range p.apiChanges {
 		lines = append(lines, c.lines...)
 	}
 	return lines
 }
 
-func (p oidcPlan) step() crossHostStep {
+func (p *oidcPlan) step() crossHostStep {
 	return crossHostStep{
 		name:    "OIDC changes",
 		changes: len(p.lines()),
@@ -471,6 +551,11 @@ func (p oidcPlan) step() crossHostStep {
 			ok := true
 			for _, c := range p.changes {
 				err := out.applyItem("client "+c.want.id, func() error { return c.apply(ctx) })
+				ok = ok && err == nil
+			}
+			// After the clients, so those they're granted to exist.
+			for _, c := range p.apiChanges {
+				err := out.applyItem("api "+c.identifier, func() error { return c.apply(ctx) })
 				ok = ok && err == nil
 			}
 			return ok
