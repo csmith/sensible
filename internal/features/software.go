@@ -332,7 +332,7 @@ func tailscale(h Host) ([]host.Resource, error) {
 	rs = append(
 		rs,
 		host.Package{Name: "tailscale"},
-		host.Service{Name: "tailscaled", Enabled: true, Running: true},
+		host.Service{Name: "tailscaled", Enabled: true},
 	)
 	if settings["advertise-exit-node"] == "true" || settings["advertise-routes"] != "" {
 		rs = append(

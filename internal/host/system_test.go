@@ -29,13 +29,13 @@ func TestService(t *testing.T) {
 		{
 			name:     "in sync",
 			show:     "LoadState=loaded\nActiveState=active\n",
-			resource: Service{Name: "sshd", Enabled: true, Running: true},
+			resource: Service{Name: "sshd", Enabled: true},
 		},
 		{
 			name:      "stopped and disabled",
 			show:      "LoadState=loaded\nActiveState=inactive\n",
 			enabled:   1,
-			resource:  Service{Name: "sshd", Enabled: true, Running: true},
+			resource:  Service{Name: "sshd", Enabled: true},
 			wantDiff:  "enable\nstart\n",
 			wantApply: []string{"systemctl enable sshd", "systemctl start sshd"},
 		},
@@ -68,12 +68,12 @@ func TestService(t *testing.T) {
 		{
 			name:     "started but its condition failed",
 			show:     "LoadState=loaded\nActiveState=inactive\nConditionResult=no\nConditionTimestampMonotonic=9192863805\n",
-			resource: Service{Name: "sshd", Enabled: true, Running: true},
+			resource: Service{Name: "sshd", Enabled: true},
 		},
 		{
 			name:      "never started",
 			show:      "LoadState=loaded\nActiveState=inactive\nConditionResult=no\nConditionTimestampMonotonic=0\n",
-			resource:  Service{Name: "sshd", Enabled: true, Running: true},
+			resource:  Service{Name: "sshd", Enabled: true},
 			wantDiff:  "start\n",
 			wantApply: []string{"systemctl start sshd"},
 		},
@@ -139,7 +139,7 @@ func TestService_UnmasksBeforeEnabling(t *testing.T) {
 	sys.on("systemctl enable sshd", "", 0)
 	sys.on("systemctl start sshd", "", 0)
 
-	require.NoError(t, Service{Name: "sshd", Enabled: true, Running: true}.Apply(context.Background(), sys))
+	require.NoError(t, Service{Name: "sshd", Enabled: true}.Apply(context.Background(), sys))
 
 	assert.Equal(
 		t,

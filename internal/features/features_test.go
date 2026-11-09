@@ -1853,7 +1853,7 @@ func TestResources_services(t *testing.T) {
 				require.NoError(t, err)
 
 				for _, want := range []host.Service{
-					{Name: "bluetooth.service", Enabled: true, Running: true},
+					{Name: "bluetooth.service", Enabled: true},
 					{Name: "fwupd-refresh.timer"},
 					{Name: "smartd.service", Masked: true},
 				} {

@@ -246,7 +246,7 @@ func sshd(h Host) ([]host.Resource, error) {
 			},
 		)
 	}
-	rs = append(rs, host.Service{Name: svc, Enabled: true, Running: true})
+	rs = append(rs, host.Service{Name: svc, Enabled: true})
 
 	for _, name := range slices.Sorted(maps.Keys(c.AuthorizedKeys)) {
 		rs = append(

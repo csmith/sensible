@@ -82,8 +82,8 @@ func (r Service) actions(st unitState) []string {
 	if st.enabled != r.Enabled {
 		actions = append(actions, map[bool]string{true: "enable", false: "disable"}[r.Enabled])
 	}
-	if st.running != r.Running && !(r.Running && st.skipped) {
-		actions = append(actions, map[bool]string{true: "start", false: "stop"}[r.Running])
+	if st.running != r.Enabled && !(r.Enabled && st.skipped) {
+		actions = append(actions, map[bool]string{true: "start", false: "stop"}[r.Enabled])
 	}
 	return actions
 }

@@ -268,11 +268,9 @@ type PackageUpdate struct{}
 // Service manages a systemd unit's state.
 type Service struct {
 	Name string `json:"name"`
-	// Enabled false disables the unit.
+	// Enabled enables and starts the unit. False disables and stops it.
 	Enabled bool `json:"enabled"`
-	// Running false stops the unit.
-	Running bool `json:"running"`
-	// Masked stops and masks the unit, and Enabled and Running are ignored.
+	// Masked stops and masks the unit, and Enabled is ignored.
 	// Otherwise, a masked unit is unmasked.
 	Masked bool `json:"masked,omitempty"`
 }

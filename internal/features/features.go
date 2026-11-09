@@ -284,7 +284,6 @@ func services(h Host) ([]host.Resource, error) {
 			host.Service{
 				Name:    name,
 				Enabled: state == config.ServiceEnabled,
-				Running: state == config.ServiceEnabled,
 				Masked:  state == config.ServiceMasked,
 			},
 		)

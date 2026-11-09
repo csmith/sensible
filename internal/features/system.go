@@ -178,7 +178,7 @@ func ntp(h Host) ([]host.Resource, error) {
 	return append(
 		rs,
 		host.OwnedDir{Path: timesyncdConfDir, Header: managedMark, Notify: restart},
-		host.Service{Name: "systemd-timesyncd", Enabled: true, Running: true},
+		host.Service{Name: "systemd-timesyncd", Enabled: true},
 	), nil
 }
 
@@ -252,7 +252,7 @@ func firewall(h Host) ([]host.Resource, error) {
 			Watch:     []string{unit.ID()},
 			ApplyArgv: []string{"systemctl", "daemon-reload"},
 		},
-		host.Service{Name: firewallUnit, Enabled: true, Running: true},
+		host.Service{Name: firewallUnit, Enabled: true},
 	), nil
 }
 
@@ -371,7 +371,7 @@ func jobs(h Host) ([]host.Resource, error) {
 			files = append(files, f)
 			watch = append(watch, f.ID())
 		}
-		timers = append(timers, host.Service{Name: jobUnitPrefix + name + ".timer", Enabled: true, Running: true})
+		timers = append(timers, host.Service{Name: jobUnitPrefix + name + ".timer", Enabled: true})
 	}
 
 	rs := files
