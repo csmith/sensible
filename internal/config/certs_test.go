@@ -407,6 +407,25 @@ func TestHostConfig_rolesCantDisagreeAboutACert(t *testing.T) {
 	require.ErrorContains(t, err, "certs.a.client differently")
 }
 
+func TestHostCerts_unitsFromEveryRoleAndRestartWins(t *testing.T) {
+	tr := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml": "alpha:\n  roles: {one: , two: }\n",
+			"roles/one/role.yml": "certs: {a: {ca: internal, client: c, " +
+				"reload: [nginx.service, postgresql.service]}}\n",
+			"roles/two/role.yml": "certs: {a: {ca: internal, client: c, restart: [postgresql.service]}}\n",
+		},
+	)
+	tr.allowCAs(t, "internal")
+
+	c, err := tr.open(t).HostConfig("alpha", "")
+	require.NoError(t, err)
+	cert := issuedCert(t, c, "a")
+	assert.Equal(t, []string{"nginx.service"}, cert.Reload)
+	assert.Equal(t, []string{"postgresql.service"}, cert.Restart)
+}
+
 func TestReadSettings_rejectsBadCANames(t *testing.T) {
 	_, err := newTestRepo(t, map[string]string{"sensible.yml": "cas: [\"a/b\"]\n"}).tryOpen()
 	require.ErrorContains(t, err, `"a/b"`)

@@ -1277,6 +1277,30 @@ func TestResources_certs(t *testing.T) {
 	assert.Contains(t, stack.Watch, "file:"+dir+"/tls.key")
 }
 
+func TestResources_certsNotifyTheirUnits(t *testing.T) {
+	h := testHost(archLinux)
+	h.Config.IssuedCerts = []config.Cert{
+		{Name: "db", Dir: "/etc/postgresql/tls", Reload: []string{"nginx"}, Restart: []string{"postgresql"}},
+		{Name: "other", Dir: "/srv/certs/other"},
+	}
+	rs, err := Resources(h)
+	require.NoError(t, err)
+
+	want := host.ResourceList{
+		host.ServiceAction{Name: "nginx", Action: "reload"},
+		host.ServiceAction{Name: "postgresql", Action: "restart"},
+	}
+	for _, file := range []string{config.CACertFile, config.CertFile, config.KeyFile} {
+		f, ok := find[host.File](rs, "file:/etc/postgresql/tls/"+file)
+		require.True(t, ok)
+		assert.Equal(t, want, f.Notify, file)
+
+		other, ok := find[host.File](rs, "file:/srv/certs/other/"+file)
+		require.True(t, ok)
+		assert.Empty(t, other.Notify, file)
+	}
+}
+
 func TestResources_certsCleanUpWithoutCerts(t *testing.T) {
 	rs, err := Resources(Host{Name: "testhost", Facts: host.Facts{OSFamily: archLinux}})
 	require.NoError(t, err)

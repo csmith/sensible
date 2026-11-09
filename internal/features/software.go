@@ -511,10 +511,18 @@ func vendorDistro(h Host, vendor string) (string, error) {
 	)
 }
 
-// certs writes the host's certificates, ahead of the stacks that mount them.
+// certs writes the host's certificates, ahead of the stacks that mount them,
+// and reloads or restarts the units that use them when they change.
 func certs(h Host) ([]host.Resource, error) {
 	var rs []host.Resource
 	for _, c := range h.Config.IssuedCerts {
+		var notify host.ResourceList
+		for _, u := range c.Reload {
+			notify = append(notify, host.ServiceAction{Name: u, Action: "reload"})
+		}
+		for _, u := range c.Restart {
+			notify = append(notify, host.ServiceAction{Name: u, Action: "restart"})
+		}
 		files := []host.File{
 			{Path: filepath.Join(c.Dir, config.CACertFile), Content: c.CACert, Mode: 0o644},
 			{Path: filepath.Join(c.Dir, config.CertFile), Content: c.Cert, Mode: 0o644},
@@ -526,7 +534,7 @@ func certs(h Host) ([]host.Resource, error) {
 		}
 		rs = append(rs, host.CertRecord{Name: c.Name, Paths: paths}, host.Dir{Path: c.Dir, Owner: c.Owner, Group: c.Group})
 		for _, f := range files {
-			f.Owner, f.Group, f.Hidden = c.Owner, c.Group, true
+			f.Owner, f.Group, f.Hidden, f.Notify = c.Owner, c.Group, true, notify
 			rs = append(rs, f)
 		}
 	}

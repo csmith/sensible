@@ -112,6 +112,34 @@ services:
   smartd.service: masked
 ```
 
+### Certificates
+
+`certs` issues certificates from a CA listed in `sensible.yml`'s `cas`, which
+sensible creates and keeps. Each is a `server` certificate for some DNS names,
+a `client` certificate with a common name, or both. Its `ca.crt`, `tls.crt` and
+`tls.key` go in `/srv/certs/<name>`, or `dir`. A certificate is renewed when an
+apply finds it's within 90 days of expiring.
+
+A stack that mounts a file with `!cert <name>/<file>` is recreated when it
+changes. Units in `reload` or `restart` are reloaded or restarted. Anything
+else using the files, including a stack that mounts them by path, isn't told.
+
+```yaml
+# sensible.yml
+cas: [internal]
+```
+
+```yaml
+# roles/db/role.yml
+certs:
+  db:
+    ca: internal
+    server: [db.example.com]
+    dir: /etc/postgresql/tls
+    owner: postgres
+    restart: [postgresql.service]
+```
+
 ### Leftovers
 
 Apply warns about what sensible finds but didn't put there, such as files in

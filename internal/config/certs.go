@@ -58,6 +58,10 @@ type CertConfig struct {
 	// Dir. The private key is only readable by Owner.
 	Owner string `yaml:"owner"`
 	Group string `yaml:"group"`
+	// Reload and Restart are systemd units that use it, acted on when its
+	// files change. A unit in both is only restarted.
+	Reload  Set `yaml:"reload"`
+	Restart Set `yaml:"restart"`
 }
 
 // Cert is a certificate as it's written to a host.
@@ -65,6 +69,8 @@ type Cert struct {
 	Name         string
 	Dir          string
 	Owner, Group string
+	// Reload and Restart are as for CertConfig, without overlap.
+	Reload, Restart []string
 	// CACert, Cert and Key are PEM encoded. In a Repo set to Preview, they
 	// may be placeholders.
 	CACert, Cert, Key string
@@ -128,7 +134,18 @@ func (r *Repo) hostCert(host, name string, cfg CertConfig) (Cert, error) {
 	if err != nil {
 		return Cert{}, err
 	}
-	out := Cert{Name: name, Dir: dir, Owner: cfg.Owner, Group: cfg.Group, ca: cfg.CA}
+	out := Cert{
+		Name:  name,
+		Dir:   dir,
+		Owner: cfg.Owner,
+		Group: cfg.Group,
+		Reload: slices.DeleteFunc(
+			slices.Clone(cfg.Reload),
+			func(u string) bool { return slices.Contains(cfg.Restart, u) },
+		),
+		Restart: cfg.Restart,
+		ca:      cfg.CA,
+	}
 
 	now := r.now()
 	saved, ok := r.inventory.Hosts[host].Certs[name]
