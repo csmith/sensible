@@ -294,17 +294,17 @@ func (r Disowned) Leftovers(ctx context.Context, sys Sys) ([]string, error) {
 // staleRecords lists the paths r covers that nothing declares, whose
 // WrittenRecord no longer matches what's there.
 func (r Disowned) staleRecords(ctx context.Context, sys Sys) ([]string, error) {
-	if !r.Recorded && r.Records == "" {
+	if r.Records == "" {
 		return nil, nil
 	}
-	recorded, err := recordedPaths(sys, r.recordDir())
+	recorded, err := recordedPaths(sys, r.Records)
 	if err != nil {
 		return nil, err
 	}
 	declared := state(ctx).declared
 	var stale []string
 	for _, path := range recorded {
-		if declared[path] || declared[r.recordPath(path)] || !r.covers(path) {
+		if declared[path] || declared[r.recordPath(path)] {
 			continue
 		}
 		info, err := sys.Lstat(path)
@@ -343,29 +343,12 @@ func recordedPaths(sys Sys, dir string) ([]string, error) {
 	return paths, nil
 }
 
-func (r Disowned) recordDir() string {
-	if r.Records != "" {
-		return r.Records
-	}
-	return WrittenDir
-}
-
 func (r Disowned) recordPath(path string) string {
-	return recordPath(r.recordDir(), path)
-}
-
-func (r Disowned) covers(path string) bool {
-	return r.Records != "" || slices.ContainsFunc(
-		r.Paths,
-		func(pattern string) bool {
-			ok, _ := filepath.Match(pattern, path)
-			return ok
-		},
-	)
+	return recordPath(r.Records, path)
 }
 
 func (r Disowned) matches(sys Sys, path string) (bool, error) {
-	if r.Header == "" && r.Target == "" && !r.Recorded && r.Records == "" {
+	if r.Header == "" && r.Target == "" && r.Records == "" {
 		return true, nil
 	}
 	info, err := sys.Lstat(path)
@@ -375,7 +358,7 @@ func (r Disowned) matches(sys Sys, path string) (bool, error) {
 	switch {
 	case r.Header != "" && info.IsRegular():
 		return hasHeader(sys, path, r.Header)
-	case (r.Recorded || r.Records != "") && info.IsRegular():
+	case r.Records != "" && info.IsRegular():
 		return isRecorded(sys, r.recordPath(path), path)
 	case r.Target != "" && info.IsSymlink():
 		target, err := sys.Readlink(path)
@@ -400,7 +383,7 @@ func (r Disowned) Prune(ctx context.Context, sys Sys, item string) error {
 	if err := sys.RemoveAll(item); err != nil {
 		return err
 	}
-	if r.Recorded || r.Records != "" {
+	if r.Records != "" {
 		if err := sys.RemoveAll(r.recordPath(item)); err != nil {
 			return err
 		}
@@ -456,7 +439,7 @@ func (r KeptLeftovers) Apply(context.Context, Sys) error { return nil }
 // WrittenDir holds the records WrittenRecord makes.
 const WrittenDir = "/var/lib/sensible/written"
 
-// WrittenRecord records f in WrittenDir, for a Disowned with Recorded to
+// WrittenRecord records f in WrittenDir, for a Disowned with Records to
 // tell it from a file written by hand.
 func WrittenRecord(f File) File {
 	return WrittenRecordIn(WrittenDir, f)

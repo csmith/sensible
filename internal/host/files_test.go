@@ -502,9 +502,9 @@ func TestDisowned_RecordedLimitsToFilesAsWritten(t *testing.T) {
 	sys.write("/root/.docker/config.json", `{"auths": {"by": "hand"}}`)
 	sys.write("/etc/docker/other.json", "{}\n")
 	r := Disowned{
-		Name:     "docker",
-		Paths:    []string{"/etc/docker/*.json", "/root/.docker/config.json"},
-		Recorded: true,
+		Name:    "docker",
+		Paths:   []string{"/etc/docker/*.json", "/root/.docker/config.json"},
+		Records: WrittenDir,
 	}
 
 	got, err := r.Leftovers(context.Background(), sys)
@@ -524,7 +524,6 @@ func TestDisowned_RecordedForgetsFilesNoLongerAsWritten(t *testing.T) {
 		{Path: "/etc/docker/gone.json", Content: "{}\n"},
 		{Path: "/etc/docker/kept.json", Content: "{}\n"},
 		{Path: "/etc/docker/declared.json", Content: "{}\n"},
-		{Path: "/etc/other.json", Content: "{}\n"},
 	} {
 		record := WrittenRecord(f)
 		sys.write(f.Path, f.Content)
@@ -532,9 +531,8 @@ func TestDisowned_RecordedForgetsFilesNoLongerAsWritten(t *testing.T) {
 	}
 	sys.write("/etc/docker/daemon.json", `{"by": "hand"}`)
 	sys.write("/etc/docker/declared.json", `{"by": "hand"}`)
-	sys.write("/etc/other.json", `{"by": "hand"}`)
 	require.NoError(t, os.Remove(sys.path("/etc/docker/gone.json")))
-	r := Disowned{Name: "docker", Paths: []string{"/etc/docker/*.json"}, Recorded: true}
+	r := Disowned{Name: "docker", Paths: []string{"/etc/docker/*.json"}, Records: WrittenDir}
 	st := newRunState()
 	st.declare(File{Path: "/etc/docker/declared.json"})
 	ctx := withRunState(context.Background(), st)
@@ -553,7 +551,7 @@ func TestDisowned_RecordedForgetsFilesNoLongerAsWritten(t *testing.T) {
 	assert.False(t, sys.exists(recordPath(WrittenDir, "/etc/docker/daemon.json")))
 	assert.False(t, sys.exists(recordPath(WrittenDir, "/etc/docker/gone.json")))
 	assert.True(t, sys.exists("/etc/docker/daemon.json"))
-	for _, kept := range []string{"/etc/docker/kept.json", "/etc/docker/declared.json", "/etc/other.json"} {
+	for _, kept := range []string{"/etc/docker/kept.json", "/etc/docker/declared.json"} {
 		assert.True(t, sys.exists(recordPath(WrittenDir, kept)), kept)
 	}
 }
