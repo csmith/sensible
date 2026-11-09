@@ -616,7 +616,11 @@ func summarise(runs []*hostRun, steps []crossHostStep) summary {
 			continue
 		}
 		s.targets++
+		quiet := quietRecords(h.checked)
 		for _, c := range h.checked {
+			if quiet[c.ID] {
+				continue
+			}
 			switch c.Status {
 			case host.StatusDrifted:
 				s.changes++

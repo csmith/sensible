@@ -975,6 +975,68 @@ func TestHostPlanLines_indentsMultiLineErrors(t *testing.T) {
 	assert.Equal(t, []string{"✗ docker-network web: inspecting:", "  ✓ file /etc/x"}, hostPlanLines(h, false))
 }
 
+func recordID(dir, path string) string {
+	return host.WrittenRecordIn(dir, host.File{Path: path}).ID()
+}
+
+func TestHostPlanLines_leavesOutRecordsOfChangingFiles(t *testing.T) {
+	const files = host.WrittenDir + "/files"
+	checked := []host.Checked{
+		{ID: "file:/etc/a", Status: host.StatusDrifted, Diff: "create file\n"},
+		{ID: recordID(files, "/etc/a"), Status: host.StatusDrifted, Diff: "create file\n"},
+		{ID: "file:/etc/docker/daemon.json", Status: host.StatusDeferred},
+		{ID: recordID(host.WrittenDir, "/etc/docker/daemon.json"), Status: host.StatusDeferred},
+		{ID: "file:/etc/b", Status: host.StatusInSync},
+		{ID: recordID(files, "/etc/b"), Status: host.StatusDrifted, Diff: "create file\n"},
+		{ID: "file:/etc/c", Status: host.StatusInSync},
+		{ID: recordID(files, "/etc/c"), Status: host.StatusDrifted, Diff: "change mode\n"},
+		{ID: "file:/etc/d", Status: host.StatusDrifted, Diff: "create file\n"},
+		{ID: recordID(files, "/etc/d"), Status: host.StatusFailed, Error: "denied"},
+	}
+	h := &hostRun{resources: make(host.ResourceList, len(checked)), checked: checked}
+
+	assert.Equal(
+		t,
+		[]string{
+			"~ file /etc/a",
+			"  create file",
+			"? file /etc/docker/daemon.json  deferred",
+			"~ file /etc/d",
+			"  create file",
+			"✗ " + displayID(recordID(files, "/etc/d")) + ": denied",
+			"~ 2 write records",
+			"✓ 2 unchanged",
+		},
+		hostPlanLines(h, false),
+	)
+	assert.Equal(t, summary{changes: 4, targets: 1, deferred: 1}, summarise([]*hostRun{h}, nil))
+}
+
+func TestRendererLeavesOutRecordsOfChangedFiles(t *testing.T) {
+	const files = host.WrittenDir + "/files"
+	var buf bytes.Buffer
+	r := newRenderer(&buf)
+	h := &hostRun{name: "acidburn"}
+
+	r.applied(h, host.Applied{ID: "file:/etc/a", Status: host.StatusChanged})
+	r.applied(h, host.Applied{ID: recordID(files, "/etc/a"), Status: host.StatusChanged})
+	r.applied(h, host.Applied{ID: "file:/etc/b", Status: host.StatusInSync})
+	r.applied(h, host.Applied{ID: recordID(files, "/etc/b"), Status: host.StatusChanged})
+	r.applied(h, host.Applied{ID: recordID(host.WrittenDir, "/etc/docker/daemon.json"), Status: host.StatusChanged})
+	r.applied(h, host.Applied{ID: recordID(files, "/etc/c"), Status: host.StatusInSync})
+	r.applied(h, host.Applied{ID: recordID(files, "/etc/d"), Status: host.StatusFailed, Error: "denied"})
+	r.applyDone(h)
+
+	assert.Equal(
+		t,
+		"> Applying changes on acidburn\n"+
+			"  ✓ file /etc/a\n"+
+			"  ✗ "+displayID(recordID(files, "/etc/d"))+": denied\n"+
+			"  ✓ 2 write records\n",
+		buf.String(),
+	)
+}
+
 func TestRendererIndentsMultiLineApplyErrors(t *testing.T) {
 	var buf bytes.Buffer
 	r := newRenderer(&buf)

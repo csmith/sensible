@@ -111,6 +111,10 @@ type renderer struct {
 	started  map[*hostRun]bool
 	position map[*hostRun]int
 	skipped  map[*hostRun]int
+	// changed holds the resources each host has changed, and records counts
+	// the WrittenRecords changed without their files, shown as a total.
+	changed map[*hostRun]map[string]bool
+	records map[*hostRun]int
 
 	// live is set on a terminal, where unfinished tasks are drawn below
 	// everything else and redrawn as they change.
@@ -143,6 +147,8 @@ func newRenderer(w io.Writer) *renderer {
 		started:  map[*hostRun]bool{},
 		position: map[*hostRun]int{},
 		skipped:  map[*hostRun]int{},
+		changed:  map[*hostRun]map[string]bool{},
+		records:  map[*hostRun]int{},
 	}
 }
 
@@ -473,13 +479,18 @@ func hostPlanLines(h *hostRun, p palette) []string {
 		return p.failure(h.err.Error())
 	}
 	var lines []string
-	unchanged := 0
+	unchanged, records := 0, 0
+	quiet := quietRecords(h.checked)
 	for i, c := range h.checked {
 		name := displayID(c.ID)
-		switch c.Status {
-		case host.StatusInSync:
+		_, record := recordedFileID(c.ID)
+		switch {
+		case quiet[c.ID]:
+		case record && pendingStatus(c.Status):
+			records++
+		case c.Status == host.StatusInSync:
 			unchanged++
-		case host.StatusDrifted:
+		case c.Status == host.StatusDrifted:
 			lines = append(lines, p.change("~")+" "+name)
 			lines = append(lines, p.diff(c.Diff, "  ")...)
 			if n, ok := h.resources[i].(host.Notifier); ok {
@@ -487,9 +498,9 @@ func hostPlanLines(h *hostRun, p palette) []string {
 					lines = append(lines, "  "+p.handler("↻")+" then "+displayID(handler.ID()))
 				}
 			}
-		case host.StatusDeferred:
+		case c.Status == host.StatusDeferred:
 			lines = append(lines, p.change("?")+" "+name+p.dim("  deferred"))
-		case host.StatusSkipped:
+		case c.Status == host.StatusSkipped:
 			lines = append(lines, p.dim("- "+name+"  skipped"))
 		default:
 			lines = append(lines, p.failure(name+": "+c.Error)...)
@@ -499,10 +510,46 @@ func hostPlanLines(h *hostRun, p palette) []string {
 			lines = append(lines, indent(c.Warning, "  ")...)
 		}
 	}
+	if records > 0 {
+		lines = append(lines, p.change("~")+" "+plural(records, "write record"))
+	}
 	if unchanged > 0 {
 		lines = append(lines, p.dim(fmt.Sprintf("✓ %d unchanged", unchanged)))
 	}
 	return lines
+}
+
+// quietRecords picks out the pending WrittenRecords whose files are pending
+// too, as showing them would only repeat those files' changes.
+func quietRecords(checked []host.Checked) map[string]bool {
+	pending := map[string]bool{}
+	for _, c := range checked {
+		if pendingStatus(c.Status) {
+			pending[c.ID] = true
+		}
+	}
+	quiet := map[string]bool{}
+	for _, c := range checked {
+		if file, ok := recordedFileID(c.ID); ok && pending[c.ID] && pending[file] && c.Warning == "" {
+			quiet[c.ID] = true
+		}
+	}
+	return quiet
+}
+
+func pendingStatus(s host.Status) bool {
+	return s == host.StatusDrifted || s == host.StatusDeferred
+}
+
+// recordedFileID returns the ID of the file recorded by the WrittenRecord
+// with the given ID, if it's one.
+func recordedFileID(id string) (string, bool) {
+	path, ok := strings.CutPrefix(id, "file:")
+	if !ok {
+		return "", false
+	}
+	file, ok := host.RecordedFile(path)
+	return "file:" + file, ok
 }
 
 type applyingItem struct {
@@ -519,6 +566,9 @@ func (r *renderer) applying(h *hostRun, a host.Applying) {
 		return
 	}
 	r.stopApplyingLocked(h)
+	if _, ok := recordedFileID(a.ID); ok {
+		return
+	}
 	r.inProgress = append(r.inProgress, applyingItem{h: h, name: displayID(a.ID)})
 	r.tickLocked()
 }
@@ -538,6 +588,15 @@ func (r *renderer) applied(h *hostRun, a host.Applied) {
 		i := r.position[h]
 		r.position[h]++
 		deferred = i < len(h.checked) && h.checked[i].Status == host.StatusDeferred
+	}
+	if a.Status == host.StatusChanged && !a.Handler {
+		if r.changed[h] == nil {
+			r.changed[h] = map[string]bool{}
+		}
+		r.changed[h][a.ID] = true
+	}
+	if r.quietRecordLocked(h, a) {
+		return
 	}
 	name := displayID(a.ID)
 	switch a.Status {
@@ -564,6 +623,27 @@ func (r *renderer) applied(h *hostRun, a host.Applied) {
 			r.applyLineLocked(h, l)
 		}
 	default:
+	}
+}
+
+// quietRecordLocked reports whether a is a WrittenRecord to leave out, as
+// it's unchanged or its file's change is shown. One changed without its
+// file is counted in a total shown at the end instead.
+func (r *renderer) quietRecordLocked(h *hostRun, a host.Applied) bool {
+	file, ok := recordedFileID(a.ID)
+	if !ok || a.Handler || a.Warning != "" {
+		return false
+	}
+	switch a.Status {
+	case host.StatusChanged:
+		if !r.changed[h][file] {
+			r.records[h]++
+		}
+		return true
+	case host.StatusInSync:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -613,6 +693,9 @@ func (r *renderer) applyDone(h *hostRun) {
 	r.lock()
 	defer r.unlock()
 	r.stopApplyingLocked(h)
+	if n := r.records[h]; n > 0 {
+		r.applyLineLocked(h, r.p.ok("✓")+" "+plural(n, "write record"))
+	}
 	if n := r.skipped[h]; n > 0 {
 		r.applyLineLocked(h, r.p.dim(fmt.Sprintf("- %d skipped", n)))
 	}

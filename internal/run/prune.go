@@ -268,7 +268,11 @@ func leftoverLines(h *hostRun, p palette) []string {
 	}
 	var lines []string
 	pending := 0
+	quiet := quietRecords(h.checked)
 	for _, c := range h.checked {
+		if quiet[c.ID] {
+			continue
+		}
 		switch c.Status {
 		case host.StatusFailed:
 			lines = append(lines, p.failure(displayID(c.ID)+": "+c.Error)...)

@@ -462,6 +462,16 @@ func recordPath(dir, path string) string {
 	return filepath.Join(dir, url.QueryEscape(path))
 }
 
+// RecordedFile returns the path of the file recorded by the WrittenRecord at
+// path, if path is one in WrittenDir or a directory under it.
+func RecordedFile(path string) (string, bool) {
+	if !strings.HasPrefix(path, WrittenDir+"/") {
+		return "", false
+	}
+	file, err := url.QueryUnescape(filepath.Base(path))
+	return file, err == nil && filepath.IsAbs(file)
+}
+
 // isRecorded reports whether path is as the WrittenRecord at record says.
 func isRecorded(sys Sys, record, path string) (bool, error) {
 	sum, err := sys.ReadFile(record)
