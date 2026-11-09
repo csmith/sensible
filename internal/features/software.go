@@ -466,7 +466,11 @@ func dockerDaemonConfig(settings map[string]any) ([]host.Resource, error) {
 		host.Dir{Path: filepath.Dir(dockerDaemonFile), Owner: "root", Group: "root", Mode: 0o755},
 		file,
 		host.WrittenRecord(file),
-		host.ServiceRestart{Name: "docker", Watch: []string{file.ID()}},
+		host.Command{
+			Name:      "restart docker",
+			Watch:     []string{file.ID()},
+			ApplyArgv: []string{"systemctl", "restart", "docker"},
+		},
 	}, nil
 }
 

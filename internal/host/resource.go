@@ -126,8 +126,6 @@ var resourceTypes = registry(
 	TailscaleSet{},
 	DockerNetwork{},
 	DockerNetworks{},
-	SystemdReload{},
-	ServiceRestart{},
 	SystemdUnits{},
 	KeptLeftovers{},
 )
@@ -441,26 +439,6 @@ type DockerNetwork struct {
 // failed.
 type DockerNetworks struct{}
 
-// SystemdReload runs `systemctl daemon-reload` where it's listed, rather
-// than as a handler, so units written earlier in the run can be started
-// later in it.
-type SystemdReload struct {
-	// Watch are the IDs of the resources that manage unit files. It does
-	// nothing unless one of them changed earlier in the run, or since it
-	// last reloaded.
-	Watch []string `json:"watch"`
-}
-
-// ServiceRestart restarts a unit where it's listed, rather than as a handler,
-// so what comes later in the run uses the config written earlier in it.
-type ServiceRestart struct {
-	Name string `json:"name"`
-	// Watch are the IDs of the resources that manage the unit's config. It
-	// does nothing unless one of them changed earlier in the run, or since
-	// it last restarted.
-	Watch []string `json:"watch"`
-}
-
 // SystemdUnits stops, disables and removes the unit files in
 // /etc/systemd/system whose names start with Prefix that no File earlier in
 // the same run declared. It's skipped if anything on the host failed.
@@ -543,12 +521,6 @@ func (r Volumes) ID() string { return "volumes:" + r.Path }
 func (r DockerNetwork) ID() string { return "docker-network:" + r.Name }
 
 func (r DockerNetworks) ID() string { return "docker-networks" }
-
-func (r SystemdReload) ID() string        { return "systemd-reload" }
-func (r SystemdReload) watches() []string { return r.Watch }
-
-func (r ServiceRestart) ID() string        { return "service-restart:" + r.Name }
-func (r ServiceRestart) watches() []string { return r.Watch }
 
 func (r SystemdUnits) ID() string { return "systemd-units:" + r.Prefix }
 

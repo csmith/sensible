@@ -376,7 +376,14 @@ func jobs(h Host) ([]host.Resource, error) {
 
 	rs := files
 	if len(watch) > 0 {
-		rs = append(rs, host.SystemdReload{Watch: watch})
+		rs = append(
+			rs,
+			host.Command{
+				Name:      "reload systemd units",
+				Watch:     watch,
+				ApplyArgv: []string{"systemctl", "daemon-reload"},
+			},
+		)
 	}
 	return append(append(rs, timers...), host.SystemdUnits{Prefix: jobUnitPrefix}), nil
 }

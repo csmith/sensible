@@ -591,20 +591,24 @@ func TestEngine_TriggerIsOwedPastAFailure(t *testing.T) {
 	bad := &fakeResource{id: "bad", applyErr: errors.New("boom"), log: &log}
 	daemon := File{Path: "/etc/docker/daemon.json", Content: "{}\n"}
 	sys.write(daemon.Path, "{\"debug\": true}\n")
-	list := ResourceList{daemon, bad, ServiceRestart{Name: "docker", Watch: []string{daemon.ID()}}}
+	list := ResourceList{
+		daemon,
+		bad,
+		Command{Name: "restart docker", Watch: []string{daemon.ID()}, ApplyArgv: []string{"systemctl", "restart", "docker"}},
+	}
 
 	_, applied := run(t, sys, list)
 	assert.Equal(
 		t,
-		[]string{"file:/etc/docker/daemon.json changed", "bad failed", "service-restart:docker skipped"},
+		[]string{"file:/etc/docker/daemon.json changed", "bad failed", "command:restart docker skipped"},
 		statuses(applied),
 	)
 	assert.Empty(t, sys.ran)
 
 	bad.applyErr = nil
 	checked, applied := run(t, sys, list)
-	assert.Equal(t, "restart, owed from an earlier change\n", checked[2].Diff)
-	assert.Equal(t, "service-restart:docker changed", statuses(applied)[2])
+	assert.Equal(t, "run systemctl restart docker, owed from an earlier change\n", checked[2].Diff)
+	assert.Equal(t, "command:restart docker changed", statuses(applied)[2])
 	assert.Equal(t, []string{"systemctl restart docker"}, sys.ran)
 
 	checked, _ = run(t, sys, list)
@@ -687,8 +691,15 @@ func TestEngine_OwedHandlerDoesNotTriggerWatchers(t *testing.T) {
 	config := &fakeResource{id: "config", inSync: true, log: &log, notify: ResourceList{reload}}
 	require.NoError(t, newOwedJournal().owe(sys, nil, []string{"reload"}))
 
-	checked, _ := run(t, sys, ResourceList{config, ServiceRestart{Name: "web", Watch: []string{"config"}}})
+	checked, _ := run(
+		t,
+		sys,
+		ResourceList{
+			config,
+			Command{Name: "restart web", Watch: []string{"config"}, ApplyArgv: []string{"systemctl", "restart", "web"}},
+		},
+	)
 
-	assert.Equal(t, []string{"config drifted", "service-restart:web in-sync"}, statuses(checked))
+	assert.Equal(t, []string{"config drifted", "command:restart web in-sync"}, statuses(checked))
 	assert.Equal(t, []string{"reload"}, log)
 }

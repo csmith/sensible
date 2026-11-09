@@ -586,44 +586,6 @@ func TestTailscaleSet_Unavailable(t *testing.T) {
 	assert.NotErrorIs(t, err, ErrNotYetCheckable)
 }
 
-func TestSystemdReload_OnlyAfterWatchedChanges(t *testing.T) {
-	sys := newTestSys(t)
-	sys.on("systemctl daemon-reload", "", 0)
-	st := newRunState()
-	ctx := withRunState(context.Background(), st)
-	r := SystemdReload{Watch: []string{"file:/etc/systemd/system/a.timer"}}
-
-	change, err := r.Check(ctx, sys)
-	require.NoError(t, err)
-	assert.True(t, change.InSync)
-
-	st.modified["file:/etc/systemd/system/a.timer"] = true
-	change, err = r.Check(ctx, sys)
-	require.NoError(t, err)
-	assert.False(t, change.InSync)
-	require.NoError(t, r.Apply(ctx, sys))
-	assert.Equal(t, []string{"systemctl daemon-reload"}, sys.ran)
-}
-
-func TestServiceRestart_OnlyAfterWatchedChanges(t *testing.T) {
-	sys := newTestSys(t)
-	sys.on("systemctl restart docker", "", 0)
-	st := newRunState()
-	ctx := withRunState(context.Background(), st)
-	r := ServiceRestart{Name: "docker", Watch: []string{"file:/etc/docker/daemon.json"}}
-
-	change, err := r.Check(ctx, sys)
-	require.NoError(t, err)
-	assert.True(t, change.InSync)
-
-	st.modified["file:/etc/docker/daemon.json"] = true
-	change, err = r.Check(ctx, sys)
-	require.NoError(t, err)
-	assert.False(t, change.InSync)
-	require.NoError(t, r.Apply(ctx, sys))
-	assert.Equal(t, []string{"systemctl restart docker"}, sys.ran)
-}
-
 func TestSystemdUnits_RemovesUndeclaredUnits(t *testing.T) {
 	sys := newTestSys(t)
 	sys.write("/etc/systemd/system/sensible-keep.timer", "")

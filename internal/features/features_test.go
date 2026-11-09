@@ -120,7 +120,7 @@ func TestResources_order(t *testing.T) {
 				"docker-networks",
 				"file:/etc/systemd/system/sensible-prune.service",
 				"file:/etc/systemd/system/sensible-prune.timer",
-				"systemd-reload",
+				"command:reload systemd units",
 				"service:sensible-prune.timer",
 				"systemd-units:sensible-",
 				"users",
@@ -158,7 +158,7 @@ func TestResources_order(t *testing.T) {
 				"docker-networks",
 				"file:/etc/systemd/system/sensible-prune.service",
 				"file:/etc/systemd/system/sensible-prune.timer",
-				"systemd-reload",
+				"command:reload systemd units",
 				"service:sensible-prune.timer",
 				"systemd-units:sensible-",
 				"users",
@@ -1195,7 +1195,7 @@ func TestResources_jobs(t *testing.T) {
 	require.True(t, ok)
 	assert.Contains(t, timer.Content, "\nOnCalendar=*-*-* 04:00\n")
 	assert.Equal(t, []string{"systemd-analyze", "calendar", "*-*-* 04:00"}, timer.Validate)
-	reload, ok := find[host.SystemdReload](rs, "systemd-reload")
+	reload, ok := find[host.Command](rs, "command:reload systemd units")
 	require.True(t, ok)
 	assert.Equal(t, []string{service.ID(), timer.ID()}, reload.Watch)
 }
@@ -1309,7 +1309,7 @@ func TestResources_noJobsStillCleansUp(t *testing.T) {
 	rs, err := Resources(h)
 	require.NoError(t, err)
 
-	assert.NotContains(t, ids(rs), "systemd-reload")
+	assert.NotContains(t, ids(rs), "command:reload systemd units")
 	assert.Contains(t, ids(rs), "systemd-units:sensible-")
 }
 
@@ -1336,7 +1336,7 @@ func TestResources_dockerDaemon(t *testing.T) {
 					`{"log-driver": "local", "log-opts": {"max-size": "10m"}, "dns": ["192.0.2.1"], "ipv6": true}`,
 					file.Content,
 				)
-				restart, ok := find[host.ServiceRestart](rs, "service-restart:docker")
+				restart, ok := find[host.Command](rs, "command:restart docker")
 				require.True(t, ok)
 				assert.Equal(t, []string{file.ID()}, restart.Watch)
 
@@ -1355,7 +1355,7 @@ func TestResources_dockerDaemonUnset(t *testing.T) {
 	rs, err := Resources(testHost(archLinux))
 	require.NoError(t, err)
 	assert.NotContains(t, ids(rs), "file:/etc/docker/daemon.json")
-	assert.NotContains(t, ids(rs), "service-restart:docker")
+	assert.NotContains(t, ids(rs), "command:restart docker")
 }
 
 func TestResources_dockerRegistries(t *testing.T) {
