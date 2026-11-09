@@ -313,6 +313,8 @@ func (r Disowned) staleRecords(ctx context.Context, sys Sys) ([]string, error) {
 		case errors.Is(err, fs.ErrNotExist):
 		case err != nil:
 			return nil, err
+		case r.Dirs:
+			ok = info.IsDir()
 		case info.IsRegular():
 			if ok, err = isRecorded(sys, r.recordPath(path), path); err != nil {
 				return nil, err
@@ -356,6 +358,12 @@ func (r Disowned) matches(sys Sys, path string) (bool, error) {
 		return false, err
 	}
 	switch {
+	case r.Dirs:
+		if !info.IsDir() {
+			return false, nil
+		}
+		names, err := sys.ReadDir(path)
+		return len(names) == 0, err
 	case r.Header != "" && info.IsRegular():
 		return hasHeader(sys, path, r.Header)
 	case r.Records != "" && info.IsRegular():
@@ -380,7 +388,11 @@ func hasHeader(sys Sys, path, header string) (bool, error) {
 
 // Prune runs Notify itself, as handlers only follow an apply.
 func (r Disowned) Prune(ctx context.Context, sys Sys, item string) error {
-	if err := sys.RemoveAll(item); err != nil {
+	remove := sys.RemoveAll
+	if r.Dirs {
+		remove = sys.RemoveDir
+	}
+	if err := remove(item); err != nil {
 		return err
 	}
 	if r.Records != "" {
@@ -456,6 +468,12 @@ func WrittenRecordIn(dir string, f File) File {
 		Mode:    0o600,
 		Hidden:  true,
 	}
+}
+
+// DirRecordIn records the directory at path in dir, for a Disowned with
+// Records and Dirs, which must exist.
+func DirRecordIn(dir, path string) File {
+	return WrittenRecordIn(dir, File{Path: path})
 }
 
 func recordPath(dir, path string) string {

@@ -34,6 +34,7 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 	expansions := map[string]expansion{}
 	set := map[string]setBy{}
 	written := map[string]string{}
+	dirs := map[string]Perms{}
 	secretRoles := map[string]string{}
 	for _, role := range slices.Sorted(maps.Keys(roles)) {
 		e, err := r.expandRole(name, role, osFamily, roles[role])
@@ -49,7 +50,7 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 		if err := checkConflicts("role "+role, e.node, set); err != nil {
 			return Config{}, fmt.Errorf("%s: %w", name, err)
 		}
-		if err := checkFilePaths(role, e.node, written); err != nil {
+		if err := checkFilePaths(role, e.node, written, dirs); err != nil {
 			return Config{}, fmt.Errorf("%s: %w", name, err)
 		}
 		merged = merge(merged, e.node)

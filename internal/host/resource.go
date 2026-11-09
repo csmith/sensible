@@ -191,6 +191,10 @@ type Disowned struct {
 	// Paths, for files at paths that aren't known in advance. Applying
 	// forgets the records of files that have changed or gone since.
 	Records string `json:"records,omitempty"`
+	// Dirs makes Records a record of directories, from DirRecordIn, and
+	// limits it to those that are empty. Pruning never removes one that
+	// isn't.
+	Dirs bool `json:"dirs,omitempty"`
 	// Notify is applied after each item is pruned, e.g. to reload a service
 	// that read it.
 	Notify ResourceList `json:"notify,omitempty"`

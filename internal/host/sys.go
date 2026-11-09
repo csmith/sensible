@@ -63,6 +63,8 @@ type FileWriter interface {
 	// Symlink atomically creates or replaces path as a link to target.
 	Symlink(target, path string) error
 	RemoveAll(path string) error
+	// RemoveDir removes an empty directory.
+	RemoveDir(path string) error
 }
 
 type Accounts interface {
@@ -537,6 +539,17 @@ func (s *localSys) RemoveAll(path string) error {
 		lastAsIs,
 		func(f fileOps) error {
 			return f.err("unlinkat", f.name, removeAllAt(f.dir, f.name))
+		},
+	)
+}
+
+func (s *localSys) RemoveDir(path string) error {
+	return confinedErr(
+		s,
+		path,
+		lastAsIs,
+		func(f fileOps) error {
+			return f.err("unlinkat", f.name, unix.Unlinkat(f.dir, f.name, unix.AT_REMOVEDIR))
 		},
 	)
 }

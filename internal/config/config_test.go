@@ -1368,6 +1368,87 @@ func TestHostConfig_fileErrors(t *testing.T) {
 	}
 }
 
+func TestHostConfig_directories(t *testing.T) {
+	c, err := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml": "alpha:\n  roles: {a: , b: }\n",
+			"roles/a/role.yml": "directories:\n" +
+				"  - path: /srv/data\n" +
+				"  - {path: /srv/app, owner: alice, mode: 0750}\n",
+			// The same directory with the same settings, once defaults apply.
+			"roles/b/role.yml": "directories: [{path: /srv/data, owner: root, group: root, mode: 0755}]\n",
+		},
+	).open(t).HostConfig("alpha", "debian")
+
+	require.NoError(t, err)
+	assert.ElementsMatch(
+		t,
+		[]DirectoryConfig{
+			{Path: "/srv/data", Owner: "root", Group: "root", Mode: 0o755},
+			{Path: "/srv/app", Owner: "alice", Mode: 0o750},
+			{Path: "/srv/data", Owner: "root", Group: "root", Mode: 0o755},
+		},
+		c.Directories,
+	)
+}
+
+func TestHostConfig_directoryErrors(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{
+			"two roles giving a directory different modes",
+			map[string]string{
+				"roles/a/role.yml": "directories: [{path: /srv/x}]\n",
+				"roles/b/role.yml": "directories: [{path: /srv/x, mode: 0700}]\n",
+			},
+			"roles a and b give /srv/x different ownership or modes",
+		},
+		{
+			"a role declaring a directory twice",
+			map[string]string{
+				"roles/a/role.yml": "directories: [{path: /srv/x}, {path: /srv/x}]\n",
+				"roles/b/role.yml": "",
+			},
+			"role a declares /srv/x more than once",
+		},
+		{
+			"a directory that's also a file",
+			map[string]string{
+				"roles/a/role.yml": "directories: [{path: /srv/x}]\n",
+				"roles/b/role.yml": "files: [{path: /srv/x, content: a}]\n",
+			},
+			"/srv/x is declared as both a directory and a file",
+		},
+		{
+			"a file that's also a directory",
+			map[string]string{
+				"roles/a/role.yml": "files: [{path: /srv/x, content: a}]\n",
+				"roles/b/role.yml": "directories: [{path: /srv/x}]\n",
+			},
+			"/srv/x is declared as both a directory and a file",
+		},
+		{
+			"unclean path",
+			map[string]string{"roles/a/role.yml": "directories: [{path: /srv/x/}]\n", "roles/b/role.yml": ""},
+			`directories: "/srv/x/" isn't a clean absolute path`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				tt.files["hosts.d/hosts.yml"] = "alpha:\n  roles: {a: , b: }\n"
+				_, err := newTestRepo(t, tt.files).open(t).HostConfig("alpha", "debian")
+				assert.ErrorContains(t, err, tt.want)
+			},
+		)
+	}
+}
+
 func TestOpen_filesDirectoryInComposeFiles(t *testing.T) {
 	_, err := newTestRepo(
 		t,

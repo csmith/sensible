@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -175,9 +176,11 @@ type Config struct {
 	Restic     *ResticConfig            `yaml:"restic"`
 	Certs      map[string]CertConfig    `yaml:"certs"`
 	Remove     *RemoveConfig            `yaml:"remove"`
-	Files      []FileConfig             `yaml:"files"`
-	Services   map[string]ServiceState  `yaml:"services"`
-	Leftovers  *LeftoversConfig         `yaml:"leftovers"`
+	// Directories are made before Files, so files can go in them.
+	Directories []DirectoryConfig       `yaml:"directories"`
+	Files       []FileConfig            `yaml:"files"`
+	Services    map[string]ServiceState `yaml:"services"`
+	Leftovers   *LeftoversConfig        `yaml:"leftovers"`
 	// OIDCClients are the OIDC provider's clients, by client ID. They're set
 	// up from the controller, not on the host.
 	OIDCClients map[string]OIDCClientConfig `yaml:"oidc_clients"`
@@ -488,7 +491,8 @@ type FileConfig struct {
 	Hidden bool `yaml:"-"`
 }
 
-// reveal decrypts the secrets the modules need ready to write.
+// reveal decrypts the secrets the modules need ready to write, and fills in
+// the default ownership and modes of files and directories.
 func (c *Config) reveal(keys *keyring) error {
 	if c.Docker != nil {
 		if err := c.Docker.reveal(); err != nil {
@@ -500,6 +504,9 @@ func (c *Config) reveal(keys *keyring) error {
 			return err
 		}
 	}
+	for i := range c.Directories {
+		c.Directories[i].Perms = c.Directories[i].withDefaults()
+	}
 	for i := range c.Files {
 		if err := c.Files[i].reveal(keys); err != nil {
 			return fmt.Errorf("files: %s: %w", c.Files[i].Path, err)
@@ -508,31 +515,97 @@ func (c *Config) reveal(keys *keyring) error {
 	return nil
 }
 
-// checkFilePaths rejects files in node, the role's settings, that the role
-// or a role before it already writes. written maps each path to its role.
-func checkFilePaths(role string, node ast.Node, written map[string]string) error {
+// checkFilePaths rejects files and directories in node, the role's
+// settings, that the role or a role before it already declares. Roles may
+// declare the same directory with the same ownership and mode. written maps
+// each path to its role, and dirs maps each directory to its ownership and
+// mode.
+func checkFilePaths(role string, node ast.Node, written map[string]string, dirs map[string]Perms) error {
+	var files []FileConfig
+	var directories []DirectoryConfig
 	for _, v := range mappingValues(node) {
-		if keyString(v.Key) != "files" {
+		var err error
+		switch keyString(v.Key) {
+		case "files":
+			err = decode(context.Background(), merge(nil, v.Value), &files)
+		case "directories":
+			err = decode(context.Background(), merge(nil, v.Value), &directories)
+		default:
 			continue
 		}
-		var files []FileConfig
-		if err := decode(context.Background(), merge(nil, v.Value), &files); err != nil {
-			return fmt.Errorf("role %s: files: %w", role, err)
-		}
-		for _, f := range files {
-			if !filepath.IsAbs(f.Path) || filepath.Clean(f.Path) != f.Path {
-				return fmt.Errorf("role %s: files: %q isn't a clean absolute path", role, f.Path)
-			}
-			switch prev, ok := written[f.Path]; {
-			case ok && prev == role:
-				return fmt.Errorf("role %s writes %s more than once", role, f.Path)
-			case ok:
-				return fmt.Errorf("roles %s and %s both write %s", prev, role, f.Path)
-			}
-			written[f.Path] = role
+		if err != nil {
+			return fmt.Errorf("role %s: %s: %w", role, keyString(v.Key), err)
 		}
 	}
+	check := func(key, path string) error {
+		if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+			return fmt.Errorf("role %s: %s: %q isn't a clean absolute path", role, key, path)
+		}
+		return nil
+	}
+	for _, d := range directories {
+		if err := check("directories", d.Path); err != nil {
+			return err
+		}
+		perms := d.withDefaults()
+		prev, ok := written[d.Path]
+		prevPerms, wasDir := dirs[d.Path]
+		switch {
+		case ok && !wasDir:
+			return fmt.Errorf("role %s: %s is declared as both a directory and a file", role, d.Path)
+		case ok && prev == role:
+			return fmt.Errorf("role %s declares %s more than once", role, d.Path)
+		case ok && prevPerms != perms:
+			return fmt.Errorf("roles %s and %s give %s different ownership or modes", prev, role, d.Path)
+		case ok:
+			continue
+		}
+		written[d.Path] = role
+		dirs[d.Path] = perms
+	}
+	for _, f := range files {
+		if err := check("files", f.Path); err != nil {
+			return err
+		}
+		if _, ok := dirs[f.Path]; ok {
+			return fmt.Errorf("role %s: %s is declared as both a directory and a file", role, f.Path)
+		}
+		switch prev, ok := written[f.Path]; {
+		case ok && prev == role:
+			return fmt.Errorf("role %s writes %s more than once", role, f.Path)
+		case ok:
+			return fmt.Errorf("roles %s and %s both write %s", prev, role, f.Path)
+		}
+		written[f.Path] = role
+	}
 	return nil
+}
+
+// DirectoryConfig is a directory to make. Its ownership and mode default to
+// root:root 0755.
+type DirectoryConfig struct {
+	Path  string `yaml:"path"`
+	Perms `yaml:",inline"`
+}
+
+func (d DirectoryConfig) withDefaults() Perms {
+	return rootPerms(d.Perms, 0o755)
+}
+
+// rootPerms fills in the default ownership, root:root, and the given mode.
+// As elsewhere, a named owner without a group means the owner's primary
+// group.
+func rootPerms(p Perms, mode fs.FileMode) Perms {
+	if p.Owner == "" {
+		p.Owner = "root"
+		if p.Group == "" {
+			p.Group = "root"
+		}
+	}
+	if p.Mode == 0 {
+		p.Mode = mode
+	}
+	return p
 }
 
 // reveal sets the file's Data, and fills in the default ownership and mode,
@@ -567,19 +640,11 @@ func (f *FileConfig) reveal(keys *keyring) error {
 	default:
 		return errors.New("needs content or source")
 	}
-	if f.Owner == "" {
-		f.Owner = "root"
-		if f.Group == "" {
-			f.Group = "root"
-		}
+	mode := fs.FileMode(0o644)
+	if f.Hidden {
+		mode = 0o640
 	}
-	switch {
-	case f.Mode != 0:
-	case f.Hidden:
-		f.Mode = 0o640
-	default:
-		f.Mode = 0o644
-	}
+	f.Perms = rootPerms(f.Perms, mode)
 	return nil
 }
 

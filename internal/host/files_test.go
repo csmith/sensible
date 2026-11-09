@@ -599,6 +599,41 @@ func TestDisowned_RecordsFindsFilesAtAnyPath(t *testing.T) {
 	assert.True(t, sys.exists(docker.Path))
 }
 
+func TestDisowned_DirsFindsEmptyDirectories(t *testing.T) {
+	sys := newTestSys(t)
+	const dir = WrittenDir + "/directories"
+	for _, path := range []string{"/srv/empty", "/srv/full", "/srv/declared", "/srv/gone", "/srv/replaced"} {
+		record := DirRecordIn(dir, path)
+		require.NoError(t, sys.MkdirAll(path, 0o755))
+		sys.write(record.Path, record.Content)
+	}
+	sys.write("/srv/full/data", "keep me")
+	require.NoError(t, os.Remove(sys.path("/srv/gone")))
+	require.NoError(t, os.Remove(sys.path("/srv/replaced")))
+	sys.write("/srv/replaced", "a file now")
+	r := Disowned{Name: "directories", Records: dir, Dirs: true}
+	st := newRunState()
+	st.declare(Dir{Path: "/srv/declared"})
+	ctx := withRunState(context.Background(), st)
+
+	got, err := r.Leftovers(ctx, sys)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"/srv/empty"}, got)
+
+	change, err := r.Check(ctx, sys)
+	require.NoError(t, err)
+	assert.Equal(t, "forget record of /srv/gone\nforget record of /srv/replaced\n", change.Diff)
+	require.NoError(t, r.Apply(ctx, sys))
+	assert.True(t, sys.exists(recordPath(dir, "/srv/full")), "a directory with something in is still recorded")
+
+	require.NoError(t, r.Prune(ctx, sys, "/srv/empty"))
+	assert.False(t, sys.exists("/srv/empty"))
+	assert.False(t, sys.exists(recordPath(dir, "/srv/empty")))
+
+	require.Error(t, r.Prune(ctx, sys, "/srv/full"))
+	assert.True(t, sys.exists("/srv/full/data"))
+}
+
 func TestFile_CarriesContentThatIsNotUTF8(t *testing.T) {
 	for _, content := range []string{"text\n", "\x7fELF\x00\xff\xfe"} {
 		data, err := json.Marshal(ResourceList{File{Path: "/usr/local/bin/tool", Content: content}})

@@ -96,6 +96,25 @@ files:
 Once nothing declares a file, prune offers to remove it, unless it's been
 changed since it was written.
 
+### Directories
+
+`directories` makes directories, before any files are written. Each has an
+absolute `path`, and `owner`, `group` and `mode` default to root, root and
+0755. Missing parents are created as root:root 0755. Roles can declare the
+same directory only with the same ownership and mode.
+
+```yaml
+# roles/app/role.yml
+directories:
+  - path: /srv/app
+  - path: /srv/app/uploads
+    owner: www-data
+    mode: 0750
+```
+
+Once nothing declares a directory, prune offers to remove it, but only while
+it's empty.
+
 ### Apt repos
 
 `apt_repos` adds apt sources on Debian and Ubuntu hosts, each written to

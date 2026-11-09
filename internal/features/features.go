@@ -65,6 +65,8 @@ func Resources(h Host) (host.ResourceList, error) {
 		certs,
 		stacks,
 		backups,
+		// Before the files that may go in them.
+		directories,
 		// After the packages and accounts they may be for.
 		files,
 		// After the packages that install units.
@@ -103,6 +105,17 @@ func Resources(h Host) (host.ResourceList, error) {
 			file, ok := r.(host.File)
 			if ok && slices.ContainsFunc(out, func(o host.Resource) bool { return o.ID() == r.ID() }) {
 				return nil, fmt.Errorf("host %s: %s is written twice with different content or settings", h.Name, file.Path)
+			}
+			// And directories, other than those that only need to exist.
+			dir, ok := r.(host.Dir)
+			if ok && dir != (host.Dir{Path: dir.Path}) && slices.ContainsFunc(
+				out,
+				func(o host.Resource) bool {
+					d, ok := o.(host.Dir)
+					return ok && d.Path == dir.Path && d != (host.Dir{Path: d.Path})
+				},
+			) {
+				return nil, fmt.Errorf("host %s: directory %s is given different ownership or modes", h.Name, dir.Path)
 			}
 			// And services, such as one in services that a feature also runs.
 			svc, ok := r.(host.Service)
@@ -195,6 +208,33 @@ func access(h Host) ([]host.Resource, error) {
 	return rs, nil
 }
 
+// directoriesRecords holds the records of the directories in the
+// directories setting, so that prune finds those nothing declares any more.
+const directoriesRecords = host.WrittenDir + "/directories"
+
+// directories makes the directories roles give, parents first.
+func directories(h Host) ([]host.Resource, error) {
+	if len(h.Config.Directories) == 0 {
+		return nil, nil
+	}
+	rs := []host.Resource{
+		host.Dir{Path: host.WrittenDir, Owner: "root", Group: "root", Mode: 0o700},
+		host.Dir{Path: directoriesRecords, Owner: "root", Group: "root", Mode: 0o700},
+	}
+	dirs := slices.SortedFunc(
+		slices.Values(h.Config.Directories),
+		func(a, b config.DirectoryConfig) int { return strings.Compare(a.Path, b.Path) },
+	)
+	for _, d := range dirs {
+		rs = append(
+			rs,
+			host.Dir{Path: d.Path, Owner: d.Owner, Group: d.Group, Mode: d.Mode},
+			host.DirRecordIn(directoriesRecords, d.Path),
+		)
+	}
+	return rs, nil
+}
+
 // filesRecords holds the records of the files in the files setting, apart
 // from features' own, so that prune finds those nothing declares any more.
 const filesRecords = host.WrittenDir + "/files"
@@ -208,6 +248,10 @@ func files(h Host) ([]host.Resource, error) {
 		host.Dir{Path: host.WrittenDir, Owner: "root", Group: "root", Mode: 0o700},
 		host.Dir{Path: filesRecords, Owner: "root", Group: "root", Mode: 0o700},
 	}
+	declared := map[string]bool{}
+	for _, d := range h.Config.Directories {
+		declared[d.Path] = true
+	}
 	for _, f := range h.Config.Files {
 		file := host.File{
 			Path:    f.Path,
@@ -220,7 +264,10 @@ func files(h Host) ([]host.Resource, error) {
 		// Without an owner or mode, a directory that already exists is left
 		// alone, and a missing one is created like its parents, as root:root
 		// 0755.
-		rs = append(rs, host.Dir{Path: path.Dir(f.Path)}, file, host.WrittenRecordIn(filesRecords, file))
+		if !declared[path.Dir(f.Path)] {
+			rs = append(rs, host.Dir{Path: path.Dir(f.Path)})
+		}
+		rs = append(rs, file, host.WrittenRecordIn(filesRecords, file))
 	}
 	return rs, nil
 }
@@ -278,6 +325,8 @@ func disowned(h Host) ([]host.Resource, error) {
 		// would stop the containers, so it's left to pick up the change.
 		host.Disowned{Name: "docker", Paths: []string{dockerDaemonFile, dockerClientFile}, Records: host.WrittenDir},
 		host.Disowned{Name: "files", Records: filesRecords},
+		// After files, which may be in them.
+		host.Disowned{Name: "directories", Records: directoriesRecords, Dirs: true},
 		host.DisownedPackages{},
 	}
 	switch h.Facts.OSFamily {

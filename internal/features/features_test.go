@@ -1678,6 +1678,62 @@ func TestResources_filesCreateTheirDirectories(t *testing.T) {
 	assert.Equal(t, host.Dir{Path: "/etc/foo.d"}, d)
 }
 
+func TestResources_directories(t *testing.T) {
+	for _, osFamily := range []string{archLinux, debian} {
+		t.Run(
+			osFamily,
+			func(t *testing.T) {
+				h := testHost(osFamily)
+				h.Config.AUR = nil
+				data := config.DirectoryConfig{Path: "/srv/app/data", Owner: "alice", Group: "users", Mode: 0o770}
+				h.Config.Directories = []config.DirectoryConfig{
+					data,
+					{Path: "/srv/app", Owner: "root", Group: "root", Mode: 0o755},
+					data,
+				}
+				h.Config.Files = []config.FileConfig{{Path: "/srv/app/data/a.conf", Data: "a\n"}}
+				rs, err := Resources(h)
+				require.NoError(t, err)
+
+				all := ids(rs)
+				parent := slices.Index(all, "dir:/srv/app")
+				child := slices.Index(all, "dir:/srv/app/data")
+				require.GreaterOrEqual(t, parent, 0)
+				assert.Greater(t, child, parent, "a directory comes after its parent")
+				assert.Greater(t, slices.Index(all, "file:/srv/app/data/a.conf"), child)
+				var declared []host.Dir
+				for _, r := range rs {
+					if d, ok := r.(host.Dir); ok && d.Path == data.Path {
+						declared = append(declared, d)
+					}
+				}
+				assert.Equal(t, []host.Dir{{Path: data.Path, Owner: "alice", Group: "users", Mode: 0o770}}, declared)
+
+				d, ok := find[host.Disowned](rs, "disowned:directories")
+				require.True(t, ok)
+				assert.True(t, d.Dirs)
+				assert.Greater(t, slices.Index(all, d.ID()), slices.Index(all, "disowned:files"))
+				record := host.DirRecordIn(d.Records, data.Path)
+				assert.Contains(t, rs, record)
+				_, ok = find[host.Dir](rs, "dir:"+filepath.Dir(record.Path))
+				assert.True(t, ok, "the records' directory isn't created")
+			},
+		)
+	}
+}
+
+func TestResources_directoryAlsoMadeByAFeature(t *testing.T) {
+	h := testHost(debian)
+	h.Config.AUR = nil
+	h.Config.Directories = []config.DirectoryConfig{
+		{Path: host.WrittenDir, Owner: "root", Group: "root", Mode: 0o755},
+	}
+
+	_, err := Resources(h)
+
+	assert.ErrorContains(t, err, "directory "+host.WrittenDir+" is given different ownership or modes")
+}
+
 func TestResources_services(t *testing.T) {
 	for _, osFamily := range []string{archLinux, debian} {
 		t.Run(
