@@ -96,6 +96,33 @@ files:
 Once nothing declares a file, prune offers to remove it, unless it's been
 changed since it was written.
 
+### Apt repos
+
+`apt_repos` adds apt sources on Debian and Ubuntu hosts, each written to
+`/etc/apt/sources.list.d/<name>.sources`. `{distro}` and `{release}` are
+replaced by the host's distribution and codename, e.g. `debian` and `trixie`.
+Each repo needs either a `signing_key_url` to download its key from, or a
+`signing_key` already on the host, such as one from a keyring package.
+
+Sources in `sources.list.d` that nothing declares are leftovers, and so is
+`/etc/apt/sources.list` if it lists repos and the host has any `apt_repos`. To
+manage the distribution's own sources, declare them under the same names:
+
+```yaml
+# roles/debian/role.yml
+apt_repos:
+  debian:
+    uris: [http://deb.debian.org/debian]
+    suites: ["{release}", "{release}-updates"]
+    components: [main]
+    signing_key: /usr/share/keyrings/debian-archive-keyring.gpg
+  debian-security:
+    uris: [http://deb.debian.org/debian-security]
+    suites: ["{release}-security"]
+    components: [main]
+    signing_key: /usr/share/keyrings/debian-archive-keyring.gpg
+```
+
 ### Services
 
 `services` sets systemd units' states. `enabled` enables and starts a unit,

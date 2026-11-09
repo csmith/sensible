@@ -193,12 +193,16 @@ type Config struct {
 
 // AptRepoConfig is a deb822 apt source, named by its key. "{distro}" and
 // "{release}" in any field are replaced by the host's os-release ID and
-// release codename, e.g. "ubuntu" and "noble".
+// release codename, e.g. "ubuntu" and "noble". Exactly one of SigningKeyURL
+// and SigningKey is set.
 type AptRepoConfig struct {
 	URIs          Set    `yaml:"uris"`
 	Suites        Set    `yaml:"suites"`
 	Components    Set    `yaml:"components"`
 	SigningKeyURL string `yaml:"signing_key_url"`
+	// SigningKey is the path of a keyring already on the host, such as the
+	// distribution's archive keyring.
+	SigningKey string `yaml:"signing_key"`
 }
 
 type PackagesConfig struct {

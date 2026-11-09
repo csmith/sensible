@@ -31,10 +31,16 @@ func aptRepos(h Host) ([]host.Resource, error) {
 				h.Name,
 				name,
 			)
-		case len(c.URIs) == 0 || len(c.Suites) == 0 || c.SigningKeyURL == "":
-			return nil, fmt.Errorf("host %s: apt repo %s needs uris, suites and signing_key_url", h.Name, name)
+		case len(c.URIs) == 0 || len(c.Suites) == 0:
+			return nil, fmt.Errorf("host %s: apt repo %s needs uris and suites", h.Name, name)
+		case (c.SigningKeyURL == "") == (c.SigningKey == ""):
+			return nil, fmt.Errorf("host %s: apt repo %s needs one of signing_key_url and signing_key", h.Name, name)
 		}
 		facts := strings.NewReplacer("{distro}", h.Facts.Distro, "{release}", h.Facts.Release)
+		key := facts.Replace(c.SigningKey)
+		if key != "" && !filepath.IsAbs(key) {
+			return nil, fmt.Errorf("host %s: apt repo %s: signing_key must be an absolute path", h.Name, name)
+		}
 		replaceAll := func(items []string) []string {
 			out := make([]string, len(items))
 			for i, item := range items {
@@ -50,6 +56,7 @@ func aptRepos(h Host) ([]host.Resource, error) {
 				Suites:        replaceAll(c.Suites),
 				Components:    replaceAll(c.Components),
 				SigningKeyURL: facts.Replace(c.SigningKeyURL),
+				SigningKey:    key,
 			},
 		)
 	}

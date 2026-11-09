@@ -222,6 +222,11 @@ func TestAptRepos_placeholders(t *testing.T) {
 			Components:    []string{"main"},
 			SigningKeyURL: "https://pkgs.example.com/{distro}/{release}.gpg",
 		},
+		"security": {
+			URIs:       []string{"https://security.example.com/{distro}"},
+			Suites:     []string{"{release}-security"},
+			SigningKey: "/usr/share/keyrings/{distro}-archive-keyring.gpg",
+		},
 	}
 
 	rs, err := Resources(h)
@@ -231,6 +236,30 @@ func TestAptRepos_placeholders(t *testing.T) {
 	assert.Equal(t, []string{"https://pkgs.example.com/ubuntu"}, repo.URIs)
 	assert.Equal(t, []string{"noble", "noble-updates"}, repo.Suites)
 	assert.Equal(t, "https://pkgs.example.com/ubuntu/noble.gpg", repo.SigningKeyURL)
+	security, ok := find[host.AptRepo](rs, "apt-repo:security")
+	require.True(t, ok)
+	assert.Equal(t, []string{"noble-security"}, security.Suites)
+	assert.Equal(t, "/usr/share/keyrings/ubuntu-archive-keyring.gpg", security.SigningKey)
+	assert.Empty(t, security.SigningKeyURL)
+}
+
+func TestAptRepos_ownSourcesList(t *testing.T) {
+	h := testHost(debian)
+	h.Config.AUR.Packages = nil
+
+	// Docker and Tailscale's repos don't take over the distribution's.
+	rs, err := Resources(h)
+	require.NoError(t, err)
+	disowned, ok := find[host.DisownedAptSources](rs, "disowned-apt-sources")
+	require.True(t, ok)
+	assert.False(t, disowned.SourcesList)
+
+	h.Config.AptRepos = map[string]config.AptRepoConfig{"raspi": testAptRepo}
+	rs, err = Resources(h)
+	require.NoError(t, err)
+	disowned, ok = find[host.DisownedAptSources](rs, "disowned-apt-sources")
+	require.True(t, ok)
+	assert.True(t, disowned.SourcesList)
 }
 
 func TestVendorRepos_ubuntu(t *testing.T) {
@@ -291,6 +320,19 @@ func TestResources_errors(t *testing.T) {
 			h.Config.AUR.Packages = nil
 			repo := testAptRepo
 			repo.SigningKeyURL = ""
+			h.Config.AptRepos = map[string]config.AptRepoConfig{"raspi": repo}
+		}},
+		{"apt repo with both signing keys", func(h *Host) {
+			h.Config.AUR.Packages = nil
+			repo := testAptRepo
+			repo.SigningKey = "/usr/share/keyrings/raspberrypi-archive-keyring.gpg"
+			h.Config.AptRepos = map[string]config.AptRepoConfig{"raspi": repo}
+		}},
+		{"apt repo with a relative signing key", func(h *Host) {
+			h.Config.AUR.Packages = nil
+			repo := testAptRepo
+			repo.SigningKeyURL = ""
+			repo.SigningKey = "raspberrypi-archive-keyring.gpg"
 			h.Config.AptRepos = map[string]config.AptRepoConfig{"raspi": repo}
 		}},
 		{"apt repo clashing with docker's", func(h *Host) {

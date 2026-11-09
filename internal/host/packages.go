@@ -279,7 +279,7 @@ func aptSourcesModified(sys Sys) (time.Time, error) {
 
 // aptSourcePaths lists sources.list and the entries in AptSourcesDir.
 func aptSourcePaths(sys Sys) ([]string, error) {
-	paths := []string{"/etc/apt/sources.list"}
+	paths := []string{AptSourcesList}
 	names, err := sys.ReadDir(AptSourcesDir)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
@@ -434,6 +434,7 @@ func pacman(ctx context.Context, sys Sys) (*pacmanDB, error) {
 }
 
 const (
+	AptSourcesList = "/etc/apt/sources.list"
 	AptSourcesDir  = "/etc/apt/sources.list.d"
 	AptKeyringsDir = "/etc/apt/keyrings"
 )
@@ -443,15 +444,17 @@ func (r AptRepo) Check(ctx context.Context, sys Sys) (Change, error) {
 	if err != nil {
 		return Change{}, err
 	}
-	// The key's path is only known once it's downloaded.
-	state(ctx).declared[keyPath] = true
 	var diff strings.Builder
-	if current, err := sys.ReadFile(keyPath); errors.Is(err, fs.ErrNotExist) {
-		diff.WriteString("add signing key " + keyPath + "\n")
-	} else if err != nil {
-		return Change{}, err
-	} else if string(current) != string(key) {
-		diff.WriteString("replace signing key " + keyPath + "\n")
+	if r.SigningKey == "" {
+		// The key's path is only known once it's downloaded.
+		state(ctx).declared[keyPath] = true
+		if current, err := sys.ReadFile(keyPath); errors.Is(err, fs.ErrNotExist) {
+			diff.WriteString("add signing key " + keyPath + "\n")
+		} else if err != nil {
+			return Change{}, err
+		} else if string(current) != string(key) {
+			diff.WriteString("replace signing key " + keyPath + "\n")
+		}
 	}
 
 	current, err := sys.ReadFile(r.sourcesPath())
@@ -468,10 +471,15 @@ func (r AptRepo) Apply(ctx context.Context, sys Sys) error {
 		return err
 	}
 	unowned := ownership{uid: -1, gid: -1}
-	if err := sys.MkdirAll(filepath.Dir(keyPath), defaultDirMode); err != nil {
-		return err
+	if r.SigningKey == "" {
+		if err := sys.MkdirAll(filepath.Dir(keyPath), defaultDirMode); err != nil {
+			return err
+		}
+		if err := sys.WriteFile(keyPath, key, unowned.writeOptions(sys, keyPath, defaultFileMode)); err != nil {
+			return err
+		}
 	}
-	if err := sys.WriteFile(keyPath, key, unowned.writeOptions(sys, keyPath, defaultFileMode)); err != nil {
+	if err := sys.MkdirAll(AptSourcesDir, defaultDirMode); err != nil {
 		return err
 	}
 	opts := unowned.writeOptions(sys, r.sourcesPath(), defaultFileMode)
@@ -497,8 +505,12 @@ func (r AptRepo) sources(keyPath string) string {
 }
 
 // key downloads the signing key, returning it and the path it belongs at,
-// which depends on whether it's armored.
+// which depends on whether it's armored. A local keyring is returned as its
+// path alone.
 func (r AptRepo) key(ctx context.Context, sys Sys) ([]byte, string, error) {
+	if r.SigningKey != "" {
+		return nil, r.SigningKey, nil
+	}
 	key, err := sys.Fetch(ctx, r.SigningKeyURL)
 	if err != nil {
 		return nil, "", err
@@ -526,6 +538,15 @@ func (r DisownedAptSources) Leftovers(ctx context.Context, sys Sys) ([]string, e
 	keys, err := undeclaredIn(sys, declared, AptKeyringsDir, false)
 	if err != nil {
 		return nil, err
+	}
+	if r.SourcesList {
+		listed, err := listsRepos(sys, AptSourcesList)
+		if err != nil {
+			return nil, err
+		}
+		if listed {
+			sources = append([]string{AptSourcesList}, sources...)
+		}
 	}
 	// Removing a key that a source still refers to would break the source.
 	paths, err := aptSourcePaths(sys)
@@ -561,6 +582,24 @@ func (r DisownedAptSources) Leftovers(ctx context.Context, sys Sys) ([]string, e
 
 func (r DisownedAptSources) Prune(_ context.Context, sys Sys, item string) error {
 	return sys.RemoveAll(item)
+}
+
+// listsRepos reports whether the one-line-style sources file at path has
+// any deb or deb-src lines that aren't commented out.
+func listsRepos(sys Sys, path string) (bool, error) {
+	data, err := sys.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	for line := range strings.Lines(string(data)) {
+		if fields := strings.Fields(line); len(fields) > 0 && (fields[0] == "deb" || fields[0] == "deb-src") {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (r AURPackage) Check(ctx context.Context, sys Sys) (Change, error) {

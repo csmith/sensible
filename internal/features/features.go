@@ -285,7 +285,9 @@ func disowned(h Host) ([]host.Resource, error) {
 		rs = append(
 			rs,
 			host.Disowned{Name: "pam_rssh package", Paths: []string{pamRSSHDebGlob}},
-			host.DisownedAptSources{},
+			// Declaring any repo takes over the distribution's, so the old
+			// sources.list is left over too.
+			host.DisownedAptSources{SourcesList: len(h.Config.AptRepos) > 0},
 		)
 	case archLinux:
 		links := make([]string, len(vimLinks))

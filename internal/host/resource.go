@@ -222,19 +222,26 @@ type Package struct {
 // resources refresh the package index.
 type AptRepo struct {
 	// Name names /etc/apt/sources.list.d/<Name>.sources, and the signing key
-	// at /etc/apt/keyrings/<Name>.asc (or .gpg if it isn't armored).
+	// downloaded from SigningKeyURL at /etc/apt/keyrings/<Name>.asc (or .gpg
+	// if it isn't armored).
 	Name          string   `json:"name"`
 	URIs          []string `json:"uris"`
 	Suites        []string `json:"suites"`
 	Components    []string `json:"components"`
-	SigningKeyURL string   `json:"signing_key_url"`
+	SigningKeyURL string   `json:"signing_key_url,omitempty"`
+	// SigningKey is the path of a keyring already on the host, such as one
+	// a package provides, used instead of SigningKeyURL.
+	SigningKey string `json:"signing_key,omitempty"`
 }
 
 // DisownedAptSources warns about the apt sources in AptSourcesDir that no
 // AptRepo earlier in the same run declared, and the keys in AptKeyringsDir
-// that no AptRepo declared and no source refers to. They may be the
+// that no AptRepo declared and no source refers to. With SourcesList, it
+// also warns about AptSourcesList if it lists any repos. They may be the
 // distribution's own, so applying never removes them, but pruning does.
-type DisownedAptSources struct{}
+type DisownedAptSources struct {
+	SourcesList bool `json:"sources_list,omitempty"`
+}
 
 // AURPackage installs a package from the AUR with paru.
 type AURPackage struct {

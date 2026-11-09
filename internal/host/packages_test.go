@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -345,6 +346,105 @@ func TestAptRepo(t *testing.T) {
 	change, err = r.Check(ctx, sys)
 	require.NoError(t, err)
 	assert.Contains(t, change.Diff, "add signing key /etc/apt/keyrings/example.gpg\n")
+}
+
+func TestAptRepo_LocalKeyring(t *testing.T) {
+	sys := newDebianSys(t)
+	change := checkApply(
+		t,
+		sys,
+		AptRepo{
+			Name:       "debian",
+			URIs:       []string{"https://deb.debian.org/debian"},
+			Suites:     []string{"trixie", "trixie-updates"},
+			Components: []string{"main"},
+			SigningKey: "/usr/share/keyrings/debian-archive-keyring.gpg",
+		},
+	)
+
+	assert.NotContains(t, change.Diff, "signing key")
+	assert.Equal(
+		t,
+		"Types: deb\nURIs: https://deb.debian.org/debian\nSuites: trixie trixie-updates\nComponents: main\n"+
+			"Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg\n",
+		sys.read("/etc/apt/sources.list.d/debian.sources"),
+	)
+	assert.False(t, sys.exists(AptKeyringsDir))
+}
+
+func TestDisownedAptSources_SourcesList(t *testing.T) {
+	tests := []struct {
+		name        string
+		content     string
+		sourcesList bool
+		want        []string
+	}{
+		{
+			name:        "active",
+			content:     "# comment\ndeb http://deb.debian.org/debian bookworm main\n",
+			sourcesList: true,
+			want:        []string{AptSourcesList, AptSourcesDir + "/stray.list"},
+		},
+		{
+			name:        "source only",
+			content:     "  deb-src [arch=amd64] http://deb.debian.org/debian bookworm main\n",
+			sourcesList: true,
+			want:        []string{AptSourcesList, AptSourcesDir + "/stray.list"},
+		},
+		{
+			name:        "empty",
+			sourcesList: true,
+			want:        []string{AptSourcesDir + "/stray.list"},
+		},
+		{
+			name:        "comments only",
+			content:     "# deb http://deb.debian.org/debian bookworm main\n\n#deb-src http://x bookworm main\n",
+			sourcesList: true,
+			want:        []string{AptSourcesDir + "/stray.list"},
+		},
+		{
+			name:    "not owned",
+			content: "deb http://deb.debian.org/debian bookworm main\n",
+			want:    []string{AptSourcesDir + "/stray.list"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				sys := newDebianSys(t)
+				sys.write(AptSourcesList, tt.content)
+				sys.write(AptSourcesDir+"/stray.list", "deb http://example.com stable main\n")
+				ctx := withRunState(context.Background(), newRunState())
+				r := DisownedAptSources{SourcesList: tt.sourcesList}
+
+				leftovers, err := r.Leftovers(ctx, sys)
+				require.NoError(t, err)
+				assert.Equal(t, tt.want, leftovers)
+				change, err := r.Check(ctx, sys)
+				require.NoError(t, err)
+				assert.True(t, change.InSync)
+				assert.Equal(t, strings.Join(tt.want, "\n"), strings.SplitN(change.Warning, "\nno apt repo", 2)[0])
+
+				require.NoError(t, r.Apply(ctx, sys))
+				assert.True(t, sys.exists(AptSourcesList))
+			},
+		)
+	}
+}
+
+func TestDisownedAptSources_PrunesSourcesList(t *testing.T) {
+	sys := newDebianSys(t)
+	sys.write(AptSourcesList, "deb http://deb.debian.org/debian bookworm main\n")
+	ctx := withRunState(context.Background(), newRunState())
+	r := DisownedAptSources{SourcesList: true}
+
+	require.NoError(t, r.Prune(ctx, sys, AptSourcesList))
+
+	assert.False(t, sys.exists(AptSourcesList))
+	leftovers, err := r.Leftovers(ctx, sys)
+	require.NoError(t, err)
+	assert.Empty(t, leftovers)
 }
 
 func TestAURPackage(t *testing.T) {
