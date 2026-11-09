@@ -1245,6 +1245,12 @@ func TestResources_firewall(t *testing.T) {
 					strings.Count(rules.Content, "\t\tiifname \"tailscale0\" accept\n"),
 					"Tailscale is trusted for the host and published ports",
 				)
+				assert.Less(
+					t,
+					strings.Index(rules.Content, "\t\tiif lo accept\n"),
+					strings.Index(rules.Content, "\t\tct state invalid drop\n"),
+					"loopback is accepted even when conntrack marks it invalid",
+				)
 				assert.Equal(t, host.ResourceList{host.ServiceAction{Name: firewallUnit, Action: "reload"}}, rules.Notify)
 				checkRuleset(t, rules)
 

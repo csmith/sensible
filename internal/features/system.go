@@ -274,8 +274,10 @@ func firewallRuleset(tcp, udp []string) string {
 		"\tchain input {",
 		"\t\ttype filter hook input priority filter - 10; policy drop;",
 		"\t\tct state established,related accept",
-		"\t\tct state invalid drop",
+		// Conntrack can't tell the directions of a socket connected to
+		// itself apart, so marks some of its packets invalid.
 		"\t\tiif lo accept",
+		"\t\tct state invalid drop",
 		"\t\tiifname " + tailscaleInterface + " accept",
 		"\t\tmeta l4proto { icmp, ipv6-icmp } accept",
 		// DHCP replies may not be tracked as replies to the requests.
