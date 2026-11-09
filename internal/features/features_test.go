@@ -876,6 +876,11 @@ func TestAccessFiles(t *testing.T) {
 	assert.Contains(t, files[0].Content, "sensible ALL=(root) "+host.AgentPath+" agent\n")
 	assert.Contains(
 		t,
+		files[1].Content,
+		"Match User sensible\n    AuthenticationMethods publickey\n    PubkeyAuthentication yes\n",
+	)
+	assert.Contains(
+		t,
 		files[2].Content,
 		`restrict,command="/usr/bin/sudo -k -S -p '' `+host.AgentPath+` agent" ssh-ed25519 AAAA key`+"\n",
 	)
@@ -1458,6 +1463,43 @@ func TestResources_sshdListenSettingsRestartSocket(t *testing.T) {
 				restart, ok := listen.Notify[1].(host.Command)
 				require.True(t, ok)
 				assert.Contains(t, restart.ApplyArgv[len(restart.ApplyArgv)-1], "systemctl restart "+unit+".socket")
+			},
+		)
+	}
+}
+
+func TestResources_sshdAccessListsAdmitSensible(t *testing.T) {
+	tests := []struct {
+		key, value string
+		err        string
+	}{
+		{key: "AllowUsers", value: "chris", err: "sshd.settings.AllowUsers must admit sensible"},
+		{key: "allowusers", value: "chris sensible"},
+		{key: "AllowUsers", value: "chris sensible@192.0.2.1"},
+		{key: "AllowUsers", value: "*"},
+		{key: "AllowUsers", value: "sens?ble"},
+		{key: "AllowUsers", value: "sens*x", err: "must admit sensible"},
+		{key: "AllowGroups", value: "wheel", err: "sshd.settings.AllowGroups must admit sensible"},
+		{key: "AllowGroups", value: "wheel sensible"},
+		{key: "DenyUsers", value: "root"},
+		{key: "DenyUsers", value: "root sensible@*", err: "sshd.settings.DenyUsers must not match sensible"},
+		{key: "denyusers", value: "s*", err: "must not match sensible"},
+		{key: "DenyGroups", value: "sensible", err: "sshd.settings.DenyGroups must not match sensible"},
+		{key: "DenyGroups", value: "sensiblex"},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.key+" "+tt.value,
+			func(t *testing.T) {
+				h := testHost(debian)
+				h.Config.AUR = nil
+				h.Config.SSHD.Settings = map[string]string{tt.key: tt.value}
+				_, err := Resources(h)
+				if tt.err == "" {
+					assert.NoError(t, err)
+				} else {
+					assert.ErrorContains(t, err, tt.err)
+				}
 			},
 		)
 	}

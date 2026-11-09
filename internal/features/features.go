@@ -142,6 +142,7 @@ func AccessFiles(sensibleKey string) []host.File {
 				[]string{
 					"Match User " + SensibleUser,
 					"    AuthenticationMethods publickey",
+					"    PubkeyAuthentication yes",
 					"    KbdInteractiveAuthentication no",
 					"    PasswordAuthentication no",
 					"    AuthorizedKeysFile " + sensibleAuthorizedKeysDir + "/" + SensibleUser,
@@ -167,8 +168,10 @@ func AccessFiles(sensibleKey string) []host.File {
 	}
 }
 
-// access keeps what bootstrap set up in place, so the sudoers clean-up, an
-// sshd change or prune can't lock the tool out.
+// access keeps what bootstrap set up in place, so the sudoers clean-up or
+// prune can't remove it. The access drop-in's Match block overrides global
+// authentication settings for the account, but not access lists such as
+// AllowUsers, so the sshd feature rejects those that would shut it out.
 func access(h Host) ([]host.Resource, error) {
 	reload := host.ServiceAction{Name: sshdService(h), Action: "reload"}
 	files := AccessFiles(h.SensibleKey)

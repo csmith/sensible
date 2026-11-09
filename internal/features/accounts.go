@@ -191,6 +191,9 @@ func sshd(h Host) ([]host.Resource, error) {
 
 	var lines, listen []string
 	for _, k := range slices.Sorted(maps.Keys(c.Settings)) {
+		if err := sshdAdmitsSensible(k, c.Settings[k]); err != nil {
+			return nil, err
+		}
 		if slices.Contains(sshdListenSettings, strings.ToLower(k)) {
 			listen = append(listen, k+" "+c.Settings[k])
 		} else {
@@ -258,6 +261,61 @@ func sshd(h Host) ([]host.Resource, error) {
 		)
 	}
 	return rs, nil
+}
+
+// sshdAdmitsSensible rejects an access list that would shut the sensible
+// account out, which the access drop-in's Match block can't undo.
+func sshdAdmitsSensible(key, value string) error {
+	var allow, users bool
+	switch strings.ToLower(key) {
+	case "allowusers":
+		allow, users = true, true
+	case "allowgroups":
+		allow = true
+	case "denyusers":
+		users = true
+	case "denygroups":
+	default:
+		return nil
+	}
+	// The account's primary group shares its name.
+	matched := slices.ContainsFunc(
+		strings.Fields(value),
+		func(p string) bool {
+			if users {
+				p, _, _ = strings.Cut(p, "@")
+			}
+			return sshdPatternMatches(p, SensibleUser)
+		},
+	)
+	switch {
+	case allow && !matched:
+		return fmt.Errorf("sshd.settings.%s must admit %s, or sensible can't reach the host", key, SensibleUser)
+	case !allow && matched:
+		return fmt.Errorf("sshd.settings.%s must not match %s, or sensible can't reach the host", key, SensibleUser)
+	}
+	return nil
+}
+
+// sshdPatternMatches matches s against an sshd pattern, where * matches any
+// run of characters and ? any one.
+func sshdPatternMatches(pattern, s string) bool {
+	if pattern == "" {
+		return s == ""
+	}
+	switch pattern[0] {
+	case '*':
+		for i := range len(s) + 1 {
+			if sshdPatternMatches(pattern[1:], s[i:]) {
+				return true
+			}
+		}
+		return false
+	case '?':
+		return s != "" && sshdPatternMatches(pattern[1:], s[1:])
+	default:
+		return s != "" && s[0] == pattern[0] && sshdPatternMatches(pattern[1:], s[1:])
+	}
 }
 
 // sshdSocketRestart is a handler for changes to where sshd listens. Where a
