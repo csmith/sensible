@@ -1,11 +1,13 @@
 package features
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"path"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -178,6 +180,160 @@ func ntp(h Host) ([]host.Resource, error) {
 		host.OwnedDir{Path: timesyncdConfDir, Header: managedMark, Notify: restart},
 		host.Service{Name: "systemd-timesyncd", Enabled: true, Running: true},
 	), nil
+}
+
+const (
+	firewallRules = "/etc/sensible/firewall.nft"
+	firewallUnit  = jobUnitPrefix + "firewall.service"
+	firewallTable = "inet sensible"
+	// tailscaleInterface is the interface tailscaled makes by default.
+	tailscaleInterface = `"tailscale0"`
+)
+
+// firewall drops unsolicited incoming traffic other than to the allowed
+// ports. It loads its own table from its own unit, as nftables.service
+// flushes the whole ruleset, which would take Docker's and Tailscale's rules
+// with it. Once it's turned off, the jobs' clean-up stops the unit, which
+// deletes the table.
+func firewall(h Host) ([]host.Resource, error) {
+	if h.Config.Firewall == nil {
+		return []host.Resource{host.Absent{Path: firewallRules}}, nil
+	}
+	tcp, udp, err := firewallPorts(h)
+	if err != nil {
+		return nil, err
+	}
+
+	load := "nft -f " + firewallRules
+	unit := host.File{
+		Path: path.Join(host.UnitsDir, firewallUnit),
+		Content: managedLines(
+			[]string{
+				"[Unit]",
+				"Description=sensible firewall",
+				"DefaultDependencies=no",
+				"Wants=network-pre.target",
+				"Before=network-pre.target shutdown.target",
+				"After=nftables.service",
+				"Conflicts=shutdown.target",
+				"",
+				"[Service]",
+				"Type=oneshot",
+				"RemainAfterExit=yes",
+				"ExecStart=" + load,
+				"ExecReload=" + load,
+				"ExecStop=-nft delete table " + firewallTable,
+				"",
+				"[Install]",
+				"WantedBy=sysinit.target",
+			},
+		),
+		Owner: "root",
+		Group: "root",
+		Mode:  0o644,
+	}
+	return append(
+		recordedPackages("nftables"),
+		host.Dir{Path: path.Dir(firewallRules), Owner: "root", Group: "root", Mode: 0o755},
+		// Loading a ruleset is atomic, so one that's rejected leaves the
+		// last one in place.
+		host.File{
+			Path:     firewallRules,
+			Content:  firewallRuleset(tcp, udp),
+			Owner:    "root",
+			Group:    "root",
+			Mode:     0o644,
+			Validate: []string{"nft", "-c", "-f", "%s"},
+			Notify:   host.ResourceList{host.ServiceAction{Name: firewallUnit, Action: "reload"}},
+		},
+		unit,
+		host.Command{
+			Name:      "load " + firewallUnit,
+			Watch:     []string{unit.ID()},
+			ApplyArgv: []string{"systemctl", "daemon-reload"},
+		},
+		host.Service{Name: firewallUnit, Enabled: true, Running: true},
+	), nil
+}
+
+// firewallRuleset replaces the firewall's table. Docker forwards traffic for
+// published ports to containers rather than delivering it to the host, having
+// changed its destination, so that's matched on the port it was sent to.
+// Tailscale's interface is trusted, as its ACLs control who reaches the host.
+func firewallRuleset(tcp, udp []string) string {
+	allow := func(match string, ports []string) []string {
+		if len(ports) == 0 {
+			return nil
+		}
+		return []string{"\t\t" + match + " { " + strings.Join(ports, ", ") + " } accept"}
+	}
+	lines := []string{
+		"table " + firewallTable,
+		"delete table " + firewallTable,
+		"table " + firewallTable + " {",
+		"\tchain input {",
+		"\t\ttype filter hook input priority filter - 10; policy drop;",
+		"\t\tct state established,related accept",
+		"\t\tct state invalid drop",
+		"\t\tiif lo accept",
+		"\t\tiifname " + tailscaleInterface + " accept",
+		"\t\tmeta l4proto { icmp, ipv6-icmp } accept",
+		// DHCP replies may not be tracked as replies to the requests.
+		"\t\tudp sport 67 udp dport 68 accept",
+		"\t\tip6 saddr fe80::/10 udp sport 547 udp dport 546 accept",
+	}
+	lines = append(lines, allow("tcp dport", tcp)...)
+	lines = append(lines, allow("udp dport", udp)...)
+	lines = append(
+		lines,
+		"\t}",
+		"",
+		"\tchain forward {",
+		"\t\ttype filter hook forward priority filter - 10; policy accept;",
+		"\t\tct state new ct status dnat jump published",
+		"\t}",
+		"",
+		"\tchain published {",
+		"\t\tiifname "+tailscaleInterface+" accept",
+	)
+	lines = append(lines, allow("meta l4proto tcp ct original proto-dst", tcp)...)
+	lines = append(lines, allow("meta l4proto udp ct original proto-dst", udp)...)
+	return managedLines(append(lines, "\t\tdrop", "\t}", "}"))
+}
+
+// firewallPorts are the allowed TCP and UDP ports and ranges, in order.
+func firewallPorts(h Host) (tcp, udp []string, err error) {
+	type portRange struct{ low, high int }
+	ranges := map[string][]portRange{}
+
+	for _, a := range h.Config.Firewall.Allow {
+		ports, proto, _ := strings.Cut(a, "/")
+		lowText, highText, isRange := strings.Cut(ports, "-")
+		low, lowErr := strconv.Atoi(lowText)
+		high, highErr := low, error(nil)
+		if isRange {
+			high, highErr = strconv.Atoi(highText)
+		}
+		valid := lowErr == nil && highErr == nil && low >= 1 && low <= high && high <= 65535
+		if !valid || proto != "tcp" && proto != "udp" {
+			return nil, nil, fmt.Errorf("host %s: firewall.allow: %q should be like 443/tcp or 60000-61000/udp", h.Name, a)
+		}
+		ranges[proto] = append(ranges[proto], portRange{low, high})
+	}
+
+	format := func(rs []portRange) []string {
+		slices.SortFunc(rs, func(a, b portRange) int { return cmp.Or(a.low-b.low, a.high-b.high) })
+		var out []string
+		for _, r := range slices.Compact(rs) {
+			if r.low == r.high {
+				out = append(out, strconv.Itoa(r.low))
+			} else {
+				out = append(out, fmt.Sprintf("%d-%d", r.low, r.high))
+			}
+		}
+		return out
+	}
+	return format(ranges["tcp"]), format(ranges["udp"]), nil
 }
 
 const jobUnitPrefix = "sensible-"

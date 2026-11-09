@@ -62,6 +62,8 @@ func Resources(h Host) (host.ResourceList, error) {
 		access,
 		tailscale,
 		docker,
+		// Before jobs, whose clean-up removes its unit once it's turned off.
+		firewall,
 		certs,
 		stacks,
 		backups,

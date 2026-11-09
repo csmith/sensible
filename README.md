@@ -186,6 +186,20 @@ certs:
     restart: [postgresql.service]
 ```
 
+### Firewall
+
+`firewall` drops incoming connections, other than to the ports in `allow`,
+with nftables. It covers containers' published ports too, by the port they're
+published on. Replies, loopback, ICMP and anything over Tailscale are always
+allowed. SSH isn't, so allow its port if sensible reaches the host some other
+way. Removing `firewall` turns it off.
+
+```yaml
+# roles/web/role.yml
+firewall:
+  allow: [80/tcp, 443/tcp, 443/udp, 60000-61000/udp]
+```
+
 ### Leftovers
 
 Apply warns about what sensible finds but didn't put there, such as files in

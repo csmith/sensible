@@ -163,6 +163,7 @@ type Config struct {
 	PamRSSH    *PamRSSHConfig           `yaml:"pam_rssh"`
 	SSHD       *SSHDConfig              `yaml:"sshd"`
 	Tailscale  *TailscaleConfig         `yaml:"tailscale"`
+	Firewall   *FirewallConfig          `yaml:"firewall"`
 	Zsh        *ZshConfig               `yaml:"zsh"`
 	Docker     *DockerConfig            `yaml:"docker"`
 	Vim        *VimConfig               `yaml:"vim"`
@@ -239,6 +240,14 @@ type SSHDConfig struct {
 
 type TailscaleConfig struct {
 	Settings map[string]string `yaml:"settings"`
+}
+
+// FirewallConfig drops unsolicited incoming traffic, to the host and to
+// containers' published ports, other than to the ports in Allow.
+type FirewallConfig struct {
+	// Allow are ports or ranges with their protocol, e.g. "443/tcp" or
+	// "60000-61000/udp".
+	Allow Set `yaml:"allow"`
 }
 
 type ZshConfig struct {

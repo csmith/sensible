@@ -1200,6 +1200,109 @@ func TestResources_jobs(t *testing.T) {
 	assert.Equal(t, []string{service.ID(), timer.ID()}, reload.Watch)
 }
 
+func TestResources_firewall(t *testing.T) {
+	tests := []struct {
+		name    string
+		allow   []string
+		wantTCP string
+		wantUDP string
+	}{
+		{
+			name: "nothing allowed",
+		},
+		{
+			name:    "ports in order, once each",
+			allow:   []string{"443/tcp", "80/tcp", "60000-61000/udp", "53/udp", "53/tcp", "80/tcp"},
+			wantTCP: "{ 53, 80, 443 }",
+			wantUDP: "{ 53, 60000-61000 }",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				h := testHost(archLinux)
+				h.Config.Firewall = &config.FirewallConfig{Allow: tt.allow}
+				rs, err := Resources(h)
+				require.NoError(t, err)
+
+				rules, ok := find[host.File](rs, "file:"+firewallRules)
+				require.True(t, ok)
+				for proto, want := range map[string]string{"tcp": tt.wantTCP, "udp": tt.wantUDP} {
+					input := "\t\t" + proto + " dport "
+					published := "\t\tmeta l4proto " + proto + " ct original proto-dst "
+					if want == "" {
+						assert.NotContains(t, rules.Content, input)
+						assert.NotContains(t, rules.Content, published)
+					} else {
+						assert.Contains(t, rules.Content, input+want+" accept\n")
+						assert.Contains(t, rules.Content, published+want+" accept\n")
+					}
+				}
+				assert.Equal(
+					t,
+					2,
+					strings.Count(rules.Content, "\t\tiifname \"tailscale0\" accept\n"),
+					"Tailscale is trusted for the host and published ports",
+				)
+				assert.Equal(t, host.ResourceList{host.ServiceAction{Name: firewallUnit, Action: "reload"}}, rules.Notify)
+				checkRuleset(t, rules)
+
+				got := ids(rs)
+				unit := "file:" + host.UnitsDir + "/" + firewallUnit
+				for _, id := range []string{"package:nftables", unit, "service:" + firewallUnit} {
+					assert.Contains(t, got, id)
+				}
+				assert.Less(t, slices.Index(got, unit), slices.Index(got, "systemd-units:sensible-"))
+				assert.NotContains(t, got, "absent:"+firewallRules)
+			},
+		)
+	}
+}
+
+// checkRuleset has nft check the ruleset in a network namespace of its own,
+// where it's allowed to, if this machine can make one.
+func checkRuleset(t *testing.T, rules host.File) {
+	t.Helper()
+	if _, err := exec.LookPath("nft"); err != nil {
+		t.Log("nft isn't installed, so the ruleset isn't checked")
+		return
+	}
+	file := filepath.Join(t.TempDir(), "rules.nft")
+	require.NoError(t, os.WriteFile(file, []byte(rules.Content), 0o600))
+	argv := slices.Clone(rules.Validate)
+	argv[slices.Index(argv, "%s")] = file
+	out, err := exec.CommandContext(t.Context(), "unshare", append([]string{"-rn"}, argv...)...).CombinedOutput()
+	if err != nil && strings.HasPrefix(string(out), "unshare:") {
+		t.Logf("the ruleset isn't checked: %s", out)
+		return
+	}
+	assert.NoError(t, err, string(out))
+}
+
+func TestResources_firewallOff(t *testing.T) {
+	rs, err := Resources(testHost(archLinux))
+	require.NoError(t, err)
+
+	got := ids(rs)
+	assert.Contains(t, got, "absent:"+firewallRules)
+	assert.NotContains(t, got, "file:"+host.UnitsDir+"/"+firewallUnit)
+}
+
+func TestResources_firewallErrors(t *testing.T) {
+	for _, allow := range []string{"443", "443/sctp", "0/tcp", "65536/udp", "2-1/tcp", "http/tcp", "1-/udp"} {
+		t.Run(
+			allow,
+			func(t *testing.T) {
+				h := testHost(archLinux)
+				h.Config.Firewall = &config.FirewallConfig{Allow: []string{allow}}
+				_, err := Resources(h)
+				assert.ErrorContains(t, err, "firewall.allow")
+			},
+		)
+	}
+}
+
 func TestResources_noJobsStillCleansUp(t *testing.T) {
 	h := testHost(archLinux)
 	h.Config.Jobs = nil
