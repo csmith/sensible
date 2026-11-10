@@ -16,7 +16,11 @@ _sensible_config_files() {
 }
 
 _sensible_secrets() {
-    local path quoted
+    local path quoted file=${3/#\~/$HOME} first
+    [[ $file == /* ]] || file=${1/#\~/$HOME}/$file
+    # Showing a whole-file secret would decrypt it.
+    IFS= read -r first 2>/dev/null <"$file"
+    [[ $first == '-----BEGIN AGE ENCRYPTED FILE-----'* ]] && return
     while IFS= read -r path; do
         quoted=$(printf %q "$path")
         [[ $quoted == "$2"* ]] && printf '%s\n' "$quoted"

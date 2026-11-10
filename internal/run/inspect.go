@@ -1,6 +1,7 @@
 package run
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,7 +13,6 @@ import (
 	"reflect"
 	"strings"
 
-	"filippo.io/age"
 	"filippo.io/age/armor"
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/parser"
@@ -363,10 +363,44 @@ func readSecret(in io.Reader, trim bool) (string, error) {
 	return string(plaintext), err
 }
 
-// ListSecrets prints the path of each !age value in a config file, in the form
-// ShowSecret takes. Nothing is decrypted, so it doesn't need the identity.
-func ListSecrets(configDir, file string, out io.Writer) error {
-	secrets, err := secretsIn(configFile(configDir, file))
+// ShowSecret decrypts the !age value at a dotted path in a config file,
+// e.g. "dns.mydnshost.auth_key" in "sensible.yml". With no path, it lists
+// the paths instead, which doesn't need the identity, or decrypts the file
+// if it's a whole-file secret. Relative files are in the config directory.
+func ShowSecret(configDir, file, path string, out io.Writer) error {
+	file = configFile(configDir, file)
+	content, err := os.ReadFile(file)
+	if err != nil {
+		return err
+	}
+	if bytes.HasPrefix(content, []byte(armor.Header)) {
+		if path != "" {
+			return fmt.Errorf("%s is a whole-file secret, so has no paths", file)
+		}
+		plaintext, err := decryptFile(configDir, string(content))
+		if err != nil {
+			return err
+		}
+		_, err = io.WriteString(out, plaintext)
+		return err
+	}
+	if path == "" {
+		return listSecrets(file, content, out)
+	}
+	armored, err := secretAt(file, content, path)
+	if err != nil {
+		return err
+	}
+	plaintext, err := decryptFile(configDir, armored)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(out, plaintext)
+	return err
+}
+
+func listSecrets(file string, content []byte, out io.Writer) error {
+	secrets, err := secretsIn(file, content)
 	if err != nil {
 		return err
 	}
@@ -378,28 +412,12 @@ func ListSecrets(configDir, file string, out io.Writer) error {
 	return nil
 }
 
-// ShowSecret decrypts the !age value at a dotted path in a config file,
-// e.g. "dns.mydnshost.auth_key" in "sensible.yml". Relative files are in
-// the config directory.
-func ShowSecret(configDir, file, path string, out io.Writer) error {
+func decryptFile(configDir, armored string) (string, error) {
 	repo, err := config.Open(configDir, nil)
 	if err != nil {
-		return err
+		return "", err
 	}
-	armored, err := secretAt(configFile(configDir, file), path)
-	if err != nil {
-		return err
-	}
-	identity, err := repo.CommandIdentity()()
-	if err != nil {
-		return err
-	}
-	plaintext, err := decrypt(armored, identity)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintln(out, plaintext)
-	return err
+	return repo.DecryptFile(armored)
 }
 
 func configFile(configDir, file string) string {
@@ -409,8 +427,8 @@ func configFile(configDir, file string) string {
 	return filepath.Join(configDir, file)
 }
 
-func secretAt(file, path string) (string, error) {
-	secrets, err := secretsIn(file)
+func secretAt(file string, content []byte, path string) (string, error) {
+	secrets, err := secretsIn(file, content)
 	if err != nil {
 		return "", err
 	}
@@ -427,14 +445,10 @@ type fileSecret struct {
 	armored string
 }
 
-func secretsIn(file string) ([]fileSecret, error) {
-	content, err := os.ReadFile(file)
-	if err != nil {
-		return nil, err
-	}
+func secretsIn(file string, content []byte) ([]fileSecret, error) {
 	parsed, err := parser.ParseBytes(content, 0)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: %w", file, err)
 	}
 	var secrets []fileSecret
 	for _, doc := range parsed.Docs {
@@ -484,16 +498,4 @@ func pathKey(key string) string {
 		return key
 	}
 	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(key) + "'"
-}
-
-func decrypt(armored string, identity age.Identity) (string, error) {
-	r, err := age.Decrypt(armor.NewReader(strings.NewReader(strings.TrimSpace(armored)+"\n")), identity)
-	if err != nil {
-		return "", fmt.Errorf("decrypting: %w", err)
-	}
-	b, err := io.ReadAll(r)
-	if err != nil {
-		return "", fmt.Errorf("decrypting: %w", err)
-	}
-	return string(b), nil
 }

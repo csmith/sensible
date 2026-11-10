@@ -73,18 +73,19 @@ func TestSecretAt(t *testing.T) {
 	file := filepath.Join(dir, "sensible.yml")
 	writeFile(t, file, "dns:\n  hostname: acidburn.example.com\n  auth_key: "+indentYAML(key)+"\n")
 
-	armored, err := secretAt(file, "dns.auth_key")
+	content, err := os.ReadFile(file)
+	require.NoError(t, err)
+
+	armored, err := secretAt(file, content, "dns.auth_key")
 	require.NoError(t, err)
 	assert.Contains(t, armored, "BEGIN AGE ENCRYPTED FILE")
 
-	_, err = secretAt(file, "dns.hostname")
+	_, err = secretAt(file, content, "dns.hostname")
 	assert.ErrorContains(t, err, "no !age value at dns.hostname")
 }
 
-func TestListSecrets_printsPathsThatShowSecretAccepts(t *testing.T) {
-	repo, dir, source := testRepo(t)
-	id, err := source()
-	require.NoError(t, err)
+func TestShowSecret_listsPathsThatItAccepts(t *testing.T) {
+	repo, dir, _ := testRepo(t)
 	encrypt := func(plain string) string {
 		value, err := repo.Encrypt(plain)
 		require.NoError(t, err)
@@ -111,7 +112,7 @@ func TestListSecrets_printsPathsThatShowSecretAccepts(t *testing.T) {
 	)
 	var out bytes.Buffer
 
-	require.NoError(t, ListSecrets(dir, "secrets.yml", &out))
+	require.NoError(t, ShowSecret(dir, "secrets.yml", "", &out))
 
 	paths := strings.Split(strings.TrimSpace(out.String()), "\n")
 	assert.Equal(
@@ -129,23 +130,84 @@ func TestListSecrets_printsPathsThatShowSecretAccepts(t *testing.T) {
 	)
 	values := make([]string, 0, len(paths))
 	for _, path := range paths {
-		armored, err := secretAt(file, path)
+		content, err := os.ReadFile(file)
 		require.NoError(t, err)
-		value, err := decrypt(armored, id)
+		armored, err := secretAt(file, content, path)
+		require.NoError(t, err)
+		value, err := repo.DecryptFile(armored)
 		require.NoError(t, err)
 		values = append(values, value)
 	}
 	assert.Equal(t, []string{"top", "dotted", "quoted", "apostrophe", "anchored", "replaced", "item"}, values)
 }
 
-func TestListSecrets_doesNotNeedAWorkingConfig(t *testing.T) {
+func TestShowSecret_listsNothingWithoutAWorkingConfig(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "secrets.yml"), "plain: value\n")
 	var out bytes.Buffer
 
-	require.NoError(t, ListSecrets(dir, "secrets.yml", &out))
+	require.NoError(t, ShowSecret(dir, "secrets.yml", "", &out))
 
 	assert.Empty(t, out.String())
+}
+
+func TestShowSecret_decryptsAValueAtAPath(t *testing.T) {
+	dir := secretRepo(t)
+	encrypted := encryptWith(t, dir, false, "very secret")
+	writeFile(t, filepath.Join(dir, "secrets.yml"), "key: "+indentYAML(strings.TrimSpace(encrypted))+"\n")
+	var out bytes.Buffer
+
+	require.NoError(t, ShowSecret(dir, "secrets.yml", "key", &out))
+
+	assert.Equal(t, "very secret\n", out.String())
+}
+
+func TestShowSecret_decryptsAWholeFileSecret(t *testing.T) {
+	dir := secretRepo(t)
+	writeFile(t, filepath.Join(dir, "app.env.age"), encryptWith(t, dir, true, "A=b\nC=d\n"))
+	var out bytes.Buffer
+
+	require.NoError(t, ShowSecret(dir, "app.env.age", "", &out))
+
+	assert.Equal(t, "A=b\nC=d\n", out.String())
+}
+
+func TestShowSecret_rejectsAPathInAWholeFileSecret(t *testing.T) {
+	dir := secretRepo(t)
+	writeFile(t, filepath.Join(dir, "app.env.age"), encryptWith(t, dir, true, "A=b\n"))
+	var out bytes.Buffer
+
+	err := ShowSecret(dir, "app.env.age", "A", &out)
+
+	require.ErrorContains(t, err, "whole-file secret")
+	assert.Empty(t, out.String())
+}
+
+// secretRepo is a config directory whose identity_command prints the
+// identity its secrets are encrypted to, as ShowSecret uses the configured
+// identity.
+func secretRepo(t *testing.T) string {
+	t.Helper()
+	id, err := age.GenerateX25519Identity()
+	require.NoError(t, err)
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "identity.txt"), id.String()+"\n")
+	writeFile(t, filepath.Join(dir, "hosts.d", "acidburn.yml"), "acidburn:\n  address: 192.0.2.1\n")
+	writeFile(
+		t,
+		filepath.Join(dir, "sensible.yml"),
+		"secrets:\n"+
+			"  recipients: ["+id.Recipient().String()+"]\n"+
+			"  identity_command: [cat, "+filepath.Join(dir, "identity.txt")+"]\n",
+	)
+	return dir
+}
+
+func encryptWith(t *testing.T, dir string, raw bool, plaintext string) string {
+	t.Helper()
+	var out bytes.Buffer
+	require.NoError(t, EncryptSecret(dir, raw, strings.NewReader(plaintext), &out))
+	return out.String()
 }
 
 func TestRunnerRender_textShowsFilesInFullAndTheRestOnALine(t *testing.T) {

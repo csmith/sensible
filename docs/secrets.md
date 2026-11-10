@@ -64,14 +64,16 @@ shows.
 ## Reading a secret back
 
 `sensible secret show <file>` lists the `!age` values in a configuration file,
-and `sensible secret show <file> <path>` decrypts one. Relative files are in
-the configuration directory.
+and `sensible secret show <file> <path>` decrypts one. Given a whole-file
+secret, such as a stack's `.age` file, `sensible secret show <file>` decrypts
+the file. Relative files are in the configuration directory.
 
 ```sh
 $ sensible secret show sensible.yml
 dns.mydnshost.auth_user
 dns.mydnshost.auth_key
 $ sensible secret show sensible.yml dns.mydnshost.auth_key
+$ sensible secret show roles/app/app.env.age
 ```
 
 ## Generated values

@@ -264,6 +264,16 @@ func (r *Repo) EncryptFile(plaintext string) (string, error) {
 	return s.armored, err
 }
 
+// DecryptFile decrypts an ASCII-armored age file, as EncryptFile returns.
+func (r *Repo) DecryptFile(armored string) (string, error) {
+	secret, err := parseArmored(armored)
+	if err != nil {
+		return "", err
+	}
+	secret.keys = r.keys
+	return secret.Reveal()
+}
+
 func (r *Repo) encryptSecret(plaintext string) (Secret, error) {
 	if len(r.recipients) == 0 {
 		return Secret{}, errors.New("no secrets.recipients in sensible.yml")

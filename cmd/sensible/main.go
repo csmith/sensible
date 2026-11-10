@@ -28,7 +28,8 @@ Commands:
   facts [hosts...]
   render [hosts...] [--facts file] [--json]
   secret encrypt [--raw]
-  secret show <file> [path]
+  secret show <file>          List a file's !age paths, or decrypt a .age file
+  secret show <file> <path>   Decrypt the !age value at path
   agent
 
 Flags:
@@ -129,7 +130,7 @@ func command(ctx context.Context, name string, args []string) error {
 	case name == "secret" && len(args) == 1 && args[0] == "encrypt":
 		return run.EncryptSecret(*configDir, *raw, os.Stdin, os.Stdout)
 	case name == "secret" && len(args) == 2 && args[0] == "show":
-		return run.ListSecrets(*configDir, args[1], os.Stdout)
+		return run.ShowSecret(*configDir, args[1], "", os.Stdout)
 	case name == "secret" && len(args) == 3 && args[0] == "show":
 		return run.ShowSecret(*configDir, args[1], args[2], os.Stdout)
 	default:

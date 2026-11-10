@@ -11,8 +11,12 @@ _sensible_hosts() {
 
 _sensible_secrets() {
   local file=${${(Q)line[2]}/#\~/$HOME}
-  local expl
+  local expl src=$file first
   local -a secrets
+  # Showing a whole-file secret would decrypt it.
+  [[ $src == /* ]] || src=${sensible_config/#\~/$HOME}/$src
+  IFS= read -r first 2>/dev/null <$src
+  [[ $first == '-----BEGIN AGE ENCRYPTED FILE-----'* ]] && return 1
   secrets=(${(f)"$($sensible_bin --config ${sensible_config/#\~/$HOME} secret show $file 2>/dev/null)"})
   (( $#secrets )) || return 1
   _wanted secrets expl secret compadd -a secrets
