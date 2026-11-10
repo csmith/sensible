@@ -783,6 +783,21 @@ func TestExecute_oidcClientLosesAHost(t *testing.T) {
 	assert.Contains(t, f.records["acidburn"], "app")
 }
 
+func TestExecute_oidcClientLosesItsCallbackURLs(t *testing.T) {
+	f := newOIDCFixture(t)
+	machine := testClient
+	machine.CallbackURLs = nil
+	f.declared["acidburn"] = map[string]config.OIDCClientConfig{"app": machine}
+	f.existing("app", nil, "ours")
+	f.manage("app", "ours")
+
+	err := f.runner.Execute(t.Context(), []target{f.target("acidburn", &fakeAgent{})}, true)
+
+	require.NoError(t, err)
+	assert.Contains(t, f.out.String(), "  ~ client app  callback_urls: https://app.example.com/callback → none\n")
+	assert.Equal(t, []any{}, f.pocketID.clients["app"]["callbackURLs"])
+}
+
 func TestExecute_oidcClientSharedWithAHostOutsideTheRunIsntPlanned(t *testing.T) {
 	f := newOIDCFixture(t)
 	f.declared["acidburn"] = map[string]config.OIDCClientConfig{"app": testClient}

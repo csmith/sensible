@@ -1202,6 +1202,17 @@ func TestHostConfig_oidcClientSecretMayBeTheOnlyUse(t *testing.T) {
 	assert.Equal(t, c.Stacks[0].Generated["other"], c.OIDCClients["app"].SecretValue)
 }
 
+func TestHostConfig_oidcClientWithoutCallbackURLsUsesOnlyClientCredentials(t *testing.T) {
+	files := readTestTree(t, "oidc-clients")
+	files["roles/app/role.yml"] = "oidc_clients:\n  app:\n    secret: !generated other\n"
+
+	c, err := newTestRepo(t, files).open(t).HostConfig("alpha", "debian")
+
+	require.NoError(t, err)
+	assert.Empty(t, c.OIDCClients["app"].CallbackURLs)
+	assert.Equal(t, c.Stacks[0].Generated["other"], c.OIDCClients["app"].SecretValue)
+}
+
 func TestHostConfig_oidcClientSecretWithALength(t *testing.T) {
 	files := readTestTree(t, "oidc-clients")
 	files["roles/app/role.yml"] = oidcClientYAML("    secret: !generated other 48\n")
@@ -1295,9 +1306,25 @@ func TestHostConfig_oidcClientErrors(t *testing.T) {
 			"expected a !generated or !age value",
 		},
 		{
-			"no callback URLs",
-			map[string]string{"roles/app/role.yml": "oidc_clients:\n  app:\n    secret: !generated x\n"},
-			"oidc_clients.app: needs callback_urls",
+			"public without callback URLs",
+			map[string]string{"roles/app/role.yml": "oidc_clients:\n  app:\n    public: true\n"},
+			"oidc_clients.app: a public client needs callback_urls",
+		},
+		{
+			"logout callback URLs without callback URLs",
+			map[string]string{
+				"roles/app/role.yml": "oidc_clients:\n  app:\n    secret: !generated x\n" +
+					"    logout_callback_urls: [https://app.example.com/]\n",
+			},
+			"oidc_clients.app: logout_callback_urls needs callback_urls",
+		},
+		{
+			"launch URL without callback URLs",
+			map[string]string{
+				"roles/app/role.yml": "oidc_clients:\n  app:\n    secret: !generated x\n" +
+					"    launch_url: https://app.example.com/\n",
+			},
+			"oidc_clients.app: launch_url needs callback_urls",
 		},
 		{
 			"confidential without a secret",

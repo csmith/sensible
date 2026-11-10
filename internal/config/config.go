@@ -369,9 +369,11 @@ type KeptConfig struct {
 // OIDCClientConfig is a client of sensible.yml's OIDC provider.
 type OIDCClientConfig struct {
 	// Name defaults to the client ID.
-	Name               string `yaml:"name"`
-	CallbackURLs       Set    `yaml:"callback_urls"`
-	LogoutCallbackURLs Set    `yaml:"logout_callback_urls"`
+	Name string `yaml:"name"`
+	// CallbackURLs may only be empty for a confidential client that never
+	// signs anyone in, and only uses client credentials.
+	CallbackURLs       Set `yaml:"callback_urls"`
+	LogoutCallbackURLs Set `yaml:"logout_callback_urls"`
 	// Public clients have no secret, and always use PKCE.
 	Public bool `yaml:"public"`
 	PKCE   bool `yaml:"pkce"`
@@ -463,9 +465,16 @@ func (c *Config) finishOIDCClients() error {
 			}
 			placeholder = client.SecretValue == s.Placeholder()
 		}
+		// A confidential client without callback URLs can't sign anyone
+		// in, and only gets tokens as itself, with client credentials.
+		noLogin := len(client.CallbackURLs) == 0
 		switch {
-		case len(client.CallbackURLs) == 0:
-			return fmt.Errorf("oidc_clients.%s: needs callback_urls", id)
+		case noLogin && client.Public:
+			return fmt.Errorf("oidc_clients.%s: a public client needs callback_urls", id)
+		case noLogin && len(client.LogoutCallbackURLs) > 0:
+			return fmt.Errorf("oidc_clients.%s: logout_callback_urls needs callback_urls", id)
+		case noLogin && client.LaunchURL != "":
+			return fmt.Errorf("oidc_clients.%s: launch_url needs callback_urls", id)
 		case client.Public && !client.Secret.IsZero():
 			return fmt.Errorf("oidc_clients.%s: a public client has no secret", id)
 		case !client.Public && client.Secret.IsZero():

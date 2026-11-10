@@ -525,12 +525,8 @@ func (c *oidcChange) planSettings(existing *oidcClient, label string) {
 		before, after string
 	}{
 		{"name", existing.name, want.name},
-		{"callback_urls", strings.Join(existing.callbackURLs, ", "), strings.Join(want.callbackURLs, ", ")},
-		{
-			"logout_callback_urls",
-			strings.Join(existing.logoutCallbackURLs, ", "),
-			strings.Join(want.logoutCallbackURLs, ", "),
-		},
+		{"callback_urls", urlList(existing.callbackURLs), urlList(want.callbackURLs)},
+		{"logout_callback_urls", urlList(existing.logoutCallbackURLs), urlList(want.logoutCallbackURLs)},
 		{"public", strconv.FormatBool(existing.public), strconv.FormatBool(want.public)},
 		{"pkce", strconv.FormatBool(existing.pkce), strconv.FormatBool(want.pkce)},
 		{"skip_consent", strconv.FormatBool(existing.skipConsent), strconv.FormatBool(want.skipConsent)},
@@ -545,6 +541,8 @@ func (c *oidcChange) planSettings(existing *oidcClient, label string) {
 		}
 	}
 }
+
+func urlList(urls []string) string { return cmp.Or(strings.Join(urls, ", "), "none") }
 
 // oidcLogo is a client logo to upload, with the hash that's recorded for it.
 type oidcLogo struct {

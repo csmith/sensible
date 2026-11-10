@@ -16,16 +16,16 @@ oidc:
 
 ## Clients
 
-`oidc_clients` sets up clients, by client ID. Each needs `callback_urls`. A
-confidential client's `secret` is a `!generated` value of the role's stack,
-which the stack can use too, or an `!age` secret, and it's the only secret the
-client keeps. Public clients have no secret, and always use PKCE. `name`
-defaults to the client ID, and without `groups` any user can sign in. With
-`skip_consent: true`, signed-in users go straight back to the client instead
-of being asked to approve it first, which needs Pocket ID 2.10 or later.
-`launch_url` is where the provider's app list sends users, and `logo` and
-`dark_logo` are images in the `files` directory of the role or partial that
-declares the client. Without them, the client keeps what it has.
+`oidc_clients` sets up clients, by client ID, with the URLs users sign in
+through in `callback_urls`. A confidential client's `secret` is a `!generated`
+value of the role's stack, which the stack can use too, or an `!age` secret,
+and it's the only secret the client keeps. Public clients have no secret, and
+always use PKCE. `name` defaults to the client ID, and without `groups` any
+user can sign in. With `skip_consent: true`, signed-in users go straight back
+to the client instead of being asked to approve it first, which needs Pocket
+ID 2.10 or later. `launch_url` is where the provider's app list sends users,
+and `logo` and `dark_logo` are images in the `files` directory of the role or
+partial that declares the client. Without them, the client keeps what it has.
 
 ```yaml
 # roles/grafana/role.yml
@@ -44,6 +44,24 @@ oidc_clients:
 compose:
   env:
     OIDC_CLIENT_SECRET: !generated oidc_secret
+```
+
+A confidential client without `callback_urls` can't sign anyone in, so it
+can't have `logout_callback_urls` or a `launch_url`. It only gets tokens as
+itself, with client credentials, for the [APIs](#apis) that grant it access.
+That suits a daemon or script calling an API, which may run outside any stack
+and so need an `!age` secret.
+
+```yaml
+# roles/pocketbase/role.yml
+oidc_clients:
+  backup:
+    secret: !age ...
+
+oidc_apis:
+  https://pb.example.com:
+    clients:
+      backup: []
 ```
 
 Several hosts can declare the same client, such as a service with an instance
