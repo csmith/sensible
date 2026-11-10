@@ -675,6 +675,27 @@ func TestHostConfig_generatedLengths(t *testing.T) {
 	require.ErrorContains(t, err, "generated value b is saved with 39 characters, fewer than the 40 asked for")
 }
 
+func TestHostConfig_previewSavedGeneratedWithoutIdentity(t *testing.T) {
+	tr := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml":            "alpha:\n  roles: {web: }\n",
+			"roles/web/docker-compose.yml": "services: {}\n",
+			"roles/web/role.yml":           "compose:\n  env: {KEY: !generated key 48}\n",
+		},
+	)
+	saved := map[string]string{"key": strings.Repeat("k", 48)}
+	require.NoError(t, tr.open(t).SaveGenerated("alpha", []Stack{{Name: "web", Generated: saved}}))
+
+	r, err := Open(tr.dir, func() (age.Identity, error) { return nil, errors.New("locked") })
+	require.NoError(t, err)
+	r.Preview(nil)
+	c, err := r.HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	assert.Empty(t, c.Stacks[0].Generated)
+	assert.Regexp(t, `KEY='<age:[0-9a-f]{8}>'`, stackFile(t, c.Stacks[0], ".env").Content)
+}
+
 func TestHostConfig_previewDoesNotGenerate(t *testing.T) {
 	r := newGeneratedRepo(t).open(t)
 	r.Preview(nil)

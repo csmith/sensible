@@ -203,7 +203,9 @@ func (g *generator) value(tag *ast.TagNode) (string, error) {
 		if err != nil {
 			return "", nodeError(tag, fmt.Sprintf("generated value %s: %v", name, err))
 		}
-		if len(value) < length {
+		// Without the identity, the value is a placeholder of its own
+		// length, so the saved length can't be checked.
+		if value != s.Placeholder() && len(value) < length {
 			return "", nodeError(
 				tag,
 				fmt.Sprintf(
