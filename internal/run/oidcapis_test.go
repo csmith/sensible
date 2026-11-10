@@ -291,8 +291,8 @@ func TestExecute_oidcAPIChangedByHandIsPutBack(t *testing.T) {
 			"  ~ "+label+"permission write\n"+
 			"  - "+label+"permission admin\n"+
 			"  ~ "+label+"client app: admin, read → read, write\n"+
-			"  ~ "+label+"client both: read; for users → read\n"+
-			"  ~ "+label+"client users: for users → read\n"+
+			"  ~ "+label+"client both: read; for users: read → read\n"+
+			"  ~ "+label+"client users: for users: read → read\n"+
 			"  - "+label+"client other\n",
 	)
 	a := f.pocketID.apis[testIdentifier]
@@ -314,6 +314,46 @@ func TestExecute_oidcAPIChangedByHandIsPutBack(t *testing.T) {
 		)
 	}
 	assert.NotContains(t, f.pocketID.grants["pb"], "other")
+}
+
+func TestExecute_oidcAPIGrantsAccessOnBehalfOfUsers(t *testing.T) {
+	f := newOIDCFixture(t)
+	f.existing("app", nil, "ours")
+	f.existing("both", nil, "ours")
+	f.existing("public", map[string]any{"isPublic": true}, "ours")
+	f.existingAPI(
+		func(*fakeAPI) {
+			f.pocketID.grants["pb"]["both"] = fakeGrant{user: true, userPermissions: []string{"p-read"}}
+		},
+	)
+	f.manageAPI()
+	api := testAPI
+	api.Clients = map[string]config.Set{"app": {"read"}, "both": {"write"}}
+	api.Users = map[string]config.Set{"public": {"read", "write"}, "both": {"read"}}
+	f.declaredAPIs["acidburn"] = map[string]config.OIDCAPIConfig{testIdentifier: api}
+
+	err := f.runner.Execute(t.Context(), []target{f.target("acidburn", &fakeAgent{})}, true)
+
+	require.NoError(t, err)
+	label := "api " + testIdentifier + "  "
+	assert.Contains(
+		t,
+		f.out.String(),
+		"> Resolving OIDC changes\n"+
+			"  ~ "+label+"client both: for users: read → write; for users: read\n"+
+			"  + "+label+"client public: for users: read, write\n\n",
+	)
+	assert.Equal(
+		t,
+		fakeGrant{user: true, userPermissions: []string{"p-read", "p-write"}, clientPermissions: []string{}},
+		f.pocketID.grants["pb"]["public"],
+	)
+	assert.Equal(
+		t,
+		fakeGrant{user: true, client: true, userPermissions: []string{"p-read"}, clientPermissions: []string{"p-write"}},
+		f.pocketID.grants["pb"]["both"],
+	)
+	assert.Equal(t, []string{"read"}, f.pocketID.grantedKeys(testIdentifier, "app"))
 }
 
 func TestExecute_oidcAPIMadeByHandIsTakenOver(t *testing.T) {
@@ -384,6 +424,15 @@ func TestExecute_oidcAPIPlanErrors(t *testing.T) {
 				f.declaredAPIs["acidburn"] = map[string]config.OIDCAPIConfig{testIdentifier: testAPI}
 			},
 			"api " + testIdentifier + ": client app is public, so it can't use client credentials",
+		},
+		{
+			"client for users that doesn't exist",
+			func(f *oidcFixture) {
+				api := testAPI
+				api.Clients, api.Users = nil, map[string]config.Set{"app": nil}
+				f.declaredAPIs["acidburn"] = map[string]config.OIDCAPIConfig{testIdentifier: api}
+			},
+			"api " + testIdentifier + ": no OIDC client app to grant access to",
 		},
 		{
 			"declared by two hosts",

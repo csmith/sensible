@@ -1407,7 +1407,9 @@ func TestHostConfig_oidcAPIGrantsMergeAcrossRoles(t *testing.T) {
 			"      write: {description: Change records}\n" +
 			"    clients:\n" +
 			"      backup:\n",
-		"roles/app/role.yml": "oidc_apis:\n  https://pb.example.net/:\n    clients:\n      app: [read, write]\n",
+		"roles/app/role.yml": "oidc_apis:\n  https://pb.example.net/:\n" +
+			"    clients:\n      app: [read, write]\n" +
+			"    users:\n      app: [read]\n",
 	}
 
 	c, err := newTestRepo(t, files).open(t).HostConfig("alpha", "debian")
@@ -1423,6 +1425,7 @@ func TestHostConfig_oidcAPIGrantsMergeAcrossRoles(t *testing.T) {
 					"write": {Name: "write", Description: "Change records"},
 				},
 				Clients: map[string]Set{"app": {"read", "write"}, "backup": nil},
+				Users:   map[string]Set{"app": {"read"}},
 			},
 		},
 		c.OIDCAPIs,
@@ -1439,6 +1442,11 @@ func TestHostConfig_oidcAPIErrors(t *testing.T) {
 			"grant of an undeclared permission",
 			"oidc_apis:\n  https://pb.example.net:\n    clients:\n      app: [read]\n",
 			`oidc_apis.https://pb.example.net.clients.app: no permission "read"`,
+		},
+		{
+			"user grant of an undeclared permission",
+			"oidc_apis:\n  https://pb.example.net:\n    users:\n      app: [read]\n",
+			`oidc_apis.https://pb.example.net.users.app: no permission "read"`,
 		},
 		{
 			"identifier declared twice",

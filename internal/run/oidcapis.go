@@ -25,12 +25,29 @@ type oidcPermission struct {
 	id, key, name, description string
 }
 
-// oidcGrant is what a client may do with an API, either on behalf of its
-// users or as itself, with client credentials.
+// oidcGrant is what a client may do with an API: as itself, with client
+// credentials, and on behalf of its users, each with permissions.
 type oidcGrant struct {
-	user        bool
-	client      bool
-	permissions []string
+	client, user                       bool
+	clientPermissions, userPermissions []string
+}
+
+func (g oidcGrant) equal(o oidcGrant) bool {
+	return g.client == o.client && g.user == o.user &&
+		slices.Equal(g.clientPermissions, o.clientPermissions) &&
+		slices.Equal(g.userPermissions, o.userPermissions)
+}
+
+// description describes the grant, whose permissions are keys.
+func (g oidcGrant) description() string {
+	var parts []string
+	if g.client {
+		parts = append(parts, cmp.Or(strings.Join(g.clientPermissions, ", "), "no permissions"))
+	}
+	if g.user {
+		parts = append(parts, "for users: "+cmp.Or(strings.Join(g.userPermissions, ", "), "no permissions"))
+	}
+	return cmp.Or(strings.Join(parts, "; "), "none")
 }
 
 // planAPIs plans the declared APIs. A client may be granted access if it's
@@ -77,10 +94,10 @@ type oidcAPIChange struct {
 	from       *hostRun
 	identifier string
 	want       oidcAPI
-	// grants are the keys of the permissions each client should have, in
-	// order, by client ID. Those in grant are granted them, and those in
+	// grants are what each client should have, with permission keys in
+	// order, by client ID. Those in grant are granted it, and those in
 	// revoke lose access.
-	grants        map[string][]string
+	grants        map[string]oidcGrant
 	grant, revoke []string
 	// permissionIDs are the existing permissions' IDs, by key.
 	permissionIDs map[string]string
@@ -106,7 +123,7 @@ func planAPI(
 		from:       from,
 		identifier: identifier,
 		want:       oidcAPI{name: cfg.Name},
-		grants:     map[string][]string{},
+		grants:     map[string]oidcGrant{},
 	}
 	for _, key := range slices.Sorted(maps.Keys(cfg.Permissions)) {
 		perm := cfg.Permissions[key]
@@ -116,6 +133,14 @@ func planAPI(
 		)
 	}
 	for _, client := range slices.Sorted(maps.Keys(cfg.Clients)) {
+		c.grants[client] = oidcGrant{client: true, clientPermissions: sortedSet(cfg.Clients[client])}
+	}
+	for _, client := range slices.Sorted(maps.Keys(cfg.Users)) {
+		g := c.grants[client]
+		g.user, g.userPermissions = true, sortedSet(cfg.Users[client])
+		c.grants[client] = g
+	}
+	for _, client := range slices.Sorted(maps.Keys(c.grants)) {
 		public, ok := planned[client]
 		if !ok {
 			found, err := provider.Client(ctx, client)
@@ -127,10 +152,9 @@ func planAPI(
 			}
 			public = found.public
 		}
-		if public {
+		if public && c.grants[client].client {
 			return nil, fmt.Errorf("client %s is public, so it can't use client credentials", client)
 		}
-		c.grants[client] = slices.Sorted(slices.Values(cfg.Clients[client]))
 	}
 
 	if existing == nil {
@@ -198,12 +222,20 @@ func (c *oidcAPIChange) planPermissions(existing *oidcAPI) {
 	}
 }
 
-// planGrants notes the clients whose access to the API isn't what's
-// declared: only to call it as themselves, with the declared permissions.
+// planGrants notes the clients whose access to the API isn't exactly
+// what's declared.
 func (c *oidcAPIChange) planGrants(existing *oidcAPI, grants map[string]oidcGrant) {
 	keys := map[string]string{}
 	for _, perm := range existing.permissions {
 		keys[perm.id] = perm.key
+	}
+	toKeys := func(ids []string) []string {
+		out := make([]string, len(ids))
+		for i, id := range ids {
+			out[i] = cmp.Or(keys[id], id)
+		}
+		slices.Sort(out)
+		return out
 	}
 	for _, client := range slices.Sorted(maps.Keys(c.grants)) {
 		want := c.grants[client]
@@ -211,25 +243,18 @@ func (c *oidcAPIChange) planGrants(existing *oidcAPI, grants map[string]oidcGran
 		g, ok := grants[client]
 		if !ok {
 			c.grant = append(c.grant, client)
-			if len(want) > 0 {
-				label += ": " + strings.Join(want, ", ")
+			if want.user || len(want.clientPermissions) > 0 {
+				label += ": " + want.description()
 			}
 			c.lines = append(c.lines, "+"+label)
 			continue
 		}
-		have := make([]string, len(g.permissions))
-		for i, id := range g.permissions {
-			have[i] = cmp.Or(keys[id], id)
-		}
-		slices.Sort(have)
-		if g.client && !g.user && slices.Equal(have, want) {
+		g.clientPermissions, g.userPermissions = toKeys(g.clientPermissions), toKeys(g.userPermissions)
+		if g.equal(want) {
 			continue
 		}
 		c.grant = append(c.grant, client)
-		c.lines = append(
-			c.lines,
-			"~"+label+": "+grantDescription(g.client, have, g.user)+" → "+grantDescription(true, want, false),
-		)
+		c.lines = append(c.lines, "~"+label+": "+g.description()+" → "+want.description())
 	}
 	for _, client := range slices.Sorted(maps.Keys(grants)) {
 		if _, ok := c.grants[client]; !ok {
@@ -237,19 +262,6 @@ func (c *oidcAPIChange) planGrants(existing *oidcAPI, grants map[string]oidcGran
 			c.lines = append(c.lines, "- api "+c.identifier+"  client "+client)
 		}
 	}
-}
-
-// grantDescription describes a client's access: with client credentials,
-// with the permissions with the keys, and for users.
-func grantDescription(client bool, keys []string, user bool) string {
-	var parts []string
-	if client {
-		parts = append(parts, cmp.Or(strings.Join(keys, ", "), "no permissions"))
-	}
-	if user {
-		parts = append(parts, "for users")
-	}
-	return cmp.Or(strings.Join(parts, "; "), "none")
 }
 
 func (c *oidcAPIChange) apply(ctx context.Context) error {
@@ -273,15 +285,15 @@ func (c *oidcAPIChange) apply(ctx context.Context) error {
 		}
 	}
 	for _, client := range c.grant {
-		var ids []string
-		for _, key := range c.grants[client] {
-			pid, ok := permissionIDs[key]
-			if !ok {
-				return fmt.Errorf("client %s: the provider has no permission %s", client, key)
-			}
-			ids = append(ids, pid)
+		g := c.grants[client]
+		var err error
+		if g.clientPermissions, err = permissionIDList(permissionIDs, g.clientPermissions); err == nil {
+			g.userPermissions, err = permissionIDList(permissionIDs, g.userPermissions)
 		}
-		if err := p.Grant(ctx, id, client, ids); err != nil {
+		if err == nil {
+			err = p.Grant(ctx, id, client, g)
+		}
+		if err != nil {
 			return fmt.Errorf("client %s: %w", client, err)
 		}
 	}
@@ -299,6 +311,19 @@ func (c *oidcAPIChange) apply(ctx context.Context) error {
 		return c.host.oidc.saveAPI(c.identifier)
 	}
 	return nil
+}
+
+// permissionIDList is the IDs of the permissions with the keys.
+func permissionIDList(ids map[string]string, keys []string) ([]string, error) {
+	var out []string
+	for _, key := range keys {
+		id, ok := ids[key]
+		if !ok {
+			return nil, fmt.Errorf("the provider has no permission %s", key)
+		}
+		out = append(out, id)
+	}
+	return out, nil
 }
 
 // findUnusedOIDCAPIs offers the APIs sensible manages for the host that it

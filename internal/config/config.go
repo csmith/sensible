@@ -503,9 +503,13 @@ type OIDCAPIConfig struct {
 	// Name defaults to the identifier.
 	Name        string                          `yaml:"name"`
 	Permissions map[string]OIDCPermissionConfig `yaml:"permissions"`
-	// Clients are the IDs of the OIDC clients that may call the API, each
-	// with the keys of the permissions it's granted.
+	// Clients are the IDs of the OIDC clients that may call the API as
+	// themselves, with client credentials, each with the keys of the
+	// permissions it's granted.
 	Clients map[string]Set `yaml:"clients"`
+	// Users are the IDs of the OIDC clients that may call the API on behalf
+	// of signed-in users, each with the keys of the permissions it's granted.
+	Users map[string]Set `yaml:"users"`
 }
 
 type OIDCPermissionConfig struct {
@@ -539,10 +543,15 @@ func (c *Config) finishOIDCAPIs() error {
 				api.Permissions[key] = p
 			}
 		}
-		for _, client := range slices.Sorted(maps.Keys(api.Clients)) {
-			for _, key := range api.Clients[client] {
-				if _, ok := api.Permissions[key]; !ok {
-					return fmt.Errorf("oidc_apis.%s.clients.%s: no permission %q", id, client, key)
+		for _, g := range []struct {
+			field  string
+			grants map[string]Set
+		}{{"clients", api.Clients}, {"users", api.Users}} {
+			for _, client := range slices.Sorted(maps.Keys(g.grants)) {
+				for _, key := range g.grants[client] {
+					if _, ok := api.Permissions[key]; !ok {
+						return fmt.Errorf("oidc_apis.%s.%s.%s: no permission %q", id, g.field, client, key)
+					}
 				}
 			}
 		}

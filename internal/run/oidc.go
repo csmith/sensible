@@ -62,9 +62,9 @@ type oidcAPIAdmin interface {
 	) (map[string]string, error)
 	// Grants are the clients that may call the API, by client ID.
 	Grants(ctx context.Context, id string) (map[string]oidcGrant, error)
-	// Grant lets the client call the API as itself, with client
-	// credentials, with the permissions, and nothing else.
-	Grant(ctx context.Context, id, clientID string, permissionIDs []string) error
+	// Grant replaces the client's access with g, whose permissions
+	// are IDs.
+	Grant(ctx context.Context, id, clientID string, g oidcGrant) error
 	Revoke(ctx context.Context, id, clientID string) error
 	// DeleteAPI succeeds if the API is already gone.
 	DeleteAPI(ctx context.Context, id string) error

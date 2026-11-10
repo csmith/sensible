@@ -292,9 +292,10 @@ func (p *pocketID) Grants(ctx context.Context, id string) (map[string]oidcGrant,
 		apiPath(id)+"/clients",
 		func(a access) {
 			g := oidcGrant{
-				user:        a.UserDelegatedAccess || len(a.UserDelegatedPermissionIDs) > 0,
-				client:      a.ClientAccess || len(a.ClientPermissionIDs) > 0,
-				permissions: slices.Sorted(slices.Values(a.ClientPermissionIDs)),
+				client:            a.ClientAccess || len(a.ClientPermissionIDs) > 0,
+				user:              a.UserDelegatedAccess || len(a.UserDelegatedPermissionIDs) > 0,
+				clientPermissions: a.ClientPermissionIDs,
+				userPermissions:   a.UserDelegatedPermissionIDs,
 			}
 			if g.user || g.client {
 				grants[a.Client.ID] = g
@@ -304,12 +305,12 @@ func (p *pocketID) Grants(ctx context.Context, id string) (map[string]oidcGrant,
 	return grants, err
 }
 
-func (p *pocketID) Grant(ctx context.Context, id, clientID string, permissionIDs []string) error {
+func (p *pocketID) Grant(ctx context.Context, id, clientID string, g oidcGrant) error {
 	body := map[string]any{
-		"userDelegatedAccess":        false,
-		"clientAccess":               true,
-		"userDelegatedPermissionIds": []string{},
-		"clientPermissionIds":        nonNil(permissionIDs),
+		"userDelegatedAccess":        g.user,
+		"clientAccess":               g.client,
+		"userDelegatedPermissionIds": nonNil(g.userPermissions),
+		"clientPermissionIds":        nonNil(g.clientPermissions),
 	}
 	return p.do(ctx, http.MethodPut, apiPath(id)+"/clients/"+url.PathEscape(clientID), body, nil)
 }
