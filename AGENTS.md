@@ -2,7 +2,8 @@
 
 sensible is a Go tool that configures Linux hosts. A controller reads YAML
 config, plans each host's resources, and sends them to an agent on the host
-over SSH (the same binary, run as `sensible agent`). See the README for usage.
+over SSH (the same binary, run as `sensible agent`). The README introduces it
+and `docs/` explains how it's used.
 
 ## Layout
 
@@ -14,6 +15,7 @@ over SSH (the same binary, run as `sensible agent`). See the README for usage.
   controller-agent protocol.
 - `internal/run`: the controller, including bootstrap, planning, transports and
   agent builds.
+- `docs`: user documentation, one page per subject area.
 - `test/containers`: disposable Debian and Arch hosts to try changes against.
 
 ## Checks
@@ -36,4 +38,6 @@ To exercise a change on real hosts, follow the instructions at the top of
 - Bump `host.ProtocolVersion` whenever a message or resource changes. `Hello`
   and `Upgrade` must never change shape, so any controller can upgrade any agent.
 - Keep `completions/` in step with the commands and flags in `cmd/sensible`.
+- Keep `docs/` in step with config fields, features and commands: a change to
+  what users write or run changes the page that covers it.
 - Features must handle both Debian and Arch hosts.
