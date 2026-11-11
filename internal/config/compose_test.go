@@ -1284,6 +1284,78 @@ func TestHostConfig_oidcClientAgeSecretPreviewsWithoutTheIdentity(t *testing.T) 
 	assert.Regexp(t, `^<age:[0-9a-f]{8}>$`, c.OIDCClients["app"].SecretValue)
 }
 
+func TestHostConfig_oidcClientSecretLengthIsCheckedOnlyForRealValues(t *testing.T) {
+	locked := func() (age.Identity, error) { return nil, errors.New("locked") }
+	short := strings.Repeat("s", 15)
+	tests := []struct {
+		name   string
+		secret string
+		// saved, if set, is the !generated value saved for the host.
+		saved string
+		// value is what an !age secret holds.
+		value string
+	}{
+		{name: "saved generated secret", secret: "!generated x", saved: short},
+		{name: "unsaved generated secret", secret: "!generated x"},
+		{name: "age secret", value: short},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				tr := newTestRepo(
+					t,
+					map[string]string{
+						"hosts.d/hosts.yml":            "alpha:\n  roles: {app: }\n",
+						"roles/app/docker-compose.yml": "services: {}\n",
+						"roles/app/role.yml":           "",
+					},
+				)
+				secret := tt.secret
+				if tt.value != "" {
+					encrypted, err := tr.open(t).Encrypt(tt.value)
+					require.NoError(t, err)
+					secret = strings.ReplaceAll(encrypted, "\n", "\n    ")
+				}
+				tr.write(t, "roles/app/role.yml", oidcClientYAML("    secret: "+secret+"\n"))
+				if tt.saved != "" {
+					saved := map[string]string{"x": tt.saved}
+					require.NoError(t, tr.open(t).SaveGenerated("alpha", []Stack{{Name: "app", Generated: saved}}))
+				}
+
+				r, err := Open(tr.dir, locked)
+				require.NoError(t, err)
+				r.Preview(nil)
+				c, err := r.HostConfig("alpha", "debian")
+				require.NoError(t, err, "a placeholder isn't checked")
+				assert.Regexp(t, `^<(age|generated):[0-9a-fx]+>$`, c.OIDCClients["app"].SecretValue)
+
+				if tt.saved != "" || tt.value != "" {
+					_, err = tr.open(t).HostConfig("alpha", "debian")
+					require.ErrorContains(t, err, "oidc_clients.app: secret must be at least 16 characters")
+				}
+			},
+		)
+	}
+}
+
+func TestHostConfig_secretLikeAPlaceholderIsCheckedOutsideAPreview(t *testing.T) {
+	tr := newTestRepo(
+		t,
+		map[string]string{
+			"hosts.d/hosts.yml":    "alpha:\n  roles: {plain: }\n",
+			"roles/plain/role.yml": "",
+		},
+	)
+	secret, err := tr.open(t).Encrypt("<age:0123abcd>")
+	require.NoError(t, err)
+	tr.write(t, "roles/plain/role.yml", oidcClientYAML("    secret: "+strings.ReplaceAll(secret, "\n", "\n    ")+"\n"))
+
+	_, err = tr.open(t).HostConfig("alpha", "debian")
+
+	require.ErrorContains(t, err, "secret must be at least 16 characters")
+}
+
 func TestHostConfig_oidcClientLogosAreReadFromTheDeclaringFilesDirectory(t *testing.T) {
 	files := readTestTree(t, "oidc-clients")
 	files["hosts.d/hosts.yml"] = "alpha:\n  roles: {app: , other: }\n"

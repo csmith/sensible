@@ -86,7 +86,7 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 		}
 		c.Stacks = append(c.Stacks, s)
 	}
-	if err := c.finishOIDCClients(); err != nil {
+	if err := c.finishOIDCClients(r.keys); err != nil {
 		return Config{}, fmt.Errorf("%s: %w", name, err)
 	}
 	if err := c.finishOIDCAPIs(); err != nil {

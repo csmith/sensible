@@ -68,6 +68,18 @@ func (s Secret) Placeholder() string {
 	return fmt.Sprintf("<age:%x>", sum[:4])
 }
 
+// placeholderValue matches every placeholder a preview reveals in place of a
+// secret: a Secret's Placeholder, and an unsaved !generated value's.
+var placeholderValue = regexp.MustCompile(`^<(?:age:[0-9a-f]{8}|generated:[A-Za-z0-9_-]+)>$`)
+
+func generatedPlaceholder(name string) string { return "<generated:" + name + ">" }
+
+// placeholder reports whether value stands in for a secret in a preview, so
+// checks of the secret's value should skip it.
+func (k *keyring) placeholder(value string) bool {
+	return k != nil && k.preview && placeholderValue.MatchString(value)
+}
+
 func (s Secret) IsZero() bool { return s.armored == "" }
 
 // UnmarshalYAML accepts a scalar tagged !age holding an armored age file.
@@ -175,9 +187,9 @@ type generator struct {
 	values map[string]string
 	// lengths are the lengths the tags asked for, by name.
 	lengths map[string]int
-	// preview gives names that aren't saved a placeholder instead of a new
-	// value.
-	preview bool
+	// keys is the Repo's keyring. In a preview, names that aren't saved get
+	// a placeholder instead of a new value.
+	keys *keyring
 	// created are the new values, which must be saved before they're used.
 	created map[string]string
 }
@@ -203,9 +215,7 @@ func (g *generator) value(tag *ast.TagNode) (string, error) {
 		if err != nil {
 			return "", nodeError(tag, fmt.Sprintf("generated value %s: %v", name, err))
 		}
-		// Without the identity, the value is a placeholder of its own
-		// length, so the saved length can't be checked.
-		if value != s.Placeholder() && len(value) < length {
+		if !g.keys.placeholder(value) && len(value) < length {
 			return "", nodeError(
 				tag,
 				fmt.Sprintf(
@@ -219,8 +229,8 @@ func (g *generator) value(tag *ast.TagNode) (string, error) {
 		g.values[name] = value
 		return value, nil
 	}
-	if g.preview {
-		g.values[name] = "<generated:" + name + ">"
+	if g.keys.preview {
+		g.values[name] = generatedPlaceholder(name)
 		return g.values[name], nil
 	}
 	if g.created == nil {

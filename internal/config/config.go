@@ -444,7 +444,7 @@ func (s ClientSecret) IsZero() bool { return s.generated == "" && s.secret.IsZer
 // finishOIDCClients sets the OIDC clients' secrets, from the stacks that
 // generated them or by revealing them, checks the clients, and fills in
 // their default names.
-func (c *Config) finishOIDCClients() error {
+func (c *Config) finishOIDCClients(keys *keyring) error {
 	clients := c.OIDCClients
 	for _, s := range c.Stacks {
 		for id, secret := range s.OIDCSecrets {
@@ -455,15 +455,11 @@ func (c *Config) finishOIDCClients() error {
 	}
 	for _, id := range slices.Sorted(maps.Keys(clients)) {
 		client := clients[id]
-		// A secret that can't be decrypted in a preview is its placeholder,
-		// which needn't be long enough.
-		placeholder := false
 		if s := client.Secret.secret; !s.IsZero() {
 			var err error
 			if client.SecretValue, err = s.Reveal(); err != nil {
 				return fmt.Errorf("oidc_clients.%s.secret: %w", id, err)
 			}
-			placeholder = client.SecretValue == s.Placeholder()
 		}
 		// A confidential client without callback URLs can't sign anyone
 		// in, and only gets tokens as itself, with client credentials.
@@ -479,7 +475,7 @@ func (c *Config) finishOIDCClients() error {
 			return fmt.Errorf("oidc_clients.%s: a public client has no secret", id)
 		case !client.Public && client.Secret.IsZero():
 			return fmt.Errorf("oidc_clients.%s: needs a !generated or !age secret, or public: true", id)
-		case !client.Public && !placeholder && len(client.SecretValue) < 16:
+		case !client.Public && !keys.placeholder(client.SecretValue) && len(client.SecretValue) < 16:
 			return fmt.Errorf("oidc_clients.%s: secret must be at least 16 characters", id)
 		}
 		if client.Name == "" {

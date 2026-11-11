@@ -403,7 +403,7 @@ func (r *Repo) renderStack(
 		def:          def,
 		params:       e.params,
 		placeholders: e.placeholders,
-		gen:          &generator{saved: generated[def.name], preview: r.keys.preview},
+		gen:          &generator{saved: generated[def.name], keys: r.keys},
 		certs:        certs,
 	}
 	compose, body, err := c.renderCompose(e)
