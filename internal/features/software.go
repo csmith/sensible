@@ -343,7 +343,14 @@ func tailscale(h Host) ([]host.Resource, error) {
 			)...,
 		)
 	}
-	return append(rs, host.TailscaleSet{Settings: settings}), nil
+	rs = append(rs, host.TailscaleSet{Settings: settings})
+	if len(settings) > 0 {
+		rs = append(rs, host.Dir{Path: host.TailscaleRecords, Owner: "root", Group: "root", Mode: 0o700})
+	}
+	for _, name := range slices.Sorted(maps.Keys(settings)) {
+		rs = append(rs, host.TailscaleRecord(name))
+	}
+	return rs, nil
 }
 
 const (

@@ -124,3 +124,10 @@ tailscale:
 
 Settings are flag names without `--`. Those sensible knows how to read back
 are only set when they differ; others are set on every apply.
+
+`tailscale set` leaves flags it isn't given as they are, so removing a
+setting, or `tailscale`, doesn't undo it: the host keeps advertising an exit
+node, say. Apply warns about settings sensible set that nothing declares any
+more, and prune offers to reset each to Tailscale's default. Prune can't
+reset a flag whose default sensible doesn't know; set it by hand, then ignore
+it.

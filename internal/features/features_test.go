@@ -665,6 +665,30 @@ func TestResources_ipForwarding(t *testing.T) {
 	}
 }
 
+func TestResources_tailscaleRecordsItsSettings(t *testing.T) {
+	h := testHost(archLinux)
+	h.Config.Tailscale.Settings = map[string]string{"ssh": "true", "accept-dns": "false"}
+	rs, err := Resources(h)
+	require.NoError(t, err)
+	got := ids(rs)
+	set := slices.Index(got, "tailscale-set")
+	require.NotEqual(t, -1, set)
+	for _, name := range []string{"ssh", "accept-dns"} {
+		record := slices.Index(got, host.TailscaleRecord(name).ID())
+		assert.Greater(t, record, set, "%s is recorded before it's set", name)
+	}
+	assert.Less(t, slices.Index(got, "dir:"+host.TailscaleRecords), slices.Index(got, host.TailscaleRecord("ssh").ID()))
+	assert.Greater(t, slices.Index(got, "disowned-tailscale"), slices.Index(got, host.TailscaleRecord("ssh").ID()))
+
+	// Once they're gone, the leftovers still come from the records.
+	h.Config.Tailscale = nil
+	rs, err = Resources(h)
+	require.NoError(t, err)
+	got = ids(rs)
+	assert.NotContains(t, got, host.TailscaleRecord("ssh").ID())
+	assert.Contains(t, got, "disowned-tailscale")
+}
+
 func TestResources_sshdReloadUnit(t *testing.T) {
 	tests := []struct {
 		osFamily string
@@ -1559,7 +1583,8 @@ func TestResources_recordsOnlyPackagesSafeToPrune(t *testing.T) {
 }
 
 // trailingDisowned returns the Disowned resources, requiring them,
-// DisownedPackages and DisownedAptSources to come after every other resource.
+// DisownedPackages, DisownedAptSources and DisownedTailscale to come after
+// every other resource.
 func trailingDisowned(t *testing.T, rs host.ResourceList) []host.Disowned {
 	t.Helper()
 	var disowned []host.Disowned
@@ -1569,7 +1594,7 @@ func trailingDisowned(t *testing.T, rs host.ResourceList) []host.Disowned {
 		case host.Disowned:
 			disowned = append(disowned, d)
 			trailing = true
-		case host.DisownedPackages, host.DisownedAptSources:
+		case host.DisownedPackages, host.DisownedAptSources, host.DisownedTailscale:
 			trailing = true
 		default:
 			require.False(t, trailing, "%s comes after a disowned resource", r.ID())

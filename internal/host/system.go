@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"maps"
+	"net/url"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -745,6 +746,89 @@ func (r TailscaleSet) Apply(ctx context.Context, sys Sys) error {
 	}
 	_, err := runOK(ctx, sys, argv(args...))
 	return err
+}
+
+// TailscaleRecords holds a TailscaleRecord for each setting sensible has
+// given `tailscale set`.
+const TailscaleRecords = "/var/lib/sensible/tailscale"
+
+// TailscaleRecord records that the named setting is set, so
+// DisownedTailscale can find it once nothing declares it.
+func TailscaleRecord(name string) File {
+	return File{Path: recordPath(TailscaleRecords, name), Owner: "root", Group: "root", Mode: 0o600, Hidden: true}
+}
+
+func (r DisownedTailscale) Check(ctx context.Context, sys Sys) (Change, error) {
+	extra, err := r.Leftovers(ctx, sys)
+	return leftoverWarning(ctx, r.ID(), extra, "no longer in tailscale.settings, so left as they are"), err
+}
+
+func (r DisownedTailscale) Apply(context.Context, Sys) error {
+	return nil
+}
+
+// Leftovers lists each undeclared setting as "tailscale setting <name>".
+func (r DisownedTailscale) Leftovers(ctx context.Context, sys Sys) ([]string, error) {
+	names, err := sys.ReadDir(TailscaleRecords)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	declared := state(ctx).declared
+	var extra []string
+	for _, file := range names {
+		name, err := url.QueryUnescape(file)
+		if err != nil || declared[recordPath(TailscaleRecords, name)] {
+			continue
+		}
+		extra = append(extra, "tailscale setting "+name)
+	}
+	return extra, nil
+}
+
+// Prune resets the setting to its default and forgets it. It only forgets
+// it if Tailscale is no longer installed, and fails for settings whose
+// default isn't known.
+func (r DisownedTailscale) Prune(ctx context.Context, sys Sys, item string) error {
+	name, ok := strings.CutPrefix(item, "tailscale setting ")
+	if !ok || name == "" {
+		return fmt.Errorf("%q isn't a tailscale setting", item)
+	}
+	value, ok := tailscaleDefaults[name]
+	if !ok {
+		return fmt.Errorf(
+			"sensible doesn't know the default for --%s; reset it with `tailscale set`, then ignore it here",
+			name,
+		)
+	}
+	_, err := runOK(ctx, sys, argv("tailscale", "set", "--"+name+"="+value))
+	if err != nil && !errors.Is(err, exec.ErrNotFound) {
+		return err
+	}
+	return sys.RemoveAll(recordPath(TailscaleRecords, name))
+}
+
+// tailscaleDefaults are the values of `tailscale set` flags on a Linux host
+// that's never been given them.
+var tailscaleDefaults = map[string]string{
+	"accept-dns":                 "true",
+	"accept-routes":              "false",
+	"advertise-connector":        "false",
+	"advertise-exit-node":        "false",
+	"advertise-routes":           "",
+	"exit-node":                  "",
+	"exit-node-allow-lan-access": "false",
+	"hostname":                   "",
+	"operator":                   "",
+	"relay-server-port":          "",
+	"shields-up":                 "false",
+	"snat-subnet-routes":         "true",
+	"ssh":                        "false",
+	"stateful-filtering":         "false",
+	"update-check":               "true",
+	"webclient":                  "false",
 }
 
 // tailscaleSettings reads `tailscale set` flags' current values from

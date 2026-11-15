@@ -124,6 +124,7 @@ var resourceTypes = registry(
 	CertRecord{},
 	CertRecords{},
 	TailscaleSet{},
+	DisownedTailscale{},
 	DockerNetwork{},
 	DockerNetworks{},
 	SystemdUnits{},
@@ -453,6 +454,12 @@ type TailscaleSet struct {
 	Settings map[string]string `json:"settings"`
 }
 
+// DisownedTailscale warns about the settings recorded in TailscaleRecords
+// that no TailscaleRecord earlier in the same run declares, as `tailscale
+// set` leaves a flag it isn't given as it is. Applying never changes them,
+// but pruning resets each to its default.
+type DisownedTailscale struct{}
+
 // KeptLeftovers keeps leftovers that match its glob patterns out of every
 // Pruner later in the same run, so they're neither warned about nor pruned.
 type KeptLeftovers struct {
@@ -524,6 +531,8 @@ func (r DockerNetworks) ID() string { return "docker-networks" }
 func (r SystemdUnits) ID() string { return "systemd-units:" + r.Prefix }
 
 func (r TailscaleSet) ID() string { return "tailscale-set" }
+
+func (r DisownedTailscale) ID() string { return "disowned-tailscale" }
 
 func (r KeptLeftovers) ID() string {
 	if r.External {

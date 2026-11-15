@@ -607,6 +607,64 @@ func TestTailscaleSet_Unavailable(t *testing.T) {
 	assert.NotErrorIs(t, err, ErrNotYetCheckable)
 }
 
+func TestDisownedTailscale_ReportsSettingsNothingDeclares(t *testing.T) {
+	sys := newTestSys(t)
+	for _, name := range []string{"ssh", "advertise-exit-node", "operator"} {
+		sys.write(TailscaleRecord(name).Path, "")
+	}
+	st := newRunState()
+	st.declare(TailscaleRecord("operator"))
+	ctx := withRunState(context.Background(), st)
+	r := DisownedTailscale{}
+
+	leftovers, err := r.Leftovers(ctx, sys)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"tailscale setting ssh", "tailscale setting advertise-exit-node"}, leftovers)
+	change, err := r.Check(ctx, sys)
+	require.NoError(t, err)
+	assert.True(t, change.InSync)
+	assert.Contains(t, change.Warning, "tailscale setting ssh\n")
+}
+
+func TestDisownedTailscale_WithoutRecords(t *testing.T) {
+	leftovers, err := DisownedTailscale{}.Leftovers(withRunState(context.Background(), newRunState()), newTestSys(t))
+	require.NoError(t, err)
+	assert.Empty(t, leftovers)
+}
+
+func TestDisownedTailscale_PruneResetsToDefault(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write(TailscaleRecord("ssh").Path, "")
+	sys.on("tailscale set *", "", 0)
+
+	require.NoError(t, DisownedTailscale{}.Prune(context.Background(), sys, "tailscale setting ssh"))
+
+	assert.Equal(t, []string{"tailscale set --ssh=false"}, sys.ran)
+	assert.False(t, sys.exists(TailscaleRecord("ssh").Path))
+}
+
+func TestDisownedTailscale_PruneKeepsRecordOnFailure(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write(TailscaleRecord("ssh").Path, "")
+	sys.write(TailscaleRecord("new-flag").Path, "")
+	sys.on("tailscale set *", "", 1)
+	r := DisownedTailscale{}
+
+	require.Error(t, r.Prune(context.Background(), sys, "tailscale setting ssh"))
+	assert.True(t, sys.exists(TailscaleRecord("ssh").Path))
+	require.ErrorContains(t, r.Prune(context.Background(), sys, "tailscale setting new-flag"), "default")
+	assert.True(t, sys.exists(TailscaleRecord("new-flag").Path))
+}
+
+func TestDisownedTailscale_PruneForgetsWithoutTailscale(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write(TailscaleRecord("ssh").Path, "")
+
+	require.NoError(t, DisownedTailscale{}.Prune(context.Background(), sys, "tailscale setting ssh"))
+
+	assert.False(t, sys.exists(TailscaleRecord("ssh").Path))
+}
+
 func TestSystemdUnits_RemovesUndeclaredUnits(t *testing.T) {
 	sys := newTestSys(t)
 	sys.write("/etc/systemd/system/sensible-keep.timer", "")
