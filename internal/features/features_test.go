@@ -421,9 +421,11 @@ func TestResources_featuresTurnOff(t *testing.T) {
 				"file:/etc/hostname",
 				"symlink:/etc/localtime",
 				"file:/etc/locale.gen",
+				"file:" + timesyncdConfDir + "/sensible.conf",
 				"service:systemd-timesyncd",
-				"owned-dir:" + timesyncdConfDir,
 			},
+			// So the servers go back to the distribution's.
+			present: []string{"owned-dir:" + timesyncdConfDir},
 		},
 		{
 			name:    "no NTP servers",
@@ -1168,6 +1170,21 @@ func TestResources_ntpRestartsOnChange(t *testing.T) {
 	assert.Equal(t, restart, d.Notify)
 	require.NotEmpty(t, d.Header)
 	assert.True(t, strings.HasPrefix(f.Content, d.Header), "the drop-in would be left for prune")
+}
+
+func TestResources_ntpUnsetStillRemovesTheDropIn(t *testing.T) {
+	h := testHost(archLinux)
+	rs, err := Resources(h)
+	require.NoError(t, err)
+	set, ok := find[host.OwnedDir](rs, "owned-dir:"+timesyncdConfDir)
+	require.True(t, ok)
+
+	h.Config.NTP = nil
+	rs, err = Resources(h)
+	require.NoError(t, err)
+	unset, ok := find[host.OwnedDir](rs, "owned-dir:"+timesyncdConfDir)
+	require.True(t, ok)
+	assert.Equal(t, set, unset)
 }
 
 func TestResources_sudoersCleanUpRemovesOnlyItsOwnFiles(t *testing.T) {

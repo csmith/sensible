@@ -149,13 +149,16 @@ func parseLocale(l string) (charset, normalised string, ok bool) {
 
 const timesyncdConfDir = "/etc/systemd/timesyncd.conf.d"
 
+// ntp removes sensible's drop-in even once ntp is unset, so the servers go
+// back to the distribution's.
 func ntp(h Host) ([]host.Resource, error) {
+	restart := host.ResourceList{host.ServiceAction{Name: "systemd-timesyncd", Action: "restart"}}
+	cleanUp := host.OwnedDir{Path: timesyncdConfDir, Header: managedMark, Notify: restart}
 	c := h.Config.NTP
 	if c == nil {
-		return nil, nil
+		return []host.Resource{cleanUp}, nil
 	}
 
-	restart := host.ResourceList{host.ServiceAction{Name: "systemd-timesyncd", Action: "restart"}}
 	var rs []host.Resource
 	// Arch's systemd includes timesyncd; Debian packages it separately.
 	if h.Facts.OSFamily == debian {
@@ -177,7 +180,7 @@ func ntp(h Host) ([]host.Resource, error) {
 	}
 	return append(
 		rs,
-		host.OwnedDir{Path: timesyncdConfDir, Header: managedMark, Notify: restart},
+		cleanUp,
 		host.Service{Name: "systemd-timesyncd", Enabled: true},
 	), nil
 }

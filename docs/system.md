@@ -11,7 +11,8 @@ host's own name otherwise.
 longer listed stay until `locale-gen` next runs.
 
 `ntp` enables systemd-timesyncd. `servers` replace the distribution's default
-servers, and leaving it empty keeps them.
+servers, and leaving it empty keeps them. Removing `servers`, or `ntp`
+itself, puts the default servers back, but leaves timesyncd running.
 
 ```yaml
 # roles/base/role.yml
