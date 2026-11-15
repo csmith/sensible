@@ -921,6 +921,14 @@ func TestAccessFiles(t *testing.T) {
 		files[1].Content,
 		"Match User sensible\n    AuthenticationMethods publickey\n    PubkeyAuthentication yes\n",
 	)
+	for _, line := range []string{
+		"AuthorizedKeysCommand none",
+		"AuthorizedPrincipalsCommand none",
+		"AuthorizedPrincipalsFile none",
+		"TrustedUserCAKeys none",
+	} {
+		assert.Contains(t, files[1].Content, "    "+line+"\n")
+	}
 	assert.Contains(
 		t,
 		files[2].Content,

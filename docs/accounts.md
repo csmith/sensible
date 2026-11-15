@@ -6,8 +6,13 @@ Bootstrap creates a `sensible` system account on each host, whose home,
 `/var/lib/sensible`, is owned by root, and whose shell is `/bin/sh`. Its SSH
 key, in `/etc/ssh/authorized_keys/sensible`, is restricted to a forced command
 that runs the agent through sudo, and `/etc/sudoers.d/sensible` allows that
-command alone. Apply keeps all of this in place, so nothing else can remove
-it, and the `sshd` module rejects settings that would shut the account out.
+command alone. sshd takes no other keys or certificates for the account, even
+if its global settings name an `AuthorizedKeysCommand` or `TrustedUserCAKeys`.
+Apply keeps all of this in place, so nothing else can remove it, and the
+`sshd` module rejects settings that would shut the account out.
+
+Logins that don't go through sshd's keys, such as Tailscale SSH, aren't
+covered by this, so they shouldn't be allowed to log in as `sensible`.
 
 ## Users
 
