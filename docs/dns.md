@@ -61,6 +61,23 @@ vhost can't be a host's `dns_name`, as both would set its address records.
 A vhost in a zone the account doesn't have, or can't change, is left alone
 with a warning. A host name in one is an error.
 
+## Retired names
+
+sensible remembers each host name and vhost it has set records for in
+`dns.state.yml`, in the configuration directory, with the record types it
+manages there. Once no host in `hosts.d` has the name as its `dns_name` or
+serves it as a vhost, those records are removed and the name is forgotten.
+Types it doesn't manage there, such as MX, are left alone.
+
+This only depends on the configuration, not on which hosts are in the run: a
+name a host outside the run still has isn't removed, and a name nothing has
+any more is removed whichever hosts are run. A retired name in a zone the
+account doesn't have, or can't change, is left alone with a warning, and
+remembered until it can be removed.
+
+Names retired before sensible kept `dns.state.yml` aren't in it, so their
+records have to be removed by hand.
+
 ## When changes are made
 
 DNS changes are planned from every host's configuration once the hosts in the

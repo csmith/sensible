@@ -618,6 +618,50 @@ func TestExecute_dnsIsHeldBackWhenAHostFailsToPlan(t *testing.T) {
 	assert.Empty(t, provider.applied)
 }
 
+func TestExecute_dnsRemovesRetiredNames(t *testing.T) {
+	f, provider, _ := dnsFixture(t)
+	provider.records = append(
+		provider.records,
+		dnsRecord{id: "3", name: "old", rtype: "CNAME", content: "acidburn.example.com"},
+		dnsRecord{id: "4", name: "old", rtype: "MX", content: "mail.example.com"},
+	)
+	var saved []map[string][]string
+	f.runner.DNSState = map[string][]string{"old.example.com": {"A", "AAAA", "CNAME"}}
+	f.runner.SaveDNSState = func(s map[string][]string) error {
+		saved = append(saved, s)
+		return nil
+	}
+	acidburn := f.target("acidburn", &fakeAgent{facts: host.Facts{DefaultIPv4: "203.0.113.2"}})
+	acidburn.dnsName = "acidburn.example.com"
+	f.runner.DNSNames = map[string]string{"acidburn": "acidburn.example.com"}
+
+	err := f.runner.Execute(t.Context(), []target{acidburn}, true)
+
+	require.NoError(t, err)
+	assert.Contains(t, f.out.String(), "- CNAME old.example.com  acidburn.example.com")
+	assert.NotContains(t, f.out.String(), "MX")
+	require.Len(t, provider.applied, 2)
+	assert.Equal(t, []dnsRecord{provider.records[2]}, provider.applied[1].changes.remove)
+	assert.Empty(t, provider.applied[1].changes.add)
+	assert.Equal(t, []map[string][]string{{"acidburn.example.com": {"A"}}}, saved)
+}
+
+func TestExecute_retiredNamesAreKeptWhenAHostFailsToPlan(t *testing.T) {
+	f, provider, _ := dnsFixture(t)
+	provider.records = append(provider.records, dnsRecord{id: "3", name: "old", rtype: "A", content: "203.0.113.1"})
+	f.runner.DNSState = map[string][]string{"old.example.com": {"A"}}
+	f.runner.SaveDNSState = func(map[string][]string) error {
+		t.Error("saved DNS state")
+		return nil
+	}
+
+	err := f.runner.Execute(t.Context(), []target{{name: "smarts", err: errors.New("no credentials")}}, true)
+
+	require.ErrorIs(t, err, errFailed)
+	assert.Contains(t, f.out.String(), "- A old.example.com  203.0.113.1")
+	assert.Empty(t, provider.applied)
+}
+
 // dnsFixture is a runner whose DNS account is a fake holding acidburn's
 // records, and the account's settings once it's opened.
 func dnsFixture(t *testing.T) (*runnerFixture, *fakeDNS, *config.DNSSettings) {

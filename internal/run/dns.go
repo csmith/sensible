@@ -55,12 +55,21 @@ func newDNSProvider(s config.DNSSettings) (dnsProvider, error) {
 }
 
 // dnsPlan is the DNS changes for a run, with how many sets of records are
-// already as they should be.
+// already as they should be. settled is the change to the DNS state for
+// names that need no change.
 type dnsPlan struct {
 	changes   []*dnsChange
 	unchanged int
 	warnings  []string
 	errs      []error
+	settled   dnsStateChange
+}
+
+// dnsStateChange is the names to remember, with the types sensible manages
+// at them, and the names to forget.
+type dnsStateChange struct {
+	remember map[string][]string
+	forget   []string
 }
 
 // managedName is a name whose records of the given types sensible sets. A type
@@ -71,6 +80,10 @@ type managedName struct {
 	// vhost names are left alone, with a warning, if the account can't
 	// change their domain.
 	vhost bool
+	// retired names are no longer declared anywhere, so have every type
+	// sensible managed at them removed. Like vhosts, they're left alone with
+	// a warning if the account can't change their domain.
+	retired bool
 }
 
 // vhostTypes are the types a vhost's records replace, besides those the
@@ -81,7 +94,7 @@ var vhostTypes = []string{"A", "AAAA", "CNAME"}
 // each host's own name with its A and AAAA records, and the vhosts it
 // serves, with the records for every host serving them. Addresses from facts
 // are only used if they're valid, as a compromised host could report
-// anything.
+// anything. They also include the retired names.
 func (r *Runner) managedNames(runs []*hostRun) ([]managedName, []string) {
 	var names []managedName
 	var warnings []string
@@ -115,7 +128,36 @@ func (r *Runner) managedNames(runs []*hostRun) ([]managedName, []string) {
 	}
 
 	vhosts, vhostWarnings := r.vhostNames(running)
-	return append(names, vhosts...), append(warnings, vhostWarnings...)
+	names = append(names, vhosts...)
+	return append(names, r.retiredNames()...), append(warnings, vhostWarnings...)
+}
+
+// retiredNames are the names sensible has set records for that no host in
+// the inventory declares, as its dns_name or a vhost, whether or not it's in
+// the run.
+func (r *Runner) retiredNames() []managedName {
+	if r.DNSSettings.Provider == "" {
+		return nil
+	}
+	declared := map[string]bool{}
+	for vhost := range r.Vhosts {
+		declared[normaliseDomain(vhost)] = true
+	}
+	for _, name := range r.DNSNames {
+		declared[normaliseDomain(name)] = true
+	}
+	var names []managedName
+	for _, name := range slices.Sorted(maps.Keys(r.DNSState)) {
+		if declared[normaliseDomain(name)] {
+			continue
+		}
+		types := map[string][]string{}
+		for _, t := range r.DNSState[name] {
+			types[t] = nil
+		}
+		names = append(names, managedName{fqdn: name, types: types, retired: true})
+	}
+	return names
 }
 
 // vhostNames are the vhosts the running hosts serve, each with the records
@@ -171,6 +213,11 @@ func (r *Runner) planDNS(ctx context.Context, names []managedName, warnings []st
 	}
 	z := &dnsZones{provider: provider, records: map[string][]dnsRecord{}}
 	z.planNames(ctx, names, &p)
+	// Names already as they should be need nothing applied, so they're
+	// recorded now, even if nothing else changes.
+	if err := r.recordDNS(p.settled); err != nil {
+		p.errs = append(p.errs, fmt.Errorf("saving DNS state: %w", err))
+	}
 	return p
 }
 
@@ -179,18 +226,73 @@ func (z *dnsZones) planNames(ctx context.Context, names []managedName, p *dnsPla
 		change, unchanged, err := z.plan(ctx, n.fqdn, n.types)
 		p.unchanged += unchanged
 		switch {
+		case (errors.Is(err, errNoDomain) || errors.Is(err, errReadOnly)) && n.retired:
+			p.warnings = append(p.warnings, fmt.Sprintf("leaving retired name %s alone: %v", n.fqdn, err))
 		case (errors.Is(err, errNoDomain) || errors.Is(err, errReadOnly)) && n.vhost:
 			p.warnings = append(p.warnings, fmt.Sprintf("leaving vhost %s alone: %v", n.fqdn, err))
 		case err != nil:
 			p.errs = append(p.errs, fmt.Errorf("%s: %w", n.fqdn, err))
 		case change != nil:
+			change.state = n.stateChange()
 			p.changes = append(p.changes, change)
 		default:
+			p.settled.add(n.stateChange())
 		}
 	}
 }
 
-func (p dnsPlan) step() crossHostStep {
+func (n managedName) stateChange() dnsStateChange {
+	fqdn := normaliseDomain(n.fqdn)
+	if n.retired {
+		return dnsStateChange{forget: []string{fqdn}}
+	}
+	return dnsStateChange{remember: map[string][]string{fqdn: slices.Collect(maps.Keys(n.types))}}
+}
+
+func (c *dnsStateChange) add(o dnsStateChange) {
+	if c.remember == nil {
+		c.remember = map[string][]string{}
+	}
+	for name, types := range o.remember {
+		c.remember[name] = append(c.remember[name], types...)
+	}
+	c.forget = append(c.forget, o.forget...)
+}
+
+// recordDNS saves the DNS state with change made to it. A name being
+// remembered keeps the types it was remembered with before.
+func (r *Runner) recordDNS(change dnsStateChange) error {
+	if r.SaveDNSState == nil {
+		return nil
+	}
+	state := map[string][]string{}
+	for name, types := range r.DNSState {
+		state[normaliseDomain(name)] = types
+	}
+	for name, types := range change.remember {
+		merged := slices.Clone(state[name])
+		for _, t := range types {
+			if t = strings.ToUpper(t); !slices.Contains(merged, t) {
+				merged = append(merged, t)
+			}
+		}
+		slices.Sort(merged)
+		state[name] = merged
+	}
+	for _, name := range change.forget {
+		delete(state, name)
+	}
+	if maps.EqualFunc(state, r.DNSState, slices.Equal) {
+		return nil
+	}
+	if err := r.SaveDNSState(state); err != nil {
+		return err
+	}
+	r.DNSState = state
+	return nil
+}
+
+func (r *Runner) dnsStep(p dnsPlan) crossHostStep {
 	changes := 0
 	for _, c := range p.changes {
 		changes += len(c.diffs)
@@ -201,9 +303,17 @@ func (p dnsPlan) step() crossHostStep {
 		apply: func(ctx context.Context, out *renderer) bool {
 			out.section("Applying DNS changes")
 			ok := true
+			var applied dnsStateChange
 			for _, c := range p.changes {
 				err := out.dnsApply(c, func() error { return c.apply(ctx) })
+				if err == nil {
+					applied.add(c.state)
+				}
 				ok = ok && err == nil
+			}
+			if err := r.recordDNS(applied); err != nil {
+				out.line(indentItems(out.p.failure("saving DNS state: " + err.Error()))...)
+				ok = false
 			}
 			return ok
 		},
@@ -234,13 +344,15 @@ var (
 	errReadOnly = errors.New("this account can't change its domain")
 )
 
-// dnsChange is a planned change to one name's records.
+// dnsChange is a planned change to one name's records, and the change to
+// the DNS state once it's made.
 type dnsChange struct {
 	provider dnsProvider
 	zone     string
 	fqdn     string
 	diffs    []dnsDiff
 	records  dnsRecordChanges
+	state    dnsStateChange
 }
 
 // dnsDiff is a change to the records of one type.

@@ -950,6 +950,9 @@ type Repo struct {
 	params map[string][]ast.Node
 	// vhosts maps each vhost to the hosts serving it.
 	vhosts map[string][]string
+	// dnsState maps each name sensible has set records for to the types it
+	// manages there.
+	dnsState map[string][]string
 	// caNames are sensible.yml's cas.
 	caNames []string
 	// cas are the CAs in the CA state file.
@@ -972,6 +975,9 @@ func Open(dir string, identity IdentitySource) (*Repo, error) {
 	r.keys.source = identity
 
 	if err := r.readCAs(); err != nil {
+		return nil, err
+	}
+	if err := r.readDNSState(); err != nil {
 		return nil, err
 	}
 	if err := r.readHosts(); err != nil {
@@ -1000,6 +1006,39 @@ func (r *Repo) Inventory() Inventory {
 // DNS is the DNS settings from sensible.yml.
 func (r *Repo) DNS() DNSSettings {
 	return r.dns
+}
+
+// DNSState maps each name sensible has set records for, in any run, to the
+// record types it manages there.
+func (r *Repo) DNSState() map[string][]string {
+	return r.dnsState
+}
+
+// SaveDNSState replaces the names sensible has set records for.
+func (r *Repo) SaveDNSState(names map[string][]string) error {
+	path := r.path(dnsStateFile)
+	if len(names) == 0 {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		r.dnsState = nil
+		return nil
+	}
+	var out strings.Builder
+	out.WriteString("# Managed by sensible. Local changes will be overwritten.\n")
+	out.WriteString("names:\n")
+	for _, name := range slices.Sorted(maps.Keys(names)) {
+		types := make([]string, len(names[name]))
+		for i, t := range names[name] {
+			types[i] = strconv.Quote(t)
+		}
+		out.WriteString("  " + strconv.Quote(name) + ": [" + strings.Join(types, ", ") + "]\n")
+	}
+	if err := writeAtomic(path, []byte(out.String()), 0o600); err != nil {
+		return err
+	}
+	r.dnsState = maps.Clone(names)
+	return nil
 }
 
 // OIDC is the OIDC provider's settings from sensible.yml.
@@ -1211,6 +1250,23 @@ func (r *Repo) AddHostKey(name string, key ssh.PublicKey) error {
 			HostKey{key},
 		)
 	}
+	return nil
+}
+
+const dnsStateFile = "dns.state.yml"
+
+func (r *Repo) readDNSState() error {
+	node, err := r.readLayer(dnsStateFile, true)
+	if err != nil || node == nil {
+		return err
+	}
+	var state struct {
+		Names map[string][]string `yaml:"names"`
+	}
+	if err := decode(r.keys.context(), node, &state); err != nil {
+		return fmt.Errorf("%s: %w", r.path(dnsStateFile), err)
+	}
+	r.dnsState = state.Names
 	return nil
 }
 

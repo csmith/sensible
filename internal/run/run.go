@@ -64,6 +64,9 @@ func Run(ctx context.Context, opts Options) error {
 		Vhosts:      repo.Vhosts(),
 		DNSNames:    dnsNames(repo.Inventory()),
 
+		DNSState:     repo.DNSState(),
+		SaveDNSState: repo.SaveDNSState,
+
 		OIDC:          newOIDCProvider,
 		OIDCSettings:  repo.OIDC(),
 		OIDCOwners:    oidcOwners(repo.Inventory()),
@@ -341,8 +344,13 @@ type Runner struct {
 	DNSSettings config.DNSSettings
 	// Vhosts maps each vhost to the hosts serving it, and DNSNames each
 	// host to its dns_name, for all hosts, not just those in the run.
-	Vhosts       map[string][]string
-	DNSNames     map[string]string
+	Vhosts   map[string][]string
+	DNSNames map[string]string
+	// DNSState maps each name sensible has set records for to the types it
+	// manages there, and SaveDNSState replaces it. With no SaveDNSState,
+	// names aren't recorded.
+	DNSState     map[string][]string
+	SaveDNSState func(map[string][]string) error
 	OIDC         func(settings config.OIDCSettings) (oidcProvider, error)
 	OIDCSettings config.OIDCSettings
 	// OIDCOwners maps each OIDC client sensible manages to the hosts it's
@@ -412,7 +420,7 @@ func (r *Runner) Execute(ctx context.Context, targets []target, yes bool) error 
 
 	failed := len(dns.errs) > 0 || len(oidc.errs) > 0 || anyFailed(runs)
 	steps := slices.DeleteFunc(
-		[]crossHostStep{dns.step(), oidc.step()},
+		[]crossHostStep{r.dnsStep(dns), oidc.step()},
 		func(s crossHostStep) bool { return s.changes == 0 },
 	)
 	if anyFailed(runs) && len(steps) > 0 {

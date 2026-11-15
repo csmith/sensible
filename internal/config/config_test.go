@@ -1142,6 +1142,22 @@ func TestHostConfig_resticErrors(t *testing.T) {
 	}
 }
 
+func TestSaveDNSState_isReadBackAndRemovedWhenEmpty(t *testing.T) {
+	tr := newTestRepo(t, map[string]string{})
+	names := map[string][]string{
+		"app.example.com":  {"A", "AAAA", "CNAME"},
+		"web1.example.com": {"A"},
+	}
+
+	require.NoError(t, tr.open(t).SaveDNSState(names))
+	repo := tr.open(t)
+	assert.Equal(t, names, repo.DNSState())
+
+	require.NoError(t, repo.SaveDNSState(nil))
+	assert.NoFileExists(t, filepath.Join(tr.dir, dnsStateFile))
+	assert.Empty(t, tr.open(t).DNSState())
+}
+
 func TestDNSVhostRecords(t *testing.T) {
 	tr := newTestRepo(t, map[string]string{})
 	enc, err := tr.open(t).Encrypt("x")

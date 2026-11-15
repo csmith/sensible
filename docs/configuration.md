@@ -10,6 +10,7 @@ sensible.yml              Settings: secret recipients, DNS, OIDC and CAs
 hosts.d/*.yml             Hosts and the roles they have
 hosts.d/<host>.state.yml  Written by sensible: credentials, host keys and other state
 ca.state.yml              Written by sensible: the certificate authorities
+dns.state.yml             Written by sensible: the DNS names it manages
 roles/<name>/role.yml     What a role configures
 roles/<name>/role.debian.yml, role.arch.yml
                           Additions for one OS (optional)
