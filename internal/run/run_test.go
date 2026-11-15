@@ -466,6 +466,48 @@ func TestExecute_appliesAfterConfirmation(t *testing.T) {
 	assert.NotContains(t, f.out.String(), "Applying changes on penderghast")
 }
 
+func TestExecute_pingsAgentsAtThePromptAndDuringApply(t *testing.T) {
+	interval := pingInterval
+	pingInterval = 5 * time.Millisecond
+	t.Cleanup(func() { pingInterval = interval })
+
+	f := newRunnerFixture(t, testResources)
+	agent := &fakeAgent{
+		status: deferDocker,
+		gate: func(msg string) {
+			if msg == "Apply" {
+				time.Sleep(100 * time.Millisecond)
+			}
+		},
+	}
+	f.runner.Confirm = func(string) (bool, error) {
+		assert.Eventually(
+			t,
+			func() bool { return slices.Contains(agent.messages(), "Ping") },
+			5*time.Second,
+			time.Millisecond,
+		)
+		return true, nil
+	}
+
+	require.NoError(t, f.runner.Execute(t.Context(), []target{f.target("acidburn", agent)}, false))
+	others := slices.DeleteFunc(agent.messages(), func(m string) bool { return m == "Ping" })
+	assert.Equal(t, []string{"FactsRequest", "Check", "Apply", "Bye"}, others)
+	msgs := agent.messages()
+	afterApply := msgs[slices.Index(msgs, "Apply")+1:]
+	assert.Greater(t, countOf(afterApply, "Ping"), 1, "pings are sent while the agent is busy applying")
+}
+
+func countOf(values []string, value string) int {
+	n := 0
+	for _, v := range values {
+		if v == value {
+			n++
+		}
+	}
+	return n
+}
+
 func TestExecute_declinedDoesNotApply(t *testing.T) {
 	f := newRunnerFixture(t, testResources)
 	f.answer = false

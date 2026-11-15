@@ -728,6 +728,8 @@ func connect(ctx context.Context, t Transport, builds Builds) (*agent, bool, err
 			host.ProtocolVersion,
 		)
 	}
+	// Only now is the agent known to understand Ping.
+	a.keepAlive(pingInterval)
 	return a, upgraded, nil
 }
 
@@ -735,6 +737,35 @@ func connect(ctx context.Context, t Transport, builds Builds) (*agent, bool, err
 type agent struct {
 	conn  *host.Conn
 	close func() error
+	// stopPings, if set, stops keepAlive.
+	stopPings func()
+}
+
+// pingInterval is well inside the 30 minutes sensible-config gives sshd's
+// ChannelTimeout.
+var pingInterval = 5 * time.Minute
+
+// keepAlive pings the agent until bye, so the session isn't closed for being
+// idle while the controller waits at a prompt or the agent is busy with a
+// long step. The agent only reads pings between requests, but sending them
+// is enough for sshd to see traffic.
+func (a *agent) keepAlive(every time.Duration) {
+	stop := make(chan struct{})
+	a.stopPings = sync.OnceFunc(func() { close(stop) })
+	go func() {
+		ticker := time.NewTicker(every)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				if a.conn.Send(host.Ping{}) != nil {
+					return
+				}
+			}
+		}
+	}()
 }
 
 func (a *agent) hello(earlyExit error) (host.Hello, error) {
@@ -837,6 +868,9 @@ func (a *agent) apply(starting func(host.Applying), each func(host.Applied)) (ho
 }
 
 func (a *agent) bye() {
+	if a.stopPings != nil {
+		a.stopPings()
+	}
 	_ = a.conn.Send(host.Bye{})
 	_ = a.close()
 }

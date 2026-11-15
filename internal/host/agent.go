@@ -91,6 +91,8 @@ type session struct {
 
 func (s *session) handle(ctx context.Context, msg any) error {
 	switch msg := msg.(type) {
+	case Ping:
+		return nil
 	case Upgrade:
 		if err := s.agent.upgrade(msg.Binary); err != nil {
 			_, _ = fmt.Fprintf(s.agent.log, "upgrade failed: %v\n", err)

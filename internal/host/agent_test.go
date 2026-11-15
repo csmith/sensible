@@ -165,6 +165,15 @@ func TestServe_ApplyWithoutCheckIsAnError(t *testing.T) {
 	assert.NoError(t, <-ta.done, "EOF ends the session cleanly")
 }
 
+func TestServe_PingIsIgnored(t *testing.T) {
+	ta := startAgent(t, nil)
+	ta.receive(t)
+
+	require.NoError(t, ta.ctrl.Send(Ping{}))
+	require.NoError(t, ta.ctrl.Send(FactsRequest{}))
+	assert.IsType(t, FactsReply{}, ta.receive(t), "nothing answers the Ping")
+}
+
 func TestServe_UpgradeReplacesAndExecs(t *testing.T) {
 	ta := startAgent(t, nil)
 	ta.receive(t)

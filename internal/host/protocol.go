@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"sync"
 )
 
 // ProtocolVersion is bumped whenever a message or resource changes, so a
 // controller can refuse an agent built from older code. Hello and Upgrade
 // must never change shape, so any controller can upgrade any agent.
-const ProtocolVersion = 31
+const ProtocolVersion = 32
 
 // Hello is the first message an agent sends, and the first after it re-execs
 // following an Upgrade.
@@ -124,6 +125,10 @@ type Done struct {
 
 type Bye struct{}
 
+// Ping keeps the session alive while the controller waits, as sshd may close
+// a channel that's idle for too long. The agent ignores it.
+type Ping struct{}
+
 type Status string
 
 const (
@@ -159,14 +164,17 @@ var messageTypes = registry(
 	Previewed{},
 	Done{},
 	Bye{},
+	Ping{},
 	Error{},
 )
 
-// Conn exchanges protocol messages over a stream. It isn't safe for
-// concurrent use in the same direction.
+// Conn exchanges protocol messages over a stream. Send is safe for
+// concurrent use, but Receive isn't.
 type Conn struct {
-	enc *json.Encoder
 	dec *json.Decoder
+
+	sendMutex sync.Mutex
+	enc       *json.Encoder
 }
 
 func NewConn(r io.Reader, w io.Writer) *Conn {
@@ -180,6 +188,8 @@ func (c *Conn) Send(msg any) error {
 	if err != nil {
 		return err
 	}
+	c.sendMutex.Lock()
+	defer c.sendMutex.Unlock()
 	return c.enc.Encode(body)
 }
 
