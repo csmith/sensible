@@ -19,9 +19,11 @@ oidc:
 `oidc_clients` sets up clients, by client ID, with the URLs users sign in
 through in `callback_urls`. A confidential client's `secret` is a `!generated`
 value of the role's stack, which the stack can use too, or an `!age` secret,
-and it's the only secret the client keeps. Public clients have no secret, and
-always use PKCE. `name` defaults to the client ID, and without `groups` any
-user can sign in. With `skip_consent: true`, signed-in users go straight back
+and it's the only secret the client keeps. A client that can't keep a secret,
+such as a desktop app or a single-page web app, is marked `public: true`
+instead. Public clients have no secret, always use PKCE, and need
+`callback_urls`, as they can't use client credentials. `name` defaults to the
+client ID, and without `groups` any user can sign in. With `skip_consent: true`, signed-in users go straight back
 to the client instead of being asked to approve it first, which needs Pocket
 ID 2.10 or later. `launch_url` is where the provider's app list sends users,
 and `logo` and `dark_logo` are images in the `files` directory of the role or
@@ -44,6 +46,15 @@ oidc_clients:
 compose:
   env:
     OIDC_CLIENT_SECRET: !generated oidc_secret
+```
+
+```yaml
+# roles/workstation/role.yml
+oidc_clients:
+  notes-desktop:
+    name: Notes
+    public: true
+    callback_urls: [http://127.0.0.1/callback]
 ```
 
 A confidential client without `callback_urls` can't sign anyone in, so it
