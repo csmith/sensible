@@ -14,7 +14,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"chameth.com/sensible/internal/config"
 )
@@ -31,7 +30,7 @@ func newPocketID(s config.PocketIDSettings) (*pocketID, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sensible.yml: oidc.pocketid.api_key: %w", err)
 	}
-	return &pocketID{url: s.URL, key: key, client: &http.Client{Timeout: 30 * time.Second}}, nil
+	return &pocketID{url: s.URL, key: key, client: providerClient()}, nil
 }
 
 func (p *pocketID) Client(ctx context.Context, id string) (*oidcClient, error) {

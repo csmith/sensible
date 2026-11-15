@@ -3,7 +3,10 @@
 sensible can register the OIDC clients and APIs its hosts' services need with
 an OIDC provider, so a role deploying a service also sets up its login. The
 provider is set in `sensible.yml`, with its settings under its name. Pocket
-ID is supported, with an admin's API key.
+ID is supported, with an admin's API key. Its `url` must be `https://`, or
+`http://` only to a loopback address, so the key isn't sent in the clear.
+sensible won't follow a redirect from it, so `url` must be where the API is
+served rather than an address that redirects there.
 
 ```yaml
 # sensible.yml

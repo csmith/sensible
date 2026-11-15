@@ -8,8 +8,6 @@ github.com/csmith/envflag/v2 v2.0.0 h1:jho28W/psEqJ02EdbUHmkmFpbc5HFhog6NzHRbgtI
 github.com/csmith/envflag/v2 v2.0.0/go.mod h1:GNzzXvZ2bC3z6tdoO45mTrs7l4Uht2WfBKaF1KQu0Pk=
 github.com/goccy/go-yaml v1.19.2 h1:PmFC1S6h8ljIz6gMRBopkjP1TVT7xuwrButHID66PoM=
 github.com/goccy/go-yaml v1.19.2/go.mod h1:XBurs7gK8ATbW4ZPGKgcbrY1Br56PdM69F7LkFRi1kA=
-github.com/mydnshost/mydnshost-go-api v0.0.0-20200913142645-9597313df1ce h1:ruEosendwTtjkcTz9UUYI/JDuXAcaUS4SYsqc+fZtTQ=
-github.com/mydnshost/mydnshost-go-api v0.0.0-20200913142645-9597313df1ce/go.mod h1:HISmYzgxVsYixEE6pkatew8jyTPCJR8SHSany4amk7Y=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
 go.yaml.in/yaml/v3 v3.0.5 h1:N6y/pJk8buWs9NY5ERU2HSMfm+IuD/OtfdAnq6kESPw=

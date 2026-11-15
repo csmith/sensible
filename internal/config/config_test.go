@@ -627,6 +627,41 @@ func TestOpen(t *testing.T) {
 	)
 }
 
+func TestOIDCSettings_pocketIDURLMustBeHTTPS(t *testing.T) {
+	tests := []struct {
+		url  string
+		want string
+	}{
+		{"https://id.example.com", ""},
+		{"http://127.0.0.1:1411", ""},
+		{"http://[::1]:1411", ""},
+		{"http://localhost:1411", ""},
+		{"http://id.example.com", "isn't https"},
+		{"http://192.0.2.1", "isn't https"},
+		{"ftp://id.example.com", "isn't https"},
+		{"id.example.com", "has no host"},
+		{"https:///api", "has no host"},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.url,
+			func(t *testing.T) {
+				s := OIDCSettings{
+					Provider: "pocketid",
+					PocketID: PocketIDSettings{URL: tt.url, APIKey: Secret{armored: "key"}},
+				}
+				err := s.check()
+				if tt.want == "" {
+					assert.NoError(t, err)
+				} else {
+					require.ErrorContains(t, err, "oidc.pocketid.url: ")
+					assert.ErrorContains(t, err, tt.want)
+				}
+			},
+		)
+	}
+}
+
 func TestOpen_mergesFragments(t *testing.T) {
 	k1, k2 := testHostKey(t), testHostKey(t)
 	inv := newTestRepo(

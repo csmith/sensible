@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io/fs"
 	"maps"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -884,10 +886,35 @@ func (s OIDCSettings) check() error {
 		if s.PocketID.URL == "" || s.PocketID.APIKey.IsZero() {
 			return errors.New("oidc.pocketid: needs a url and api_key")
 		}
+		if err := checkAPIURL(s.PocketID.URL); err != nil {
+			return fmt.Errorf("oidc.pocketid.url: %w", err)
+		}
 	default:
 		return fmt.Errorf("oidc.provider: unknown provider %q", s.Provider)
 	}
 	return nil
+}
+
+// checkAPIURL checks that an API's URL is https, so its key isn't sent in
+// the clear. Plain http is allowed to a loopback address.
+func checkAPIURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if u.Host == "" {
+		return fmt.Errorf("%q has no host", raw)
+	}
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		ip := net.ParseIP(u.Hostname())
+		if u.Hostname() == "localhost" || ip != nil && ip.IsLoopback() {
+			return nil
+		}
+	}
+	return fmt.Errorf("%q isn't https", raw)
 }
 
 // Repo is a configuration directory.

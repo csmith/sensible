@@ -7,6 +7,7 @@ import (
 	"io"
 	"maps"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"filippo.io/age"
 	"golang.org/x/crypto/ssh"
@@ -888,4 +890,16 @@ func receive[T any](a *agent) (T, error) {
 		return zero, fmt.Errorf("expected %T from agent, got %T", zero, msg)
 	}
 	return v, nil
+}
+
+// providerClient is the HTTP client for DNS and OIDC providers' APIs. It
+// refuses redirects, as Go would send their API keys on to wherever a
+// redirect points.
+func providerClient() *http.Client {
+	return &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+			return fmt.Errorf("refusing to follow a redirect to %s", req.URL.Redacted())
+		},
+	}
 }

@@ -3,11 +3,12 @@ package run
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"chameth.com/sensible/internal/config"
 
-	api "github.com/mydnshost/mydnshost-go-api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -335,65 +336,83 @@ func TestNewDNSProvider_needsAKnownProvider(t *testing.T) {
 	assert.ErrorContains(t, err, "dns.mydnshost.auth_user")
 }
 
+// fakeMyDNSHost serves the MyDNSHost API for user "alice" with key "key".
 type fakeMyDNSHost struct {
-	levels   map[string]api.AccessLevel
-	records  []api.ExistingRecord
+	levels   map[string]string
+	records  []map[string]any
 	modified []map[string]any
 }
 
-func (f *fakeMyDNSHost) Domains(context.Context) (map[string]api.AccessLevel, error) {
-	return f.levels, nil
-}
-
-func (f *fakeMyDNSHost) Records(context.Context, string) (*api.RecordsResponse, error) {
-	return &api.RecordsResponse{Records: f.records}, nil
-}
-
-func (f *fakeMyDNSHost) ModifyRecords(
-	_ context.Context,
-	_ string,
-	ops ...api.RecordOperation,
-) (*api.ModifyRecordsResponse, error) {
-	for _, op := range ops {
-		var v map[string]any
-		if err := json.Unmarshal(op, &v); err != nil {
-			return nil, err
-		}
-		f.modified = append(f.modified, v)
+func newFakeMyDNSHost(t *testing.T, f *fakeMyDNSHost) *myDNSHost {
+	t.Helper()
+	reply := func(w http.ResponseWriter, response any) {
+		writeJSON(w, http.StatusOK, map[string]any{"respid": "1", "method": "x", "response": response})
 	}
-	return &api.ModifyRecordsResponse{}, nil
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /1.0/domains", func(w http.ResponseWriter, _ *http.Request) { reply(w, f.levels) })
+	mux.HandleFunc(
+		"GET /1.0/domains/example.com/records",
+		func(w http.ResponseWriter, _ *http.Request) { reply(w, map[string]any{"records": f.records}) },
+	)
+	mux.HandleFunc(
+		"POST /1.0/domains/example.com/records",
+		func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				Data struct {
+					Records []map[string]any `json:"records"`
+				} `json:"data"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.modified = append(f.modified, body.Data.Records...)
+			reply(w, map[string]any{"serial": 1, "changed": []any{}})
+		},
+	)
+	srv := httptest.NewServer(
+		http.HandlerFunc(
+			func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("X-Api-User") != "alice" || r.Header.Get("X-Api-Key") != "key" {
+					writeJSON(w, http.StatusOK, map[string]any{"error": "Invalid API key"})
+					return
+				}
+				mux.ServeHTTP(w, r)
+			},
+		),
+	)
+	t.Cleanup(srv.Close)
+	return &myDNSHost{url: srv.URL + "/1.0", user: "alice", key: "key", client: providerClient()}
 }
 
 func TestMyDNSHost_zonesAreWritableWithWriteAccess(t *testing.T) {
-	m := &myDNSHost{client: &fakeMyDNSHost{levels: map[string]api.AccessLevel{
-		"owned.com": api.LevelOwner,
-		"admin.com": api.LevelAdmin,
-		"write.com": api.LevelWrite,
-		"read.com":  api.LevelRead,
-	}}}
-
-	zones, err := m.Zones(t.Context())
+	zones, err := newFakeMyDNSHost(
+		t,
+		&fakeMyDNSHost{levels: map[string]string{
+			"owned.com": "owner",
+			"admin.com": "admin",
+			"write.com": "write",
+			"read.com":  "read",
+		}},
+	).Zones(t.Context())
 
 	require.NoError(t, err)
 	assert.Equal(t, map[string]bool{"owned.com": true, "admin.com": true, "write.com": true, "read.com": false}, zones)
 }
 
 func TestMyDNSHost_records(t *testing.T) {
-	m := &myDNSHost{client: &fakeMyDNSHost{records: []api.ExistingRecord{
-		{Id: 7, Name: "www", Type: "A", Content: "192.0.2.1", TTL: 60},
-	}}}
-
-	records, err := m.Records(t.Context(), "example.com")
+	records, err := newFakeMyDNSHost(
+		t,
+		&fakeMyDNSHost{records: []map[string]any{
+			{"id": 7, "name": "www", "type": "A", "content": "192.0.2.1", "ttl": 60, "changed_at": 1},
+		}},
+	).Records(t.Context(), "example.com")
 
 	require.NoError(t, err)
 	assert.Equal(t, []dnsRecord{{id: "7", name: "www", rtype: "A", content: "192.0.2.1", ttl: 60}}, records)
 }
 
 func TestMyDNSHost_apply(t *testing.T) {
-	client := &fakeMyDNSHost{}
-	m := &myDNSHost{client: client}
+	fake := &fakeMyDNSHost{}
 
-	err := m.Apply(
+	err := newFakeMyDNSHost(t, fake).Apply(
 		t.Context(),
 		"example.com",
 		dnsRecordChanges{
@@ -415,6 +434,39 @@ func TestMyDNSHost_apply(t *testing.T) {
 			{"name": "@", "type": "RRCLONE", "content": "(A,AAAA) host.example.net"},
 			{"name": "www", "type": "A", "content": "192.0.2.3", "ttl": float64(60)},
 		},
-		client.modified,
+		fake.modified,
 	)
+}
+
+func TestMyDNSHost_reportsAPIErrors(t *testing.T) {
+	m := newFakeMyDNSHost(t, &fakeMyDNSHost{})
+	m.key = "wrong"
+
+	_, err := m.Zones(t.Context())
+
+	require.ErrorContains(t, err, "GET /domains: Invalid API key")
+}
+
+func TestMyDNSHost_reportsHTTPErrors(t *testing.T) {
+	_, err := newFakeMyDNSHost(t, &fakeMyDNSHost{}).Records(t.Context(), "missing.com")
+
+	require.ErrorContains(t, err, "GET /domains/missing.com/records: 404 Not Found")
+}
+
+func TestMyDNSHost_refusesRedirects(t *testing.T) {
+	var leaked []string
+	elsewhere := httptest.NewServer(
+		http.HandlerFunc(
+			func(_ http.ResponseWriter, r *http.Request) { leaked = append(leaked, r.Header.Get("X-Api-Key")) },
+		),
+	)
+	t.Cleanup(elsewhere.Close)
+	redirect := httptest.NewServer(http.RedirectHandler(elsewhere.URL, http.StatusFound))
+	t.Cleanup(redirect.Close)
+	m := &myDNSHost{url: redirect.URL, user: "alice", key: "key", client: providerClient()}
+
+	_, err := m.Zones(t.Context())
+
+	require.ErrorContains(t, err, "refusing to follow a redirect to "+elsewhere.URL)
+	assert.Empty(t, leaked)
 }
