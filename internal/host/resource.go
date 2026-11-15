@@ -380,7 +380,8 @@ type Command struct {
 	User string `json:"user,omitempty"`
 	// Env is added to both commands' environment.
 	Env map[string]string `json:"env,omitempty"`
-	// Packages are installed by ApplyArgv, so they count as declared.
+	// Packages are installed by ApplyArgv, so they count as declared, and
+	// ApplyArgv waits for any other pacman to finish.
 	Packages []string `json:"packages,omitempty"`
 }
 

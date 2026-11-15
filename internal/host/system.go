@@ -706,7 +706,12 @@ func (r Command) Check(ctx context.Context, sys Sys) (Change, error) {
 
 func (r Command) Apply(ctx context.Context, sys Sys) error {
 	// Commands can install packages, as paru's build does.
-	res, err := runOK(ctx, sys, Cmd{Argv: r.ApplyArgv, User: r.User, Env: r.Env})
+	cmd := Cmd{Argv: r.ApplyArgv, User: r.User, Env: r.Env}
+	if len(r.Packages) == 0 {
+		res, err := runOK(ctx, sys, cmd)
+		return explainStaleSyncDB(res, err)
+	}
+	res, err := runPacman(ctx, sys, cmd)
 	return explainStaleSyncDB(res, err)
 }
 

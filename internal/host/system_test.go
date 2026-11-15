@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -523,6 +524,26 @@ func TestCommand(t *testing.T) {
 
 	_, err = Command{Name: "x", CheckArgv: []string{"true"}, User: "aur"}.Check(context.Background(), sys)
 	assert.ErrorIs(t, err, ErrNotYetCheckable)
+}
+
+func TestCommand_PackagesWaitForPacman(t *testing.T) {
+	sys := newArchSys(t)
+	sys.on("sh -c build", "", 0)
+	sys.write(pacmanLock, "")
+	sys.write("/proc/42/comm", "pacman\n")
+	start := sys.now
+	sys.sleeper = func(d time.Duration) {
+		sys.now = sys.now.Add(d)
+		if sys.now.Sub(start) >= time.Minute {
+			require.NoError(t, os.Remove(sys.path("/proc/42/comm")))
+			require.NoError(t, os.Remove(sys.path(pacmanLock)))
+		}
+	}
+
+	r := Command{Name: "paru", ApplyArgv: []string{"sh", "-c", "build"}, Packages: []string{"paru"}}
+	require.NoError(t, r.Apply(context.Background(), sys))
+	assert.Equal(t, []string{"sh -c build"}, sys.ran)
+	assert.Equal(t, time.Minute, sys.now.Sub(start))
 }
 
 func TestCommand_WatchRunsOnlyAfterAChange(t *testing.T) {
