@@ -34,13 +34,23 @@ timezone:
   zone: Europe/London
 ```
 
+Bootstrap saves the credentials it makes for each host encrypted with
+[age](https://age-encryption.org), so `sensible.yml` needs a key to use.
+[Secrets](docs/secrets.md) shows how to make one:
+
+```yaml
+# sensible.yml
+secrets:
+  recipients: [age1...]
+  identity_command: [cat, /home/me/.config/sensible/age.key]
+```
+
 ```sh
 sensible bootstrap web1 --user root   # Set up the host for management
 sensible apply web1                   # Show the changes and apply them
 ```
 
-See [Getting started](docs/getting-started.md) for the rest of the setup,
-including secrets.
+See [Getting started](docs/getting-started.md) for the rest of the setup.
 
 ## Documentation
 
