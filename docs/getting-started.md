@@ -53,10 +53,11 @@ for itself when it bootstraps a host. `sensible.yml` says who can read them:
 # sensible.yml
 secrets:
   recipients: [age1...]
-  identity_command: [op, read, "op://Private/sensible/identity"]
+  identity_command: [cat, /home/me/.config/sensible/age.key]
 ```
 
-See [Secrets](secrets.md).
+See [Secrets](secrets.md) for how to make the key, and for other places to
+keep it.
 
 ## Bootstrapping a host
 

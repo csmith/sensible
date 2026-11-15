@@ -10,14 +10,31 @@ plain value where a secret is expected is rejected.
 # sensible.yml
 secrets:
   recipients: [age1...]
-  identity_command: [op, read, "op://Private/sensible/identity"]
+  identity_command: [cat, /home/me/.config/sensible/age.key]
 ```
 
 `recipients` are the age public keys secrets are encrypted to.
 `identity_command` prints the age identity that decrypts them. It runs once
 per command, the first time a secret is needed, and gets no terminal, so
 anything it needs to ask must be asked some other way, such as a desktop
-prompt.
+prompt. It's run directly, without a shell, so `~` and environment variables
+aren't expanded: give paths in full.
+
+To make a key, use `age-keygen` from [age](https://age-encryption.org), or
+`go run filippo.io/age/cmd/age-keygen@latest` without installing it:
+
+```sh
+$ age-keygen -o ~/.config/sensible/age.key
+Public key: age1...
+```
+
+The public key, which is also in the file, goes in `recipients`, and the file
+is the identity. It can come from a password manager instead, such as
+1Password:
+
+```yaml
+identity_command: [op, read, "op://Private/sensible/identity"]
+```
 
 ## Encrypting a value
 
