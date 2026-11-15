@@ -255,46 +255,190 @@ func TestNewCredentials(t *testing.T) {
 	assert.NotEqual(t, creds.password, other.password)
 }
 
-func TestRotate_setsPasswordAndKeyThroughExistingAgent(t *testing.T) {
-	repo, _, _ := testRepo(t)
-	f := newSSHFixture(t, "hunter2", serverKey)
-	require.NoError(t, repo.WriteCredentials("acidburn", f.keyPEM, "hunter2", time.Now()))
-	existing := repo.Inventory().Hosts["acidburn"]
-	creds, err := newCredentials("acidburn")
-	require.NoError(t, err)
+// rotateFixture is acidburn, bootstrapped with the SSH fixture's key and
+// password, being rotated to new credentials.
+type rotateFixture struct {
+	ssh    *sshFixture
+	dir    string
+	source config.IdentitySource
+	repo   *config.Repo
+	creds  credentials
+	steps  []string
+}
 
+func newRotateFixture(t *testing.T) *rotateFixture {
+	t.Helper()
+	_, dir, source := testRepo(t)
+	f := &rotateFixture{ssh: newSSHFixture(t, "hunter2", serverKey), dir: dir, source: source}
+	f.ssh.server.agent.status = func(host.Resource) host.Status { return host.StatusDrifted }
+	writeFile(
+		t,
+		filepath.Join(dir, "hosts.d", "acidburn.yml"),
+		"acidburn:\n  address: "+f.ssh.server.addr+"\n  host_keys: ["+serverKey(f.ssh.server)[0].String()+"]\n",
+	)
+	f.repo = f.reopen(t)
+	require.NoError(t, f.repo.WriteCredentials("acidburn", f.ssh.keyPEM, "hunter2", time.Now()))
+	var err error
+	f.creds, err = newCredentials("acidburn")
+	require.NoError(t, err)
+	return f
+}
+
+func (f *rotateFixture) reopen(t *testing.T) *config.Repo {
+	t.Helper()
+	repo, err := config.Open(f.dir, f.source)
+	require.NoError(t, err)
+	return repo
+}
+
+func (f *rotateFixture) rotate(t *testing.T) error {
+	entry := f.repo.Inventory().Hosts["acidburn"]
 	b := &bootstrapper{
 		name:    "acidburn",
-		address: f.server.addr,
-		creds:   creds,
-		builds:  f.builds,
-		known:   serverKey(f.server),
+		address: entry.Address,
+		creds:   f.creds,
+		builds:  f.ssh.builds,
+		known:   entry.HostKeys,
+		repo:    f.repo,
+		done:    func(step string) { f.steps = append(f.steps, step) },
 	}
-	signer, password, err := revealCredentials(existing)
-	require.NoError(t, err)
-	require.NoError(t, b.rotate(t.Context(), signer, password))
+	return b.rotate(t.Context(), entry)
+}
 
-	require.Len(t, f.server.agent.checks, 1)
-	resources := f.server.agent.checks[0]
-	command, ok := resources[0].(host.Command)
-	require.True(t, ok)
-	assert.Equal(t, creds.password, command.Env["SENSIBLE_PASSWORD"])
-	files := make([]host.File, len(resources)-1)
-	for i, r := range resources[1:] {
-		files[i] = r.(host.File)
+// saved is the key and password the repo has for acidburn, and its pending
+// key.
+func (f *rotateFixture) saved(t *testing.T) (string, string, string) {
+	t.Helper()
+	entry := f.reopen(t).Inventory().Hosts["acidburn"]
+	key, err := entry.SSHKey.Reveal()
+	require.NoError(t, err)
+	password, err := entry.SudoPassword.Reveal()
+	require.NoError(t, err)
+	if entry.PendingSSHKey.IsZero() {
+		return key, password, ""
 	}
-	assert.Equal(t, features.AccessFiles(creds.authorizedKey), files)
-	assert.Contains(t, f.server.agent.messages(), "Apply")
+	pending, err := entry.PendingSSHKey.Reveal()
+	require.NoError(t, err)
+	return key, password, pending
+}
+
+func publicKey(t *testing.T, keyPEM string) ssh.PublicKey {
+	t.Helper()
+	signer, err := ssh.ParsePrivateKey([]byte(keyPEM))
+	require.NoError(t, err)
+	return signer.PublicKey()
+}
+
+func TestRotate_authorizesBothKeysThenDropsTheOldOne(t *testing.T) {
+	f := newRotateFixture(t)
+	oldKey := authorizedKey(publicKey(t, f.ssh.keyPEM), "acidburn")
+
+	require.NoError(t, f.rotate(t))
+
+	checks := f.ssh.server.agent.checks
+	require.Len(t, checks, 2)
+	authorize := checks[0]
+	command, ok := authorize[len(authorize)-1].(host.Command)
+	require.True(t, ok, "the password should be set last")
+	assert.Equal(t, f.creds.password, command.Env["SENSIBLE_PASSWORD"])
+	assert.Equal(t, resourceList(features.AccessFiles(oldKey, f.creds.authorizedKey)), authorize[:len(authorize)-1])
+	assert.Equal(t, resourceList(features.AccessFiles(f.creds.authorizedKey)), checks[1])
+
+	assert.Equal(t, []ssh.PublicKey{f.creds.signer.PublicKey()}, f.ssh.server.acceptedKeys())
+	assert.Equal(t, f.creds.password, f.ssh.server.currentPassword())
+	key, password, pending := f.saved(t)
+	assert.Equal(t, f.creds.keyPEM, key)
+	assert.Equal(t, f.creds.password, password)
+	assert.Empty(t, pending)
+}
+
+func TestRotate_failureBeforeThePasswordKeepsTheOldCredentials(t *testing.T) {
+	f := newRotateFixture(t)
+	f.ssh.server.agent.applyFailure = "file:/etc/ssh/authorized_keys/sensible"
+
+	require.ErrorContains(t, f.rotate(t), "boom")
+
+	assert.Equal(t, "hunter2", f.ssh.server.currentPassword())
+	key, password, pending := f.saved(t)
+	assert.Equal(t, f.ssh.keyPEM, key)
+	assert.Equal(t, "hunter2", password)
+	assert.Equal(t, f.creds.keyPEM, pending)
+}
+
+// A rotation that changed the password but stopped before saving it leaves
+// the host with the pending credentials.
+func interruptedRotation(t *testing.T, f *rotateFixture) {
+	t.Helper()
+	pending, err := newCredentials("acidburn")
+	require.NoError(t, err)
+	require.NoError(t, f.repo.SavePendingCredentials("acidburn", pending.keyPEM, pending.password))
+	f.ssh.server.applied(host.Command{Env: map[string]string{"SENSIBLE_PASSWORD": pending.password}})
+	f.ssh.server.applied(
+		features.AccessFiles(
+			authorizedKey(publicKey(t, f.ssh.keyPEM), "acidburn"),
+			pending.authorizedKey,
+		)[2],
+	)
+}
+
+func TestRotate_recoversFromAnInterruptedRotation(t *testing.T) {
+	f := newRotateFixture(t)
+	interruptedRotation(t, f)
+
+	require.NoError(t, f.rotate(t))
+
+	assert.Contains(t, f.steps, "saved the pending credentials an earlier bootstrap left")
+	assert.Equal(t, []ssh.PublicKey{f.creds.signer.PublicKey()}, f.ssh.server.acceptedKeys())
+	key, _, pending := f.saved(t)
+	assert.Equal(t, f.creds.keyPEM, key)
+	assert.Empty(t, pending)
+}
+
+func TestConnect_triesPendingCredentialsWhenCurrentAreRejected(t *testing.T) {
+	f := newRotateFixture(t)
+	interruptedRotation(t, f)
+
+	runs := (&Runner{Builds: f.ssh.builds}).connect(t.Context(), []target{newTarget(f.reopen(t), "acidburn")})
+	<-runs[0].done
+	defer byeAll(runs)
+
+	require.NoError(t, runs[0].err)
+	assert.Equal(t, "debian", runs[0].facts.OSFamily)
+}
+
+func TestRotate_rejectedCredentialsPointAtAnotherAccount(t *testing.T) {
+	f := newRotateFixture(t)
+	f.ssh.server.applied(host.Command{Env: map[string]string{"SENSIBLE_PASSWORD": "changed by hand"}})
+
+	err := f.rotate(t)
+
+	require.ErrorIs(t, err, errCredentialsRejected)
+	assert.ErrorContains(t, err, "--rotate --user")
 }
 
 func TestBootstrap_acceptsAnyAccount(t *testing.T) {
-	_, dir, _ := testRepo(t)
+	_, dir, source := testRepo(t)
 	t.Setenv("SSH_AUTH_SOCK", "")
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	err := Bootstrap(ctx, BootstrapOptions{ConfigDir: dir, Host: "acidburn", User: "deploy"})
-	assert.ErrorIs(t, err, context.Canceled, "should get as far as connecting")
+	require.ErrorIs(t, err, context.Canceled, "should get as far as connecting")
+
+	repo, err := config.Open(dir, source)
+	require.NoError(t, err)
+	assert.False(t, repo.Inventory().Hosts["acidburn"].PendingSSHKey.IsZero(), "should save the credentials first")
+}
+
+func TestBootstrap_checksCredentialsCanBeSavedBeforeConnecting(t *testing.T) {
+	_, dir, _ := testRepo(t)
+	writeFile(t, filepath.Join(dir, "sensible.yml"), "{}\n")
+	t.Setenv("SSH_AUTH_SOCK", "")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	err := Bootstrap(ctx, BootstrapOptions{ConfigDir: dir, Host: "acidburn", User: "deploy"})
+	assert.ErrorContains(t, err, "no secrets.recipients")
 }
 
 type sudoFixture struct {
@@ -381,4 +525,12 @@ func TestBootstrap_requiresUserUnlessRotating(t *testing.T) {
 
 	err := Bootstrap(t.Context(), BootstrapOptions{ConfigDir: dir, Host: "acidburn"})
 	assert.EqualError(t, err, "--user is required")
+}
+
+func resourceList(files []host.File) host.ResourceList {
+	list := make(host.ResourceList, 0, len(files))
+	for _, file := range files {
+		list = append(list, file)
+	}
+	return list
 }

@@ -16,7 +16,9 @@ import (
 	"chameth.com/sensible/internal/features"
 )
 
-var errCredentialsRejected = errors.New("credentials rejected, re-run bootstrap")
+var errCredentialsRejected = errors.New(
+	"credentials rejected; bootstrap again with --rotate --user and another account",
+)
 
 // OpenSSH starts a host's agent through its sensible account, whose
 // forced command runs the agent under sudo.
@@ -43,6 +45,10 @@ func (o *OpenSSH) Start(ctx context.Context) (*AgentPipe, error) {
 			HostKeyAlgorithms: o.HostKeyAlgorithms,
 		},
 	)
+	// x/crypto/ssh has no error type for a refused key.
+	if err != nil && strings.Contains(err.Error(), "ssh: unable to authenticate") {
+		return nil, fmt.Errorf("%w: %w", errCredentialsRejected, err)
+	}
 	if err != nil {
 		return nil, err
 	}

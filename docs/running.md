@@ -89,8 +89,15 @@ SHA256 fingerprint instead, for scripts. The accepted key is saved to the
 state file, and every later connection must match it.
 
 `--rotate` replaces a host's credentials. Without `--user`, it works through
-the host's existing access. A host whose access has broken can be
-bootstrapped again with `--user --rotate`, as the setup is repeatable.
+the host's existing access: it authorizes the new key alongside the old one,
+sets the new password, connects with them, saves them, and only then drops
+the old key. A host whose access has broken can be bootstrapped again with
+`--user --rotate`, as the setup is repeatable.
+
+New credentials are saved as `pending_ssh_key` and `pending_sudo_password`
+before the host is given them, so a bootstrap that stops part way doesn't
+lock sensible out. Connections try them when the current ones are rejected,
+and the next `--rotate` saves them as current once they work.
 
 The machine sensible runs on is bootstrapped without `--user`, with sudo
 directly. It installs and starts sshd if it's missing, as that's how it's

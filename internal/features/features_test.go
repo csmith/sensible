@@ -985,6 +985,12 @@ func TestAccessFiles(t *testing.T) {
 	}
 }
 
+func TestAccessFiles_authorizesEachKey(t *testing.T) {
+	files := AccessFiles("ssh-ed25519 AAAA old", "ssh-ed25519 BBBB new")
+	command := `restrict,command="/usr/bin/sudo -k -S -p '' ` + host.AgentPath + ` agent" `
+	assert.Contains(t, files[2].Content, command+"ssh-ed25519 AAAA old\n"+command+"ssh-ed25519 BBBB new\n")
+}
+
 func TestResources_declaresAccessPackages(t *testing.T) {
 	for osFamily, sshd := range map[string]string{debian: "openssh-server", archLinux: "openssh"} {
 		t.Run(

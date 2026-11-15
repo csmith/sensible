@@ -284,9 +284,11 @@ func (r *Repo) DecryptFile(armored string) (string, error) {
 	return secret.Reveal()
 }
 
+var errNoRecipients = errors.New("no secrets.recipients in sensible.yml")
+
 func (r *Repo) encryptSecret(plaintext string) (Secret, error) {
 	if len(r.recipients) == 0 {
-		return Secret{}, errors.New("no secrets.recipients in sensible.yml")
+		return Secret{}, errNoRecipients
 	}
 	var buf bytes.Buffer
 	a := armor.NewWriter(&buf)

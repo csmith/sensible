@@ -9,6 +9,8 @@ import (
 	"io"
 	"net"
 	"os"
+	"slices"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -19,15 +21,17 @@ import (
 	"chameth.com/sensible/internal/host"
 )
 
-// sshServer accepts the sensible user with one key and, like the forced
-// sudo command, starts the agent only if the first line of input is the
-// password.
+// sshServer stands in for a host's sshd and the sensible account's forced
+// sudo command, and takes on the credential changes the agent applies.
 type sshServer struct {
 	addr     string
 	hostKey  ssh.Signer
-	password string
 	agent    *fakeAgent
 	commands chan string
+
+	mu       sync.Mutex
+	keys     []ssh.PublicKey
+	password string
 }
 
 func newSSHServer(t *testing.T, client ssh.PublicKey, password string, agent *fakeAgent) *sshServer {
@@ -37,9 +41,10 @@ func newSSHServer(t *testing.T, client ssh.PublicKey, password string, agent *fa
 	hostKey, err := ssh.NewSignerFromKey(priv)
 	require.NoError(t, err)
 
+	s := &sshServer{}
 	cfg := &ssh.ServerConfig{
 		PublicKeyCallback: func(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
-			if meta.User() == "sensible" && bytes.Equal(key.Marshal(), client.Marshal()) {
+			if meta.User() == "sensible" && s.accepts(key) {
 				return nil, nil
 			}
 			return nil, assert.AnError
@@ -51,13 +56,13 @@ func newSSHServer(t *testing.T, client ssh.PublicKey, password string, agent *fa
 	l, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = l.Close() })
-	s := &sshServer{
-		addr:     l.Addr().String(),
-		hostKey:  hostKey,
-		password: password,
-		agent:    agent,
-		commands: make(chan string, 10),
-	}
+	s.addr = l.Addr().String()
+	s.hostKey = hostKey
+	s.password = password
+	s.agent = agent
+	s.keys = []ssh.PublicKey{client}
+	s.commands = make(chan string, 10)
+	agent.applied = s.applied
 	go func() {
 		for {
 			conn, err := l.Accept()
@@ -102,7 +107,7 @@ func (s *sshServer) runAgent(ch ssh.Channel) {
 	defer func() { _ = ch.Close() }()
 	in := bufio.NewReader(ch)
 	line, err := in.ReadString('\n')
-	if err != nil || line != s.password+"\n" {
+	if err != nil || line != s.currentPassword()+"\n" {
 		return
 	}
 	r, w := io.Pipe()
@@ -111,6 +116,49 @@ func (s *sshServer) runAgent(ch ssh.Channel) {
 		_ = w.Close()
 	}()
 	s.agent.serve(r, nopCloser{ch})
+}
+
+func (s *sshServer) accepts(key ssh.PublicKey) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.ContainsFunc(s.keys, func(k ssh.PublicKey) bool { return bytes.Equal(k.Marshal(), key.Marshal()) })
+}
+
+func (s *sshServer) applied(r host.Resource) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	switch r := r.(type) {
+	case host.Command:
+		if p, ok := r.Env["SENSIBLE_PASSWORD"]; ok {
+			s.password = p
+		}
+	case host.File:
+		if r.Path != "/etc/ssh/authorized_keys/sensible" {
+			return
+		}
+		s.keys = nil
+		rest := []byte(r.Content)
+		for {
+			key, _, _, next, err := ssh.ParseAuthorizedKey(rest)
+			if err != nil {
+				return
+			}
+			s.keys = append(s.keys, key)
+			rest = next
+		}
+	}
+}
+
+func (s *sshServer) acceptedKeys() []ssh.PublicKey {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.keys)
+}
+
+func (s *sshServer) currentPassword() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.password
 }
 
 type nopCloser struct{ io.Writer }
@@ -176,6 +224,15 @@ func TestOpenSSH_connectsAndChecksHostKey(t *testing.T) {
 
 func TestOpenSSH_wrongPasswordIsReportedAsRejectedCredentials(t *testing.T) {
 	f := newSSHFixture(t, "something else", serverKey)
+
+	_, _, err := connect(t.Context(), f.transport, f.builds)
+
+	assert.ErrorIs(t, err, errCredentialsRejected)
+}
+
+func TestOpenSSH_refusedKeyIsReportedAsRejectedCredentials(t *testing.T) {
+	f := newSSHFixture(t, "hunter2", serverKey)
+	f.server.keys = []ssh.PublicKey{testKey(t)}
 
 	_, _, err := connect(t.Context(), f.transport, f.builds)
 

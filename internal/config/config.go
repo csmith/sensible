@@ -47,6 +47,12 @@ type HostEntry struct {
 	SSHKey       Secret    `yaml:"ssh_key"`
 	SudoPassword Secret    `yaml:"sudo_password"`
 	Rotated      time.Time `yaml:"rotated"`
+	// PendingSSHKey and PendingSudoPassword are credentials bootstrap saved
+	// before giving them to the host. They're tried when SSHKey and
+	// SudoPassword are rejected, as a bootstrap that stopped part way may
+	// have left the host with them.
+	PendingSSHKey       Secret `yaml:"pending_ssh_key"`
+	PendingSudoPassword Secret `yaml:"pending_sudo_password"`
 	// Generated are the values of the host's !generated tags, by stack and
 	// name.
 	Generated map[string]map[string]Secret `yaml:"generated"`
@@ -1051,22 +1057,10 @@ func (r *Repo) Vhosts() map[string][]string {
 	return r.vhosts
 }
 
-// WriteCredentials encrypts the host's credentials into its state file.
+// WriteCredentials encrypts the host's credentials into its state file,
+// replacing any pending ones.
 func (r *Repo) WriteCredentials(name, sshKey, sudoPassword string, rotated time.Time) error {
-	if err := r.checkHost(name); err != nil {
-		return err
-	}
-	file := stateFile(name)
-	for _, key := range []string{"ssh_key", "sudo_password", "rotated"} {
-		if s, ok := r.sources[joinPath(name, key)]; ok && s.source != r.path(file) {
-			return fmt.Errorf("%s sets %s's %s, so its credentials can't be written to %s", s.source, name, key, r.path(file))
-		}
-	}
-	key, err := r.encryptSecret(sshKey)
-	if err != nil {
-		return err
-	}
-	password, err := r.encryptSecret(sudoPassword)
+	key, password, err := r.encryptCredentials(name, sshKey, sudoPassword)
 	if err != nil {
 		return err
 	}
@@ -1076,8 +1070,45 @@ func (r *Repo) WriteCredentials(name, sshKey, sudoPassword string, rotated time.
 			s.SSHKey = key
 			s.SudoPassword = password
 			s.Rotated = rotated
+			s.PendingSSHKey = Secret{}
+			s.PendingSudoPassword = Secret{}
 		},
 	)
+}
+
+// SavePendingCredentials encrypts credentials the host is about to be given
+// into its state file, so they aren't lost if bootstrap stops before
+// WriteCredentials.
+func (r *Repo) SavePendingCredentials(name, sshKey, sudoPassword string) error {
+	key, password, err := r.encryptCredentials(name, sshKey, sudoPassword)
+	if err != nil {
+		return err
+	}
+	return r.updateState(
+		name,
+		func(s *hostState) {
+			s.PendingSSHKey = key
+			s.PendingSudoPassword = password
+		},
+	)
+}
+
+// CheckCredentials reports why the host's credentials couldn't be written,
+// so it can be found before the host is changed.
+func (r *Repo) CheckCredentials(name string) error {
+	if err := r.checkHost(name); err != nil {
+		return err
+	}
+	file := stateFile(name)
+	for _, key := range []string{"ssh_key", "sudo_password", "rotated", "pending_ssh_key", "pending_sudo_password"} {
+		if s, ok := r.sources[joinPath(name, key)]; ok && s.source != r.path(file) {
+			return fmt.Errorf("%s sets %s's %s, so its credentials can't be written to %s", s.source, name, key, r.path(file))
+		}
+	}
+	if len(r.recipients) == 0 {
+		return errNoRecipients
+	}
+	return nil
 }
 
 // SaveGenerated encrypts the values the stacks generated for the host into
@@ -1253,6 +1284,21 @@ func (r *Repo) AddHostKey(name string, key ssh.PublicKey) error {
 	return nil
 }
 
+func (r *Repo) encryptCredentials(name, sshKey, sudoPassword string) (Secret, Secret, error) {
+	if err := r.CheckCredentials(name); err != nil {
+		return Secret{}, Secret{}, err
+	}
+	key, err := r.encryptSecret(sshKey)
+	if err != nil {
+		return Secret{}, Secret{}, err
+	}
+	password, err := r.encryptSecret(sudoPassword)
+	if err != nil {
+		return Secret{}, Secret{}, err
+	}
+	return key, password, nil
+}
+
 const dnsStateFile = "dns.state.yml"
 
 func (r *Repo) readDNSState() error {
@@ -1324,15 +1370,17 @@ func (r *Repo) readHosts() error {
 
 // hostState is what sensible writes for a host.
 type hostState struct {
-	SSHKey       Secret                       `yaml:"ssh_key"`
-	SudoPassword Secret                       `yaml:"sudo_password"`
-	Rotated      time.Time                    `yaml:"rotated"`
-	HostKeys     []HostKey                    `yaml:"host_keys"`
-	Generated    map[string]map[string]Secret `yaml:"generated"`
-	Certs        map[string]savedCert         `yaml:"certs"`
-	Ignored      map[string][]string          `yaml:"ignored"`
-	OIDCClients  map[string]SavedOIDCClient   `yaml:"oidc_clients"`
-	OIDCAPIs     []string                     `yaml:"oidc_apis"`
+	SSHKey              Secret                       `yaml:"ssh_key"`
+	SudoPassword        Secret                       `yaml:"sudo_password"`
+	Rotated             time.Time                    `yaml:"rotated"`
+	PendingSSHKey       Secret                       `yaml:"pending_ssh_key"`
+	PendingSudoPassword Secret                       `yaml:"pending_sudo_password"`
+	HostKeys            []HostKey                    `yaml:"host_keys"`
+	Generated           map[string]map[string]Secret `yaml:"generated"`
+	Certs               map[string]savedCert         `yaml:"certs"`
+	Ignored             map[string][]string          `yaml:"ignored"`
+	OIDCClients         map[string]SavedOIDCClient   `yaml:"oidc_clients"`
+	OIDCAPIs            []string                     `yaml:"oidc_apis"`
 }
 
 // write adds the state to a state file, under its host's key.
@@ -1345,6 +1393,12 @@ func (s hostState) write(out *strings.Builder) {
 	}
 	if !s.Rotated.IsZero() {
 		out.WriteString("  rotated: " + s.Rotated.UTC().Format(time.RFC3339) + "\n")
+	}
+	if !s.PendingSSHKey.IsZero() {
+		out.WriteString("  pending_ssh_key: " + indent(s.PendingSSHKey.yaml(), "  ") + "\n")
+	}
+	if !s.PendingSudoPassword.IsZero() {
+		out.WriteString("  pending_sudo_password: " + indent(s.PendingSudoPassword.yaml(), "  ") + "\n")
 	}
 	if len(s.HostKeys) > 0 {
 		out.WriteString("  host_keys:\n")

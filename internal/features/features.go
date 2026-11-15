@@ -142,7 +142,13 @@ const sensibleAuthorizedKeysDir = "/etc/ssh/authorized_keys"
 // AccessFiles are the root-owned files that let the controller reach a
 // host's agent. Bootstrap and the access feature both write them.
 // They don't notify anything, as the sshd unit's name depends on the OS.
-func AccessFiles(sensibleKey string) []host.File {
+// Each of sensibleKeys may log in, so a rotation can authorize the new key
+// before the old one is dropped.
+func AccessFiles(sensibleKeys ...string) []host.File {
+	var keys strings.Builder
+	for _, k := range sensibleKeys {
+		_, _ = fmt.Fprintf(&keys, "restrict,command=\"/usr/bin/sudo -k -S -p '' %s agent\" %s\n", host.AgentPath, k)
+	}
 	return []host.File{
 		sudoersFile(
 			SensibleUser,
@@ -174,15 +180,11 @@ func AccessFiles(sensibleKey string) []host.File {
 			Validate: sshdValidate,
 		},
 		{
-			Path: sensibleAuthorizedKeysDir + "/" + SensibleUser,
-			Content: managedHeader + fmt.Sprintf(
-				"restrict,command=\"/usr/bin/sudo -k -S -p '' %s agent\" %s\n",
-				host.AgentPath,
-				sensibleKey,
-			),
-			Owner: "root",
-			Group: "root",
-			Mode:  0o644,
+			Path:    sensibleAuthorizedKeysDir + "/" + SensibleUser,
+			Content: managedHeader + keys.String(),
+			Owner:   "root",
+			Group:   "root",
+			Mode:    0o644,
 		},
 	}
 }

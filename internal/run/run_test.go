@@ -57,6 +57,8 @@ type fakeAgent struct {
 	listFailure string
 	// previews are what Preview replies with, by item.
 	previews map[string]host.Previewed
+	// applied, if set, is called with each resource applied as changed.
+	applied func(host.Resource)
 
 	mu       sync.Mutex
 	received []string
@@ -183,6 +185,9 @@ func (f *fakeAgent) apply(conn *host.Conn, resources host.ResourceList, checked 
 		case checked[i].Status != host.StatusInSync:
 			a.Status, a.Warning = host.StatusChanged, f.applyWarnings[res.ID()]
 			_ = conn.Send(host.Applying{ID: res.ID()})
+			if f.applied != nil {
+				f.applied(res)
+			}
 		}
 		_ = conn.Send(a)
 	}

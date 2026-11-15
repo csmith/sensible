@@ -798,6 +798,73 @@ func TestWriteCredentials_refusedWhenSetElsewhere(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(tr.dir, "hosts.d", "alpha.state.yml"))
 }
 
+func TestSavePendingCredentials_keepsCurrentUntilWritten(t *testing.T) {
+	tr := newTestRepo(t, map[string]string{})
+	r := tr.open(t)
+	rotated := time.Date(2026, 10, 31, 12, 30, 0, 0, time.UTC)
+	require.NoError(t, r.WriteCredentials("alpha", "old key", "old password", rotated))
+
+	require.NoError(t, r.SavePendingCredentials("alpha", "new key", "new password"))
+
+	alpha := tr.open(t).Inventory().Hosts["alpha"]
+	for secret, want := range map[*Secret]string{
+		&alpha.SSHKey:              "old key",
+		&alpha.SudoPassword:        "old password",
+		&alpha.PendingSSHKey:       "new key",
+		&alpha.PendingSudoPassword: "new password",
+	} {
+		got, err := secret.Reveal()
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+	}
+	assert.True(t, rotated.Equal(alpha.Rotated))
+
+	require.NoError(t, r.WriteCredentials("alpha", "new key", "new password", rotated.Add(time.Hour)))
+
+	alpha = tr.open(t).Inventory().Hosts["alpha"]
+	key, err := alpha.SSHKey.Reveal()
+	require.NoError(t, err)
+	assert.Equal(t, "new key", key)
+	assert.True(t, alpha.PendingSSHKey.IsZero())
+	assert.True(t, alpha.PendingSudoPassword.IsZero())
+}
+
+func TestCheckCredentials(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string]string
+		host  string
+		want  string
+	}{
+		{"writable", map[string]string{}, "alpha", ""},
+		{"unknown host", map[string]string{}, "gamma", `host "gamma" isn't in`},
+		{
+			"set in another file",
+			map[string]string{"hosts.d/hosts.yml": "alpha:\n  rotated: 2026-01-01T00:00:00Z\n"},
+			"alpha",
+			"hosts.d/hosts.yml sets alpha's rotated",
+		},
+		{"no recipients", map[string]string{"sensible.yml": "{}\n"}, "alpha", "no secrets.recipients"},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				r := newTestRepo(t, tt.files).open(t)
+				err := r.CheckCredentials(tt.host)
+				if tt.want == "" {
+					require.NoError(t, err)
+				} else {
+					require.ErrorContains(t, err, tt.want)
+				}
+				if err != nil {
+					assert.Error(t, r.SavePendingCredentials(tt.host, "k", "p"))
+				}
+			},
+		)
+	}
+}
+
 func TestIgnoreLeftover_recordsEachItemOnceAlongsideOtherState(t *testing.T) {
 	key := testHostKey(t)
 	tr := newTestRepo(t, map[string]string{})

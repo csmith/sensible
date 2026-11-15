@@ -220,7 +220,9 @@ type target struct {
 	dnsName     string
 	sensibleKey string
 	transport   Transport
-	err         error
+	// fallback has the pending credentials, tried if transport's are rejected.
+	fallback Transport
+	err      error
 }
 
 func newTarget(repo *config.Repo, name string) target {
@@ -235,21 +237,30 @@ func newTarget(repo *config.Repo, name string) target {
 		t.err = fmt.Errorf("no credentials; run `sensible bootstrap %s`", name)
 		return t
 	}
-	signer, password, err := revealCredentials(entry)
+	creds, err := revealCredentials(name, entry.SSHKey, entry.SudoPassword)
 	if err != nil {
 		t.err = err
 		return t
 	}
-	t.sensibleKey = authorizedKey(signer.PublicKey(), name)
-	t.transport = &OpenSSH{
-		Name:              name,
-		Address:           address,
-		Signer:            signer,
-		Password:          password,
-		HostKey:           checkHostKey(name, entry.HostKeys),
-		HostKeyAlgorithms: hostKeyAlgorithms(entry.HostKeys),
+	t.sensibleKey = creds.authorizedKey
+	t.transport = openSSH(name, address, entry.HostKeys, creds)
+	if !entry.PendingSSHKey.IsZero() {
+		if pending, err := revealCredentials(name, entry.PendingSSHKey, entry.PendingSudoPassword); err == nil {
+			t.fallback = openSSH(name, address, entry.HostKeys, pending)
+		}
 	}
 	return t
+}
+
+func openSSH(name, address string, known []config.HostKey, creds credentials) *OpenSSH {
+	return &OpenSSH{
+		Name:              name,
+		Address:           address,
+		Signer:            creds.signer,
+		Password:          creds.password,
+		HostKey:           checkHostKey(name, known),
+		HostKeyAlgorithms: hostKeyAlgorithms(known),
+	}
 }
 
 func dnsNames(inv config.Inventory) map[string]string {
@@ -262,23 +273,28 @@ func dnsNames(inv config.Inventory) map[string]string {
 	return names
 }
 
-func revealCredentials(creds config.HostEntry) (ssh.Signer, string, error) {
-	key, err := creds.SSHKey.Reveal()
+func revealCredentials(name string, sshKey, sudoPassword config.Secret) (credentials, error) {
+	key, err := sshKey.Reveal()
 	if err != nil {
-		return nil, "", fmt.Errorf("ssh_key: %w", err)
+		return credentials{}, fmt.Errorf("ssh_key: %w", err)
 	}
-	if key == creds.SSHKey.Placeholder() {
-		return nil, "", errors.New("ssh_key can't be decrypted to connect; use --facts")
+	if key == sshKey.Placeholder() {
+		return credentials{}, errors.New("ssh_key can't be decrypted to connect; use --facts")
 	}
 	signer, err := ssh.ParsePrivateKey([]byte(key))
 	if err != nil {
-		return nil, "", fmt.Errorf("ssh_key: %w", err)
+		return credentials{}, fmt.Errorf("ssh_key: %w", err)
 	}
-	password, err := creds.SudoPassword.Reveal()
+	password, err := sudoPassword.Reveal()
 	if err != nil {
-		return nil, "", fmt.Errorf("sudo_password: %w", err)
+		return credentials{}, fmt.Errorf("sudo_password: %w", err)
 	}
-	return signer, password, nil
+	return credentials{
+		keyPEM:        key,
+		signer:        signer,
+		password:      password,
+		authorizedKey: authorizedKey(signer.PublicKey(), name),
+	}, nil
 }
 
 // hostAddress is where to reach a host. The machine this runs on is reached
@@ -513,6 +529,10 @@ func byeAll(runs []*hostRun) {
 
 func (h *hostRun) connect(ctx context.Context, builds Builds) {
 	a, upgraded, err := connect(ctx, h.transport, builds)
+	if errors.Is(err, errCredentialsRejected) && h.fallback != nil {
+		debugf("%s rejected its credentials; trying the pending ones", h.name)
+		a, upgraded, err = connect(ctx, h.fallback, builds)
+	}
 	if err != nil {
 		h.err = err
 		return

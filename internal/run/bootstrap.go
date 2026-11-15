@@ -73,16 +73,21 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 		return fmt.Errorf("%s has no credentials to rotate; use --user", opts.Host)
 	}
 
+	// Found now, as the host is changed before its credentials are saved.
+	if err := repo.CheckCredentials(opts.Host); err != nil {
+		return err
+	}
+
+	// Fetched before the section, as fetching it prints its own.
+	if !local && opts.User == "" {
+		if err := repo.LoadIdentity(); err != nil {
+			return err
+		}
+	}
+
 	creds, err := newCredentials(opts.Host)
 	if err != nil {
 		return err
-	}
-	var signer ssh.Signer
-	var password string
-	if !local && opts.User == "" {
-		if signer, password, err = revealCredentials(entry); err != nil {
-			return err
-		}
 	}
 	r := newRenderer(out)
 	r.section("Bootstrapping " + opts.Host)
@@ -95,39 +100,126 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 		confirm:            confirmOnTerminal,
 		askPassword:        passwordFromTerminal,
 		hostKeyFingerprint: opts.HostKey,
+		repo:               repo,
+		done:               func(step string) { r.item(r.p.ok("✓") + " " + step) },
 	}
-	step := "installed credentials and agent"
 	switch {
 	case local:
-		err = b.installLocal(ctx)
+		return b.setUp(ctx, b.installLocal)
 	case opts.User == "":
-		step = "replaced credentials"
-		err = b.rotate(ctx, signer, password)
+		return b.rotate(ctx, entry)
 	default:
-		err = b.install(ctx, opts.User, sshAgent(ctx))
+		keyring := sshAgent(ctx)
+		return b.setUp(ctx, func(ctx context.Context) error { return b.install(ctx, opts.User, keyring) })
 	}
+}
+
+// setUp installs the new credentials and agent with install, which replaces
+// whatever access the host had.
+func (b *bootstrapper) setUp(ctx context.Context, install func(context.Context) error) error {
+	if err := b.repo.SavePendingCredentials(b.name, b.creds.keyPEM, b.creds.password); err != nil {
+		return err
+	}
+	if err := install(ctx); err != nil {
+		return err
+	}
+	b.done("installed credentials and agent")
+	return b.save(ctx)
+}
+
+// rotate replaces the key and password through the host's existing agent.
+// Each step can be recovered from if the next fails: the new pair is saved
+// as pending before the host has it, and the old key is only dropped once
+// the new pair is saved as current.
+func (b *bootstrapper) rotate(ctx context.Context, entry config.HostEntry) error {
+	a, old, err := b.connectExisting(ctx, entry)
 	if err != nil {
 		return err
 	}
-	r.item(r.p.ok("✓") + " " + step)
+	err = b.repo.SavePendingCredentials(b.name, b.creds.keyPEM, b.creds.password)
+	if err == nil {
+		resources := host.ResourceList{}
+		for _, f := range features.AccessFiles(old.authorizedKey, b.creds.authorizedKey) {
+			resources = append(resources, f)
+		}
+		// The password goes last, so the old one still works if the files
+		// fail.
+		resources = append(resources, setPassword(b.creds.password))
+		err = applyAccess(a, resources)
+	}
+	a.bye()
+	if err != nil {
+		return err
+	}
+	b.done("authorized the new key and set the new password")
+	if err := b.save(ctx); err != nil {
+		return err
+	}
+
+	a, _, err = connect(ctx, b.transport(b.creds.signer, b.creds.password), b.builds)
+	if err != nil {
+		return fmt.Errorf("removing the old key, which the next apply also does: %w", err)
+	}
+	defer a.bye()
+	resources := host.ResourceList{}
+	for _, f := range features.AccessFiles(b.creds.authorizedKey) {
+		resources = append(resources, f)
+	}
+	if err := applyAccess(a, resources); err != nil {
+		return fmt.Errorf("removing the old key, which the next apply also does: %w", err)
+	}
+	b.done("removed the old key")
+	return nil
+}
+
+// save proves the new credentials work, then saves them and any new host
+// key.
+func (b *bootstrapper) save(ctx context.Context) error {
 	if err := b.verify(ctx); err != nil {
 		return err
 	}
-	r.item(r.p.ok("✓") + " connected as sensible")
+	b.done("connected as sensible")
 
 	// Credentials go first: a host key that can't be added is reported for
 	// adding by hand, which is easier than bootstrapping again.
-	if err := repo.WriteCredentials(opts.Host, creds.keyPEM, creds.password, time.Now()); err != nil {
+	if err := b.repo.WriteCredentials(b.name, b.creds.keyPEM, b.creds.password, time.Now()); err != nil {
 		return err
 	}
-	r.item(r.p.ok("✓") + " saved credentials")
+	b.done("saved credentials")
 	if b.newHostKey != nil {
-		if err := repo.AddHostKey(opts.Host, b.newHostKey); err != nil {
+		if err := b.repo.AddHostKey(b.name, b.newHostKey); err != nil {
 			return err
 		}
-		r.item(r.p.ok("✓") + " saved host key")
+		b.done("saved host key")
 	}
 	return nil
+}
+
+// connectExisting connects with the host's current credentials or, if
+// they're rejected, with pending ones an earlier bootstrap left. Pending
+// ones that work are saved as current, as the host has them.
+func (b *bootstrapper) connectExisting(ctx context.Context, entry config.HostEntry) (*agent, credentials, error) {
+	current, err := revealCredentials(b.name, entry.SSHKey, entry.SudoPassword)
+	if err != nil {
+		return nil, credentials{}, err
+	}
+	a, _, err := connect(ctx, b.transport(current.signer, current.password), b.builds)
+	if err == nil || !errors.Is(err, errCredentialsRejected) || entry.PendingSSHKey.IsZero() {
+		return a, current, err
+	}
+	pending, perr := revealCredentials(b.name, entry.PendingSSHKey, entry.PendingSudoPassword)
+	if perr != nil {
+		return nil, credentials{}, err
+	}
+	if a, _, err = connect(ctx, b.transport(pending.signer, pending.password), b.builds); err != nil {
+		return nil, credentials{}, err
+	}
+	if err := b.repo.WriteCredentials(b.name, pending.keyPEM, pending.password, time.Now()); err != nil {
+		a.bye()
+		return nil, credentials{}, err
+	}
+	b.done("saved the pending credentials an earlier bootstrap left")
+	return a, pending, nil
 }
 
 type credentials struct {
@@ -184,6 +276,9 @@ type bootstrapper struct {
 	// newHostKey is a key accepted during this bootstrap, to be saved once
 	// it has worked.
 	newHostKey ssh.PublicKey
+	repo       *config.Repo
+	// done reports a finished step.
+	done func(step string)
 }
 
 // install connects as an account that already works on the host, uploads
@@ -413,31 +508,23 @@ func runRemote(client *ssh.Client, command string, stdin io.Reader, forwardAgent
 	return stdout.String(), nil
 }
 
-// rotate replaces the key and password through the host's existing agent.
-func (b *bootstrapper) rotate(ctx context.Context, signer ssh.Signer, password string) error {
-	a, _, err := connect(ctx, b.transport(signer, password), b.builds)
-	if err != nil {
-		return err
-	}
-	defer a.bye()
-
-	resources := host.ResourceList{
-		host.Command{
-			Name:      "sensible-password",
-			CheckArgv: []string{"false"},
-			ApplyArgv: []string{
-				"/bin/sh",
-				"-c",
-				`printf '%s:%s\n' "$1" "$SENSIBLE_PASSWORD" | /usr/sbin/chpasswd`,
-				"sh",
-				features.SensibleUser,
-			},
-			Env: map[string]string{"SENSIBLE_PASSWORD": b.creds.password},
+func setPassword(password string) host.Command {
+	return host.Command{
+		Name:      "sensible-password",
+		CheckArgv: []string{"false"},
+		ApplyArgv: []string{
+			"/bin/sh",
+			"-c",
+			`printf '%s:%s\n' "$1" "$SENSIBLE_PASSWORD" | /usr/sbin/chpasswd`,
+			"sh",
+			features.SensibleUser,
 		},
+		Env: map[string]string{"SENSIBLE_PASSWORD": password},
 	}
-	for _, f := range features.AccessFiles(b.creds.authorizedKey) {
-		resources = append(resources, f)
-	}
+}
+
+// applyAccess checks and applies resources, stopping at the first failure.
+func applyAccess(a *agent, resources host.ResourceList) error {
 	checked, err := a.check(host.Check{Resources: resources})
 	if err != nil {
 		return err
@@ -463,12 +550,11 @@ func (b *bootstrapper) rotate(ctx context.Context, signer ssh.Signer, password s
 		return failure
 	}
 	if done.Failed {
-		return errors.New("rotating credentials failed")
+		return errors.New("applying failed")
 	}
 	return nil
 }
 
-// verify connects the normal way with the new credentials.
 // verify connects the normal way. Reloading sshd re-executes its listener,
 // so connections are refused for a moment afterwards; those are retried.
 func (b *bootstrapper) verify(ctx context.Context) error {
