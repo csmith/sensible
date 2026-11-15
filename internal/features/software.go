@@ -117,7 +117,7 @@ func aurPackages(h Host, names ...string) ([]host.Resource, error) {
 	rs = append(
 		rs,
 		// makepkg refuses to run as root.
-		host.User{Name: aurUser, System: true, Home: aurHome, Shell: "/usr/bin/nologin", Password: "!"},
+		host.User{Name: aurUser, System: true, Home: aurHome, Shell: "/usr/bin/nologin", Password: "!", Managed: true},
 		host.Dir{Path: aurHome, Owner: aurUser, Group: aurUser, Mode: 0o700},
 		sudoersFile(aurUser, []string{aurUser + " ALL=(root) NOPASSWD: /usr/bin/pacman"}),
 		// paru stops working when pacman's library changes version, until it's

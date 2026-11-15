@@ -504,7 +504,8 @@ func (r Users) Leftovers(ctx context.Context, sys Sys) ([]string, error) {
 	var extra []string
 	for _, name := range slices.Sorted(maps.Keys(accounts)) {
 		u := accounts[name]
-		if declared[name] || !isMarked(u.Comment) || u.UID < minUID || u.UID > maxUID {
+		system := u.UID < minUID || u.UID > maxUID
+		if declared[name] || !isMarked(u.Comment) || system && !slices.Contains(r.System, name) {
 			continue
 		}
 		item := "user " + name

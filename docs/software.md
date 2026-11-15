@@ -71,6 +71,10 @@ aur:
   packages: [autojump-rs-bin]
 ```
 
+Once nothing needs AUR packages, apply warns about the `aur` account, and
+prune offers to remove it along with its home, and paru with the other
+packages nothing declares.
+
 ## Docker
 
 `docker` installs Docker and Compose: from Docker's repository on Debian and

@@ -306,10 +306,14 @@ type User struct {
 }
 
 // Users warns about the accounts marked as sensible's that no User earlier
-// in the same run declared. System accounts are never included. Applying
-// never removes them, but pruning removes each account, and its home if it
-// owns it.
-type Users struct{}
+// in the same run declared. System accounts are only included if they're in
+// System. Applying never removes them, but pruning removes each account, and
+// its home if it owns it.
+type Users struct {
+	// System are system accounts sensible makes for itself, such as a build
+	// account.
+	System []string `json:"system,omitempty"`
+}
 
 // GroupMembers removes a group's members that aren't in Members. It never
 // adds them, which User does.

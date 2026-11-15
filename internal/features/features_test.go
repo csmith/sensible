@@ -665,6 +665,25 @@ func TestResources_ipForwarding(t *testing.T) {
 	}
 }
 
+func TestResources_systemAccountsAreLeftForPrune(t *testing.T) {
+	rs, err := Resources(testHost(archLinux))
+	require.NoError(t, err)
+	cleanUp, ok := find[host.Users](rs, "users")
+	require.True(t, ok)
+	var system int
+	for _, r := range rs {
+		u, ok := r.(host.User)
+		// The sensible account is never left over.
+		if !ok || !u.System || u.Name == SensibleUser {
+			continue
+		}
+		system++
+		assert.True(t, u.Managed, "%s isn't marked as sensible's", u.Name)
+		assert.Contains(t, cleanUp.System, u.Name)
+	}
+	assert.NotZero(t, system)
+}
+
 func TestResources_tailscaleRecordsItsSettings(t *testing.T) {
 	h := testHost(archLinux)
 	h.Config.Tailscale.Settings = map[string]string{"ssh": "true", "accept-dns": "false"}
@@ -1038,8 +1057,9 @@ func TestResources_onlyConfiguredUsersAreManaged(t *testing.T) {
 			}
 		}
 	}
-	assert.Equal(t, []string{"alice", "bob"}, managed)
-	assert.ElementsMatch(t, []string{"alice", "carol", "dave", SensibleUser, aurUser}, unmanaged)
+	// The AUR build account is sensible's own, so it's marked too.
+	assert.Equal(t, []string{aurUser, "alice", "bob"}, managed)
+	assert.ElementsMatch(t, []string{"alice", "carol", "dave", SensibleUser}, unmanaged)
 }
 
 func TestResources_accountFilesInHome(t *testing.T) {

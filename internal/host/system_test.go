@@ -327,6 +327,21 @@ func TestUsers_NeverListsSystemAccounts(t *testing.T) {
 	assert.Equal(t, []string{"user carol"}, items)
 }
 
+func TestUsers_ListsNamedSystemAccounts(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write(
+		"/etc/passwd",
+		"aur:x:998:998:,,,,managed by sensible:/var/lib/aur:/usr/bin/nologin\n"+
+			"svc:x:999:999:,,,,managed by sensible:/var/lib/svc:/bin/sh\n"+
+			"build:x:997:997::/var/lib/build:/usr/bin/nologin\n",
+	)
+
+	items, err := Users{System: []string{"aur", "build"}}.Leftovers(withRunState(context.Background(), newRunState()), sys)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"user aur"}, items, "build isn't marked as sensible's")
+}
+
 func TestUsers_PruneDeletesAccount(t *testing.T) {
 	sys := newTestSys(t)
 	sys.write("/etc/passwd", "carol:x:1000:1000:,,,,managed by sensible:/home/carol:/bin/sh\n")

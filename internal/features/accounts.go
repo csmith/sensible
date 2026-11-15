@@ -32,7 +32,9 @@ func users(h Host) ([]host.Resource, error) {
 }
 
 func usersCleanUp(Host) ([]host.Resource, error) {
-	return []host.Resource{host.Users{}}, nil
+	// The AUR build account, so it and its home are left for prune once
+	// nothing builds AUR packages.
+	return []host.Resource{host.Users{System: []string{aurUser}}}, nil
 }
 
 func home(h Host, name string) string {
