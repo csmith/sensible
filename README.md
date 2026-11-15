@@ -1,5 +1,11 @@
 # sensible
 
+> [!CAUTION]
+> This code was written entirely by LLMs and hasn't been reviewed by a
+> human. I think it's worth releasing because it does something useful,
+> and I use it regularly myself. It works for how I use it, but I offer
+> no guarantees beyond that.
+
 sensible configures Linux hosts from a directory of YAML: packages, users,
 system settings, Docker Compose stacks, backups, certificates and so on. It
 connects over SSH, runs a small agent on each host, shows you what would change,
