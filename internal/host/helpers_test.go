@@ -58,7 +58,8 @@ func newTestSys(t *testing.T) *testSys {
 			}
 			return nil, fmt.Errorf("fetching %s: not found", url)
 		},
-		clock: func() time.Time { return s.now },
+		clock:   func() time.Time { return s.now },
+		sleeper: func(d time.Duration) { s.now = s.now.Add(d) },
 	}
 	uid, gid := os.Getuid(), os.Getgid()
 	s.write(

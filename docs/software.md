@@ -18,6 +18,9 @@ one, apply warns about it and prune offers to remove it. A few that modules
 need for themselves, such as `sudo`, aren't recorded, so they're never
 offered.
 
+If another package manager is running, such as unattended-upgrades on a
+freshly booted host, sensible waits up to five minutes for it to finish.
+
 On Arch, a package that isn't in pacman's sync database can't be installed
 until the database is refreshed, which `--update-packages` does. See
 [Running sensible](running.md#apply).

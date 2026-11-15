@@ -166,12 +166,13 @@ func TestPackage_AptInstalledAndRemoved(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, change.InSync)
 
-	sys.on("apt-get -y -q remove zsh", "", 0)
+	sys.on("apt-get -y -q -o DPkg::Lock::Timeout=300 remove zsh", "", 0)
 	require.NoError(t, Package{Name: "zsh", Absent: true}.Apply(ctx, sys))
-	assert.Equal(t, []string{"apt-get -y -q remove zsh"}, sys.ran)
+	assert.Equal(t, []string{"apt-get -y -q -o DPkg::Lock::Timeout=300 remove zsh"}, sys.ran)
 }
 
-const aptInstallGit = "apt-get -y -q install -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold git"
+const aptInstallGit = "apt-get -y -q -o DPkg::Lock::Timeout=300 install " +
+	"-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold git"
 
 func TestPackage_AptAvailability(t *testing.T) {
 	tests := []struct {
@@ -199,7 +200,7 @@ func TestPackage_AptAvailability(t *testing.T) {
 			indexAge: 2 * time.Hour,
 			wantDiff: "install package (1:2.47)\n",
 			wantApply: []string{
-				"apt-get -y -q update",
+				"apt-get -y -q -o DPkg::Lock::Timeout=300 update",
 				aptInstallGit,
 			},
 		},
@@ -219,7 +220,7 @@ func TestPackage_AptAvailability(t *testing.T) {
 			emptyLists: true,
 			wantDiff:   "install package, after refreshing the package index\n",
 			wantApply: []string{
-				"apt-get -y -q update",
+				"apt-get -y -q -o DPkg::Lock::Timeout=300 update",
 				aptInstallGit,
 			},
 		},
@@ -273,8 +274,78 @@ func TestPackage_AptUpdatesOnceAfterSourceChange(t *testing.T) {
 	require.NoError(t, Package{Name: "a"}.Apply(ctx, sys))
 	require.NoError(t, Package{Name: "b"}.Apply(ctx, sys))
 
-	assert.Equal(t, "apt-get -y -q update", sys.ran[0])
-	assert.NotContains(t, sys.ran[1:], "apt-get -y -q update")
+	assert.Equal(t, "apt-get -y -q -o DPkg::Lock::Timeout=300 update", sys.ran[0])
+	assert.NotContains(t, sys.ran[1:], "apt-get -y -q -o DPkg::Lock::Timeout=300 update")
+}
+
+func TestPackage_AptUpdateWaitsForListsLock(t *testing.T) {
+	sys := newDebianSys(t)
+	sys.on(aptInstallGit, "", 0)
+	updates := 0
+	sys.commands["apt-get -y -q -o DPkg::Lock::Timeout=300 update"] = func(Cmd) Result {
+		updates++
+		if updates < 3 {
+			return Result{
+				Stderr: "E: Could not get lock /var/lib/apt/lists/lock. It is held by process 10 (apt-get)\n",
+				Code:   100,
+			}
+		}
+		return Result{}
+	}
+	st := newRunState()
+	st.aptSourcesChanged = true
+	ctx := withRunState(context.Background(), st)
+
+	require.NoError(t, Package{Name: "git"}.Apply(ctx, sys))
+	assert.Equal(t, 3, updates)
+}
+
+func TestPackage_PacmanWaitsForLock(t *testing.T) {
+	tests := []struct {
+		name string
+		lock bool
+		// pacmanFor is how long another pacman runs; -1 runs it throughout.
+		pacmanFor time.Duration
+		wantErr   string
+	}{
+		{name: "unlocked"},
+		{name: "locked by no running pacman", lock: true},
+		{name: "locked by a pacman that finishes", lock: true, pacmanFor: time.Minute},
+		{name: "locked throughout", lock: true, pacmanFor: -1, wantErr: "another pacman still holds /var/lib/pacman/db.lck"},
+	}
+	for _, tt := range tests {
+		t.Run(
+			tt.name,
+			func(t *testing.T) {
+				sys := newArchSys(t)
+				sys.on("pacman -S *", "", 0)
+				sys.write("/proc/1/comm", "systemd\n")
+				if tt.lock {
+					sys.write(pacmanLock, "")
+				}
+				if tt.pacmanFor != 0 {
+					sys.write("/proc/42/comm", "pacman\n")
+				}
+				start := sys.now
+				sys.sleeper = func(d time.Duration) {
+					sys.now = sys.now.Add(d)
+					if tt.pacmanFor > 0 && sys.now.Sub(start) >= tt.pacmanFor {
+						require.NoError(t, os.Remove(sys.path("/proc/42/comm")))
+						require.NoError(t, os.Remove(sys.path(pacmanLock)))
+					}
+				}
+
+				err := Package{Name: "git"}.Apply(withRunState(context.Background(), newRunState()), sys)
+				if tt.wantErr != "" {
+					require.ErrorContains(t, err, tt.wantErr)
+					assert.Empty(t, sys.ran)
+					return
+				}
+				require.NoError(t, err)
+				assert.Equal(t, []string{"pacman -S --needed --noconfirm git"}, sys.ran)
+			},
+		)
+	}
 }
 
 func TestPackage_Deb(t *testing.T) {
@@ -512,7 +583,7 @@ func TestPackage_AptSourceNewerThanIndex(t *testing.T) {
 	assert.Equal(t, "install package, after refreshing the package index\n", change.Diff)
 
 	require.NoError(t, Package{Name: "docker-ce"}.Apply(ctx, sys))
-	assert.Equal(t, "apt-get -y -q update", sys.ran[1])
+	assert.Equal(t, "apt-get -y -q -o DPkg::Lock::Timeout=300 update", sys.ran[1])
 }
 
 func TestPackage_RecordsOnlyWhatItInstalls(t *testing.T) {
@@ -605,7 +676,7 @@ func TestDisownedPackages_ListsPackagesInstalledByHandOnPacman(t *testing.T) {
 func TestDisownedPackages_Apt(t *testing.T) {
 	sys := newDebianSys(t)
 	sys.write(packageRecordPath("pam-rssh"), "")
-	sys.on("apt-get -y -q remove pam-rssh", "", 0)
+	sys.on("apt-get -y -q -o DPkg::Lock::Timeout=300 remove pam-rssh", "", 0)
 	ctx := withRunState(context.Background(), newRunState())
 	r := DisownedPackages{}
 
@@ -726,10 +797,10 @@ func TestPackageUpdate_DebianUpgradesBeforeOtherResources(t *testing.T) {
 	// An index this old would otherwise be refreshed before installing.
 	require.NoError(t, os.Chtimes(sys.path("/var/lib/apt/lists"), sys.now, sys.now.Add(-2*time.Hour)))
 	withKernels(sys, "6.12.48+deb13-amd64", "6.12.48+deb13-amd64")
-	sys.on("apt-get -y -q update", "", 0)
-	sys.on("apt-get -y -q full-upgrade *", "", 0)
+	sys.on("apt-get -y -q -o DPkg::Lock::Timeout=300 update", "", 0)
+	sys.on("apt-get -y -q -o DPkg::Lock::Timeout=300 full-upgrade *", "", 0)
 	sys.on("apt-cache policy git", "  Candidate: 1:2.47-1\n", 0)
-	sys.on("apt-get -y -q install *", "", 0)
+	sys.on("apt-get -y -q -o DPkg::Lock::Timeout=300 install *", "", 0)
 
 	_, failed := applyAll(t, sys, ResourceList{PackageUpdate{}, Package{Name: "git"}})
 
@@ -737,11 +808,12 @@ func TestPackageUpdate_DebianUpgradesBeforeOtherResources(t *testing.T) {
 	assert.Equal(
 		t,
 		[]string{
-			"apt-get -y -q update",
-			"apt-get -y -q full-upgrade -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold",
+			"apt-get -y -q -o DPkg::Lock::Timeout=300 update",
+			"apt-get -y -q -o DPkg::Lock::Timeout=300 full-upgrade " +
+				"-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold",
 			"uname -r",
 			"apt-cache policy git",
-			"apt-get -y -q install -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold git",
+			aptInstallGit,
 		},
 		sys.ran,
 	)

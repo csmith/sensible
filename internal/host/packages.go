@@ -60,7 +60,7 @@ func (r Package) Apply(ctx context.Context, sys Sys) error {
 
 func (r Package) install(ctx context.Context, sys Sys, family string) error {
 	if family == familyArch {
-		res, err := runOK(ctx, sys, argv("pacman", "-S", "--needed", "--noconfirm", r.Name))
+		res, err := runPacman(ctx, sys, argv("pacman", "-S", "--needed", "--noconfirm", r.Name))
 		return explainStaleSyncDB(res, err)
 	}
 	if err := refreshAptIndex(ctx, sys); err != nil {
@@ -181,11 +181,78 @@ func (r Package) checkDeb(ctx context.Context, sys Sys, installed string) (Chang
 	}
 }
 
+// lockTimeout is how long to wait for another package manager, such as
+// unattended-upgrades on a freshly booted host, to finish.
+const lockTimeout = 5 * time.Minute
+
 func aptGet(args ...string) Cmd {
 	return Cmd{
-		Argv: append([]string{"apt-get", "-y", "-q"}, args...),
-		Env:  map[string]string{"DEBIAN_FRONTEND": "noninteractive"},
+		Argv: append(
+			[]string{"apt-get", "-y", "-q", "-o", fmt.Sprintf("DPkg::Lock::Timeout=%d", int(lockTimeout.Seconds()))},
+			args...,
+		),
+		Env: map[string]string{"DEBIAN_FRONTEND": "noninteractive"},
 	}
+}
+
+// aptUpdate runs apt-get update, which doesn't wait for the lists lock
+// as other commands wait for dpkg's, so it retries until the lock is free.
+func aptUpdate(ctx context.Context, sys Sys) error {
+	deadline := sys.Now().Add(lockTimeout)
+	for {
+		res, err := runOK(ctx, sys, aptGet("update"))
+		if err == nil || !strings.Contains(output(res), "Could not get lock") || !sys.Now().Before(deadline) {
+			return err
+		}
+		if err := sys.Sleep(ctx, lockPoll); err != nil {
+			return err
+		}
+	}
+}
+
+const lockPoll = 5 * time.Second
+
+// runPacman runs a command that locks pacman's database once no other
+// pacman holds it. A lock left by a pacman that's no longer running is
+// pacman's to report.
+func runPacman(ctx context.Context, sys Sys, cmd Cmd) (Result, error) {
+	deadline := sys.Now().Add(lockTimeout)
+	for {
+		held, err := pacmanLockHeld(sys)
+		if err != nil {
+			return Result{}, err
+		}
+		if !held {
+			return runOK(ctx, sys, cmd)
+		}
+		if !sys.Now().Before(deadline) {
+			return Result{}, fmt.Errorf("another pacman still holds %s after %s", pacmanLock, lockTimeout)
+		}
+		if err := sys.Sleep(ctx, lockPoll); err != nil {
+			return Result{}, err
+		}
+	}
+}
+
+const pacmanLock = "/var/lib/pacman/db.lck"
+
+func pacmanLockHeld(sys Sys) (bool, error) {
+	if _, err := sys.Stat(pacmanLock); errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	comms, err := sys.Glob("/proc/[0-9]*/comm")
+	if err != nil {
+		return false, err
+	}
+	for _, path := range comms {
+		// Processes can exit between listing and reading.
+		if comm, err := sys.ReadFile(path); err == nil && strings.TrimSpace(string(comm)) == "pacman" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // refreshAptIndex runs apt-get update if the index is over an hour old, or
@@ -202,7 +269,7 @@ func refreshAptIndex(ctx context.Context, sys Sys) error {
 	if !stale && !st.aptSourcesChanged {
 		return nil
 	}
-	if _, err := runOK(ctx, sys, aptGet("update")); err != nil {
+	if err := aptUpdate(ctx, sys); err != nil {
 		return err
 	}
 	st.aptUpdated, st.aptSourcesChanged = true, false
@@ -634,7 +701,7 @@ func (r AURPackage) Apply(ctx context.Context, sys Sys) error {
 		}
 		installed = db.installed[r.Name]
 	}
-	res, err := runOK(
+	res, err := runPacman(
 		ctx,
 		sys,
 		Cmd{
@@ -681,11 +748,11 @@ func (r PackageUpdate) Apply(ctx context.Context, sys Sys) error {
 		return err
 	}
 	if family == familyArch {
-		_, err := runOK(ctx, sys, argv("pacman", "-Syu", "--noconfirm"))
+		_, err := runPacman(ctx, sys, argv("pacman", "-Syu", "--noconfirm"))
 		return err
 	}
 	st := state(ctx)
-	if _, err := runOK(ctx, sys, aptGet("update")); err != nil {
+	if err := aptUpdate(ctx, sys); err != nil {
 		return err
 	}
 	st.aptUpdated = true
@@ -1047,7 +1114,7 @@ func installedPackages(ctx context.Context, sys Sys) ([]string, error) {
 
 func removePackage(ctx context.Context, sys Sys, family, name string) error {
 	if family == familyArch {
-		_, err := runOK(ctx, sys, argv("pacman", "-R", "--noconfirm", name))
+		_, err := runPacman(ctx, sys, argv("pacman", "-R", "--noconfirm", name))
 		return err
 	}
 	_, err := runOK(ctx, sys, aptGet("remove", name))

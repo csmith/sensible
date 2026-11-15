@@ -36,6 +36,8 @@ type Sys interface {
 	Run(ctx context.Context, cmd Cmd) (Result, error)
 	Fetch(ctx context.Context, url string) ([]byte, error)
 	Now() time.Time
+	// Sleep waits for d, or until ctx is done.
+	Sleep(ctx context.Context, d time.Duration) error
 }
 
 type FileReader interface {
@@ -144,6 +146,7 @@ type localSys struct {
 	runner  func(ctx context.Context, cmd Cmd) (Result, error)
 	fetcher func(ctx context.Context, url string) ([]byte, error)
 	clock   func() time.Time
+	sleeper func(d time.Duration)
 }
 
 func (s *localSys) Run(ctx context.Context, cmd Cmd) (Result, error) {
@@ -637,6 +640,21 @@ func (s *localSys) Now() time.Time {
 		return s.clock()
 	}
 	return time.Now()
+}
+
+func (s *localSys) Sleep(ctx context.Context, d time.Duration) error {
+	if s.sleeper != nil {
+		s.sleeper(d)
+		return ctx.Err()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // openDir opens a directory for a command to start in. The command is given
