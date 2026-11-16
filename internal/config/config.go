@@ -166,28 +166,29 @@ type Command []string
 // Config is one host's configuration, merged from its roles. A nil module
 // is one no role mentions, which doesn't run.
 type Config struct {
-	AptRepos   map[string]AptRepoConfig `yaml:"apt_repos"`
-	Packages   *PackagesConfig          `yaml:"packages"`
-	AUR        *AURConfig               `yaml:"aur"`
-	Users      map[string]UserConfig    `yaml:"users"`
-	Sudoers    map[string]Set           `yaml:"sudoers"`
-	PamRSSH    *PamRSSHConfig           `yaml:"pam_rssh"`
-	SSHD       *SSHDConfig              `yaml:"sshd"`
-	Tailscale  *TailscaleConfig         `yaml:"tailscale"`
-	Firewall   *FirewallConfig          `yaml:"firewall"`
-	Zsh        *ZshConfig               `yaml:"zsh"`
-	Docker     *DockerConfig            `yaml:"docker"`
-	Vim        *VimConfig               `yaml:"vim"`
-	QuietLogin *QuietLoginConfig        `yaml:"quiet_login"`
-	Hostname   *HostnameConfig          `yaml:"hostname"`
-	Timezone   *TimezoneConfig          `yaml:"timezone"`
-	Locale     *LocaleConfig            `yaml:"locale"`
-	NTP        *NTPConfig               `yaml:"ntp"`
-	Jobs       map[string]JobConfig     `yaml:"jobs"`
-	Backups    map[string]BackupConfig  `yaml:"backups"`
-	Restic     *ResticConfig            `yaml:"restic"`
-	Certs      map[string]CertConfig    `yaml:"certs"`
-	Remove     *RemoveConfig            `yaml:"remove"`
+	AptRepos    map[string]AptRepoConfig    `yaml:"apt_repos"`
+	PacmanRepos map[string]PacmanRepoConfig `yaml:"pacman_repos"`
+	Packages    *PackagesConfig             `yaml:"packages"`
+	AUR         *AURConfig                  `yaml:"aur"`
+	Users       map[string]UserConfig       `yaml:"users"`
+	Sudoers     map[string]Set              `yaml:"sudoers"`
+	PamRSSH     *PamRSSHConfig              `yaml:"pam_rssh"`
+	SSHD        *SSHDConfig                 `yaml:"sshd"`
+	Tailscale   *TailscaleConfig            `yaml:"tailscale"`
+	Firewall    *FirewallConfig             `yaml:"firewall"`
+	Zsh         *ZshConfig                  `yaml:"zsh"`
+	Docker      *DockerConfig               `yaml:"docker"`
+	Vim         *VimConfig                  `yaml:"vim"`
+	QuietLogin  *QuietLoginConfig           `yaml:"quiet_login"`
+	Hostname    *HostnameConfig             `yaml:"hostname"`
+	Timezone    *TimezoneConfig             `yaml:"timezone"`
+	Locale      *LocaleConfig               `yaml:"locale"`
+	NTP         *NTPConfig                  `yaml:"ntp"`
+	Jobs        map[string]JobConfig        `yaml:"jobs"`
+	Backups     map[string]BackupConfig     `yaml:"backups"`
+	Restic      *ResticConfig               `yaml:"restic"`
+	Certs       map[string]CertConfig       `yaml:"certs"`
+	Remove      *RemoveConfig               `yaml:"remove"`
 	// Directories are made before Files, so files can go in them.
 	Directories []DirectoryConfig       `yaml:"directories"`
 	Files       []FileConfig            `yaml:"files"`
@@ -221,6 +222,18 @@ type AptRepoConfig struct {
 	// SigningKey is the path of a keyring already on the host, such as the
 	// distribution's archive keyring.
 	SigningKey string `yaml:"signing_key"`
+}
+
+// PacmanRepoConfig is a pacman repository, named by its key, which is its
+// section in pacman.conf.
+type PacmanRepoConfig struct {
+	// Servers may use pacman's own "$arch".
+	Servers  Set    `yaml:"servers"`
+	SigLevel string `yaml:"sig_level"`
+	// SigningKeyURL is downloaded and locally signed as SigningKeyID, a key
+	// ID or an email address. Both are set or neither is.
+	SigningKeyURL string `yaml:"signing_key_url"`
+	SigningKeyID  string `yaml:"signing_key_id"`
 }
 
 type PackagesConfig struct {

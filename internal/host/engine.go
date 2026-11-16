@@ -458,8 +458,8 @@ func watchersByWatched(list ResourceList) map[string][]string {
 // runState is shared by the resources in one check or apply.
 type runState struct {
 	// declared holds the paths of every File, Dir, Symlink, GitCheckout,
-	// Download, ComposeStack, Migration, CertRecord and apt source and key
-	// seen so far, for the clean-up resources.
+	// Download, ComposeStack, Migration, CertRecord, apt source and key, and
+	// pacman repo and key seen so far, for the clean-up resources.
 	declared map[string]bool
 	// modified holds the IDs of resources that changed earlier in an apply,
 	// or that a check found would change.
@@ -521,6 +521,11 @@ func (s *runState) declare(r Resource) {
 		s.declared[r.Dir] = true
 	case AptRepo:
 		s.declared[r.sourcesPath()] = true
+	case PacmanRepo:
+		s.declared[r.confPath()] = true
+		if r.SigningKeyURL != "" {
+			s.declared[r.keyPath()] = true
+		}
 	case DockerNetwork:
 		s.networks[r.Name] = true
 	case User:

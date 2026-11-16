@@ -72,8 +72,8 @@ Each module is documented on its own page:
 
 - [Accounts and access](accounts.md): `users`, `sudoers`, `sshd`, `pam_rssh`
   and `zsh`
-- [Software](software.md): `packages`, `apt_repos`, `aur`, `docker` and
-  `tailscale`
+- [Software](software.md): `packages`, `apt_repos`, `pacman_repos`, `aur`,
+  `docker` and `tailscale`
 - [System](system.md): `hostname`, `timezone`, `locale`, `ntp`, `quiet_login`,
   `vim`, `services`, `jobs`, `firewall` and `remove`
 - [Files](files.md): `files`, `directories` and `leftovers`

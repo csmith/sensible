@@ -11,7 +11,7 @@ import (
 // ProtocolVersion is bumped whenever a message or resource changes, so a
 // controller can refuse an agent built from older code. Hello and Upgrade
 // must never change shape, so any controller can upgrade any agent.
-const ProtocolVersion = 32
+const ProtocolVersion = 33
 
 // Hello is the first message an agent sends, and the first after it re-execs
 // following an Upgrade.

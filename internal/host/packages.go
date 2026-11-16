@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"maps"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -108,7 +109,7 @@ func (r Package) checkPacman(ctx context.Context, sys Sys) (Change, error) {
 func (r Package) checkPacmanSync(ctx context.Context, sys Sys) (Change, error) {
 	res, err := runOK(ctx, sys, argv("pacman", "-Sp", "--noconfirm", "--print-format", "%n", r.Name))
 	if err != nil && strings.Contains(res.Stderr, "target not found") {
-		if state(ctx).modified[PackageUpdate{}.ID()] {
+		if pacmanSyncChanged(state(ctx)) {
 			return Change{}, fmt.Errorf("%s isn't in pacman's sync database: %w", r.Name, ErrNotYetCheckable)
 		}
 		return Change{}, fmt.Errorf(
@@ -121,6 +122,17 @@ func (r Package) checkPacmanSync(ctx context.Context, sys Sys) (Change, error) {
 		return Change{}, err
 	}
 	return drift("install package\n"), nil
+}
+
+// pacmanSyncChanged reports whether a sync database was refreshed earlier in
+// the run, or would be, so a package missing from it may be found after.
+func pacmanSyncChanged(st *runState) bool {
+	for id, modified := range st.modified {
+		if modified && (id == PackageUpdate{}.ID() || strings.HasPrefix(id, "pacman-repo:")) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r Package) checkApt(ctx context.Context, sys Sys) (Change, error) {
@@ -667,6 +679,337 @@ func listsRepos(sys Sys, path string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+const (
+	PacmanConf     = "/etc/pacman.conf"
+	PacmanReposDir = "/etc/pacman.d/sensible"
+	pacmanKeyring  = "/etc/pacman.d/gnupg"
+	pacmanSyncDir  = "/var/lib/pacman/sync"
+)
+
+func (r PacmanRepo) Check(ctx context.Context, sys Sys) (Change, error) {
+	var diff strings.Builder
+	if r.SigningKeyURL != "" {
+		key, err := sys.Fetch(ctx, r.SigningKeyURL)
+		if err != nil {
+			return Change{}, err
+		}
+		keyDiff, err := r.keyDiff(ctx, sys, key)
+		if err != nil {
+			return Change{}, err
+		}
+		diff.WriteString(keyDiff)
+	}
+	current, err := readOptional(sys, r.confPath())
+	if err != nil {
+		return Change{}, err
+	}
+	diff.WriteString(unifiedDiff(current, r.conf()))
+	synced, err := r.synced(sys)
+	if err != nil {
+		return Change{}, err
+	}
+	if current != r.conf() || !synced {
+		diff.WriteString("refresh " + r.Name + "'s sync database\n")
+	}
+	conf, _, err := readForEdit(sys, PacmanConf)
+	if err != nil {
+		return Change{}, err
+	}
+	included, err := r.include().edit(conf)
+	if err != nil {
+		return Change{}, err
+	}
+	diff.WriteString(unifiedDiff(conf, included))
+	return Change{InSync: diff.Len() == 0, Diff: diff.String()}, nil
+}
+
+// Apply trusts the key before the repo's database is fetched, which needs
+// it, and only adds the repo to pacman.conf once its database is fetched,
+// so a repo that can't be reached doesn't break pacman.
+func (r PacmanRepo) Apply(ctx context.Context, sys Sys) error {
+	if r.SigningKeyURL != "" {
+		if err := r.trustKey(ctx, sys); err != nil {
+			return err
+		}
+	}
+	if err := r.sync(ctx, sys); err != nil {
+		return err
+	}
+	conf, info, err := readForEdit(sys, PacmanConf)
+	if err != nil {
+		return err
+	}
+	included, err := r.include().edit(conf)
+	if err != nil || included == conf {
+		return err
+	}
+	return writeEdited(sys, PacmanConf, included, info)
+}
+
+// trustKey saves the signing key and has pacman trust it, unless that's
+// already done.
+func (r PacmanRepo) trustKey(ctx context.Context, sys Sys) error {
+	key, err := sys.Fetch(ctx, r.SigningKeyURL)
+	if err != nil {
+		return err
+	}
+	keyDiff, err := r.keyDiff(ctx, sys, key)
+	if err != nil || keyDiff == "" {
+		return err
+	}
+	if err := sys.MkdirAll(PacmanReposDir, defaultDirMode); err != nil {
+		return err
+	}
+	unowned := ownership{uid: -1, gid: -1}
+	if err := sys.WriteFile(r.keyPath(), key, unowned.writeOptions(sys, r.keyPath(), defaultFileMode)); err != nil {
+		return err
+	}
+	// Locally signing needs pacman's own key, which hosts made from some
+	// images, such as Arch's for Docker, don't have yet. --init only makes
+	// one if it's missing.
+	for _, args := range [][]string{{"--init"}, {"--add", r.keyPath()}, {"--lsign-key", r.SigningKeyID}} {
+		if _, err := runOK(ctx, sys, argv(append([]string{"pacman-key"}, args...)...)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sync refreshes the repo's sync database if its section changed or it was
+// never fetched, then writes the section.
+func (r PacmanRepo) sync(ctx context.Context, sys Sys) error {
+	current, err := readOptional(sys, r.confPath())
+	if err != nil {
+		return err
+	}
+	synced, err := r.synced(sys)
+	if err != nil {
+		return err
+	}
+	if current != r.conf() || !synced {
+		// The section alone is the config, so no other repo is refreshed.
+		// It's read from stdin, so the file is only written once it works.
+		_, err := runPacman(
+			ctx,
+			sys,
+			Cmd{Argv: []string{"pacman", "--config", "/dev/stdin", "--arch", "auto", "-Sy", "--noconfirm"}, Stdin: r.conf()},
+		)
+		if err != nil {
+			return err
+		}
+	}
+	if current == r.conf() {
+		return nil
+	}
+	if err := sys.MkdirAll(PacmanReposDir, defaultDirMode); err != nil {
+		return err
+	}
+	opts := ownership{uid: -1, gid: -1}.writeOptions(sys, r.confPath(), defaultFileMode)
+	return sys.WriteFile(r.confPath(), []byte(r.conf()), opts)
+}
+
+func (r PacmanRepo) confPath() string { return PacmanReposDir + "/" + r.Name + ".conf" }
+
+func (r PacmanRepo) keyPath() string { return PacmanReposDir + "/" + r.Name + ".key" }
+
+func (r PacmanRepo) conf() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "[%s]\nSigLevel = %s\n", r.Name, r.SigLevel)
+	for _, server := range r.Servers {
+		fmt.Fprintf(&b, "Server = %s\n", server)
+	}
+	return b.String()
+}
+
+// include is the line in pacman.conf that adds the repo. Appended, it comes
+// after the distribution's repos, so theirs win when both have a package.
+func (r PacmanRepo) include() LineInFile {
+	return pacmanInclude(r.confPath())
+}
+
+func pacmanInclude(path string) LineInFile {
+	return LineInFile{
+		Path:   PacmanConf,
+		Regexp: `^\s*Include\s*=\s*` + regexp.QuoteMeta(path) + `\s*$`,
+		Line:   "Include = " + path,
+	}
+}
+
+// readOptional reads a file that may not exist yet as empty.
+func readOptional(sys Sys, path string) (string, error) {
+	data, err := sys.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	return string(data), err
+}
+
+// synced reports whether the repo's sync database has been fetched.
+func (r PacmanRepo) synced(sys Sys) (bool, error) {
+	_, err := sys.Stat(pacmanSyncDir + "/" + r.Name + ".db")
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// keyDiff describes how the saved key differs from key, or that pacman
+// doesn't trust it yet.
+func (r PacmanRepo) keyDiff(ctx context.Context, sys Sys, key []byte) (string, error) {
+	current, err := sys.ReadFile(r.keyPath())
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return "add signing key " + r.keyPath() + "\n", nil
+	case err != nil:
+		return "", err
+	case string(current) != string(key):
+		return "replace signing key " + r.keyPath() + "\n", nil
+	}
+	trusted, err := pacmanKeyTrusted(ctx, sys, r.SigningKeyID)
+	if err != nil || trusted {
+		return "", err
+	}
+	return "trust signing key " + r.SigningKeyID + "\n", nil
+}
+
+func pacmanGPG(args ...string) Cmd {
+	return argv(
+		slices.Concat(
+			[]string{"gpg", "--homedir", pacmanKeyring, "--no-permission-warning", "--batch", "--with-colons"},
+			args,
+		)...,
+	)
+}
+
+// pacmanKeyTrusted reports whether pacman's keyring has a key matching id
+// with full or ultimate validity, as a key locally signed by pacman's own
+// key has.
+func pacmanKeyTrusted(ctx context.Context, sys Sys, id string) (bool, error) {
+	res, err := sys.Run(ctx, pacmanGPG("--list-keys", id))
+	if err != nil {
+		return false, err
+	}
+	if res.Code != 0 {
+		return false, nil
+	}
+	for line := range strings.Lines(res.Stdout) {
+		if fields := strings.Split(line, ":"); len(fields) > 1 && fields[0] == "pub" &&
+			(fields[1] == "f" || fields[1] == "u") {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (r DisownedPacmanRepos) Check(ctx context.Context, sys Sys) (Change, error) {
+	extra, err := r.Leftovers(ctx, sys)
+	return leftoverWarning(ctx, r.ID(), extra, "no pacman repo declares these"), err
+}
+
+func (r DisownedPacmanRepos) Apply(context.Context, Sys) error { return nil }
+
+func (r DisownedPacmanRepos) Leftovers(ctx context.Context, sys Sys) ([]string, error) {
+	return undeclaredIn(sys, state(ctx).declared, PacmanReposDir, false)
+}
+
+func (r DisownedPacmanRepos) Prune(ctx context.Context, sys Sys, item string) error {
+	if name, ok := strings.CutSuffix(filepath.Base(item), ".conf"); ok {
+		if err := unincludePacmanRepo(sys, item); err != nil {
+			return err
+		}
+		for _, ext := range []string{".db", ".db.sig", ".files", ".files.sig"} {
+			if err := sys.RemoveAll(pacmanSyncDir + "/" + name + ext); err != nil {
+				return err
+			}
+		}
+	}
+	if strings.HasSuffix(item, ".key") {
+		if err := untrustPacmanKey(ctx, sys, item); err != nil {
+			return err
+		}
+	}
+	return sys.RemoveAll(item)
+}
+
+// unincludePacmanRepo removes the line including the repo section at path
+// from pacman.conf.
+func unincludePacmanRepo(sys Sys, path string) error {
+	conf, info, err := readForEdit(sys, PacmanConf)
+	if errors.Is(err, ErrNotYetCheckable) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	include := pacmanInclude(path)
+	include.Absent = true
+	edited, err := include.edit(conf)
+	if err != nil || edited == conf {
+		return err
+	}
+	return writeEdited(sys, PacmanConf, edited, info)
+}
+
+// untrustPacmanKey removes the keys in the file at path from pacman's
+// keyring, other than those another key file in PacmanReposDir holds, as
+// repos can share a key.
+func untrustPacmanKey(ctx context.Context, sys Sys, path string) error {
+	removing, err := pacmanKeyFingerprints(ctx, sys, path)
+	if err != nil {
+		return err
+	}
+	others, err := sys.Glob(PacmanReposDir + "/*.key")
+	if err != nil {
+		return err
+	}
+	for _, other := range others {
+		if other == path {
+			continue
+		}
+		kept, err := pacmanKeyFingerprints(ctx, sys, other)
+		if err != nil {
+			return err
+		}
+		removing = slices.DeleteFunc(removing, func(fpr string) bool { return slices.Contains(kept, fpr) })
+	}
+	for _, fpr := range removing {
+		res, err := sys.Run(ctx, pacmanGPG("--list-keys", fpr))
+		if err != nil {
+			return err
+		}
+		if res.Code != 0 {
+			continue
+		}
+		if _, err := runOK(ctx, sys, argv("pacman-key", "--delete", fpr)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// pacmanKeyFingerprints lists the primary keys in the key file at path.
+func pacmanKeyFingerprints(ctx context.Context, sys Sys, path string) ([]string, error) {
+	res, err := runOK(ctx, sys, pacmanGPG("--show-keys", path))
+	if err != nil {
+		return nil, err
+	}
+	var fprs []string
+	primary := false
+	for line := range strings.Lines(res.Stdout) {
+		fields := strings.Split(strings.TrimSuffix(line, "\n"), ":")
+		switch {
+		case fields[0] == "pub":
+			primary = true
+		case fields[0] == "fpr" && primary && len(fields) > 9:
+			fprs = append(fprs, fields[9])
+			primary = false
+		case fields[0] != "fpr":
+			primary = false
+		}
+	}
+	return fprs, nil
 }
 
 func (r AURPackage) Check(ctx context.Context, sys Sys) (Change, error) {

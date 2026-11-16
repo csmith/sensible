@@ -948,3 +948,158 @@ func TestDisownedPackages_LeavesOutWhatAptPackagesDependOn(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"package htop", "package zlib1g"}, got)
 }
+
+// pacmanRepoSys is an Arch host whose pacman-key and gpg keep a keyring of
+// key IDs, and whose pacman -Sy fetches the sync database of the repo on
+// stdin.
+func pacmanRepoSys(t *testing.T) (*testSys, map[string]bool) {
+	t.Helper()
+	sys := newArchSys(t)
+	sys.write(PacmanConf, "[options]\nArchitecture = auto\n\n[core]\nInclude = /etc/pacman.d/mirrorlist\n")
+	sys.urls["https://git.example.com/repository.key"] = "-----BEGIN PGP PUBLIC KEY BLOCK-----\nkey\n"
+	trusted := map[string]bool{}
+	sys.on("pacman-key --init", "", 0)
+	sys.on("pacman-key --add *", "", 0)
+	sys.commands["pacman-key --lsign-key chris@noreply.git.example.com"] = func(Cmd) Result {
+		trusted["chris@noreply.git.example.com"] = true
+		return Result{}
+	}
+	sys.commands["gpg --homedir /etc/pacman.d/gnupg --no-permission-warning --batch --with-colons --list-keys *"] =
+		func(c Cmd) Result {
+			if trusted[c.Argv[len(c.Argv)-1]] {
+				return Result{Stdout: "tru::1:1:0:3:1:5\npub:f:255:22:ABCD:1:::-:::scSC::::::23::0:\n"}
+			}
+			return Result{Code: 2}
+		}
+	sys.commands["pacman --config /dev/stdin --arch auto -Sy --noconfirm"] = func(c Cmd) Result {
+		sys.write(pacmanSyncDir+"/"+strings.Trim(strings.SplitN(c.Stdin, "\n", 2)[0], "[]")+".db", "db")
+		return Result{}
+	}
+	return sys, trusted
+}
+
+func TestPacmanRepo(t *testing.T) {
+	sys, trusted := pacmanRepoSys(t)
+	r := PacmanRepo{
+		Name:          "chris.forgejo.git.example.com",
+		Servers:       []string{"https://git.example.com/api/packages/chris/arch/forgejo/$arch"},
+		SigLevel:      "Required",
+		SigningKeyURL: "https://git.example.com/repository.key",
+		SigningKeyID:  "chris@noreply.git.example.com",
+	}
+
+	change := checkApply(t, sys, r)
+
+	assert.Contains(t, change.Diff, "add signing key "+PacmanReposDir+"/chris.forgejo.git.example.com.key\n")
+	assert.Contains(t, change.Diff, "refresh chris.forgejo.git.example.com's sync database\n")
+	assert.True(t, trusted["chris@noreply.git.example.com"])
+	assert.Equal(
+		t,
+		"[chris.forgejo.git.example.com]\nSigLevel = Required\n"+
+			"Server = https://git.example.com/api/packages/chris/arch/forgejo/$arch\n",
+		sys.read(PacmanReposDir+"/chris.forgejo.git.example.com.conf"),
+	)
+	assert.True(
+		t,
+		strings.HasSuffix(
+			sys.read(PacmanConf),
+			"[core]\nInclude = /etc/pacman.d/mirrorlist\nInclude = "+PacmanReposDir+"/chris.forgejo.git.example.com.conf\n",
+		),
+	)
+
+	// An unchanged key isn't imported again, but one pacman stopped
+	// trusting is.
+	sys.ran = nil
+	change = checkApply(t, sys, PacmanRepo{Name: "other", Servers: r.Servers, SigLevel: "Never"})
+	assert.NotContains(t, strings.Join(sys.ran, "\n"), "pacman-key")
+	assert.NotContains(t, change.Diff, "signing key")
+	delete(trusted, "chris@noreply.git.example.com")
+	change = checkApply(t, sys, r)
+	assert.Equal(t, "trust signing key chris@noreply.git.example.com\n", change.Diff)
+}
+
+func TestPacmanRepo_RefreshFails(t *testing.T) {
+	sys, _ := pacmanRepoSys(t)
+	sys.on("pacman --config /dev/stdin --arch auto -Sy --noconfirm", "", 1)
+	r := PacmanRepo{Name: "example", Servers: []string{"https://example.com/$arch"}, SigLevel: "Never"}
+	ctx := withRunState(context.Background(), newRunState())
+
+	require.Error(t, r.Apply(ctx, sys))
+
+	// pacman isn't pointed at a repo whose database it hasn't got.
+	assert.False(t, sys.exists(PacmanReposDir+"/example.conf"))
+	assert.NotContains(t, sys.read(PacmanConf), "example")
+}
+
+func TestPackage_PacmanAfterNewRepo(t *testing.T) {
+	sys := newArchSys(t)
+	sys.commands["pacman -Sp *"] = func(Cmd) Result { return Result{Stderr: "error: target not found: widget", Code: 1} }
+	st := newRunState()
+	st.modified[PacmanRepo{Name: "example"}.ID()] = true
+
+	_, err := Package{Name: "widget"}.Check(withRunState(context.Background(), st), sys)
+
+	assert.ErrorIs(t, err, ErrNotYetCheckable)
+}
+
+func TestDisownedPacmanRepos(t *testing.T) {
+	sys, _ := pacmanRepoSys(t)
+	declared := PacmanRepo{
+		Name:          "kept",
+		Servers:       []string{"https://git.example.com/kept/$arch"},
+		SigLevel:      "Required",
+		SigningKeyURL: "https://git.example.com/repository.key",
+		SigningKeyID:  "chris@noreply.git.example.com",
+	}
+	removed := declared
+	removed.Name = "removed"
+	for _, r := range []PacmanRepo{declared, removed} {
+		checkApply(t, sys, r)
+	}
+	sys.write(PacmanReposDir+"/lone.key", "other key")
+	// Kept and removed share a key, which lone doesn't.
+	sys.commands["gpg --homedir /etc/pacman.d/gnupg --no-permission-warning --batch --with-colons --show-keys *"] =
+		func(c Cmd) Result {
+			fpr := "SHARED"
+			if strings.HasSuffix(c.Argv[len(c.Argv)-1], "/lone.key") {
+				fpr = "LONE"
+			}
+			return Result{
+				Stdout: "pub:-:255:22:X:1:::-:::scSC:::\nfpr:::::::::" + fpr + ":\n" +
+					"sub:-:255:18:Y:1::::::e:::\nfpr:::::::::SUB:\n",
+			}
+		}
+	sys.on(
+		"gpg --homedir /etc/pacman.d/gnupg --no-permission-warning --batch --with-colons --list-keys LONE",
+		"pub:f:\n",
+		0,
+	)
+	sys.on("pacman-key --delete *", "", 0)
+
+	st := newRunState()
+	st.declare(declared)
+	ctx := withRunState(context.Background(), st)
+	r := DisownedPacmanRepos{}
+	leftovers, err := r.Leftovers(ctx, sys)
+	require.NoError(t, err)
+	assert.Equal(
+		t,
+		[]string{PacmanReposDir + "/lone.key", PacmanReposDir + "/removed.conf", PacmanReposDir + "/removed.key"},
+		leftovers,
+	)
+
+	sys.ran = nil
+	for _, item := range leftovers {
+		require.NoError(t, r.Prune(ctx, sys, item))
+	}
+
+	assert.Contains(t, sys.ran, "pacman-key --delete LONE")
+	assert.NotContains(t, strings.Join(sys.ran, "\n"), "pacman-key --delete SHARED")
+	assert.False(t, sys.exists(pacmanSyncDir+"/removed.db"))
+	assert.True(t, sys.exists(pacmanSyncDir+"/kept.db"))
+	assert.NotContains(t, sys.read(PacmanConf), "removed.conf")
+	assert.Contains(t, sys.read(PacmanConf), "kept.conf")
+	leftovers, err = r.Leftovers(ctx, sys)
+	require.NoError(t, err)
+	assert.Empty(t, leftovers)
+}

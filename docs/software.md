@@ -57,6 +57,39 @@ Some modules add their own repositories, such as Docker's and Tailscale's.
 Those vendors publish for Debian and Ubuntu but not their derivatives, so the
 modules refuse other distributions.
 
+## Pacman repositories
+
+`pacman_repos` adds pacman repositories on Arch hosts, and is an error on
+other hosts. Each repo's section is written to
+`/etc/pacman.d/sensible/<name>.conf`, which is included at the end of
+`/etc/pacman.conf`, so the distribution's repos win when both have a package
+of the same name. Servers can use pacman's `$arch`. `sig_level` defaults to
+`Required`.
+
+A signed repo needs a `signing_key_url` to download its key from, and the
+`signing_key_id` to locally sign it with, as a key ID or email address. The
+key is saved next to the repo's section and only imported again when it
+changes.
+
+```yaml
+# roles/forgejo-packages/role.arch.yml
+pacman_repos:
+  chris.main.git.example.com:
+    servers: ["https://git.example.com/api/packages/chris/arch/main/$arch"]
+    signing_key_url: https://git.example.com/api/packages/chris/arch/repository.key
+    signing_key_id: chris@noreply.git.example.com
+packages:
+  install: [my-tool]
+```
+
+When a repo is added or changed, apply fetches its sync database straight
+away, without refreshing any other repo, so its packages can be installed in
+the same run.
+
+Repos and keys in `/etc/pacman.d/sensible` that nothing declares are
+leftovers. Pruning a repo removes it from `pacman.conf`, and pruning a key
+removes it from pacman's keyring unless another repo uses it.
+
 ## AUR
 
 `aur` installs packages from the Arch User Repository, and is an error on

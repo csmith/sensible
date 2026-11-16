@@ -46,6 +46,7 @@ func Resources(h Host) (host.ResourceList, error) {
 		// the rest.
 		remove,
 		aptRepos,
+		pacmanRepos,
 		packages,
 		aur,
 		hostname,
@@ -351,7 +352,7 @@ func disowned(h Host) ([]host.Resource, error) {
 		for i, n := range vimLinks {
 			links[i] = vimLinkDir + "/" + n
 		}
-		rs = append(rs, host.Disowned{Name: "vim", Paths: links, Target: vimBinary})
+		rs = append(rs, host.Disowned{Name: "vim", Paths: links, Target: vimBinary}, host.DisownedPacmanRepos{})
 	}
 	return rs, nil
 }

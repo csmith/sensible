@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 
 	"chameth.com/sensible/internal/config"
 	"chameth.com/sensible/internal/host"
@@ -57,6 +58,58 @@ func aptRepos(h Host) ([]host.Resource, error) {
 				Components:    replaceAll(c.Components),
 				SigningKeyURL: facts.Replace(c.SigningKeyURL),
 				SigningKey:    key,
+			},
+		)
+	}
+	return rs, nil
+}
+
+// pacmanRepoName is a pacman.conf section that can also name files.
+var pacmanRepoName = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]*$`)
+
+func pacmanRepos(h Host) ([]host.Resource, error) {
+	if len(h.Config.PacmanRepos) == 0 {
+		return nil, nil
+	}
+	if h.Facts.OSFamily != archLinux {
+		return nil, fmt.Errorf("host %s: pacman_repos only works on Arch Linux", h.Name)
+	}
+	var rs []host.Resource
+	for _, name := range slices.Sorted(maps.Keys(h.Config.PacmanRepos)) {
+		c := h.Config.PacmanRepos[name]
+		switch {
+		// "local" is pacman's own database, and "options" its settings.
+		case !pacmanRepoName.MatchString(name) || name == "local" || name == "options":
+			return nil, fmt.Errorf(
+				"host %s: invalid pacman repo name %q; use letters, digits, \".\", \"-\" and \"_\"",
+				h.Name,
+				name,
+			)
+		case len(c.Servers) == 0:
+			return nil, fmt.Errorf("host %s: pacman repo %s needs servers", h.Name, name)
+		case (c.SigningKeyURL == "") != (c.SigningKeyID == ""):
+			return nil, fmt.Errorf(
+				"host %s: pacman repo %s needs both signing_key_url and signing_key_id, or neither",
+				h.Name,
+				name,
+			)
+		case strings.HasPrefix(c.SigningKeyID, "-") || strings.ContainsFunc(c.SigningKeyID, unicode.IsSpace):
+			return nil, fmt.Errorf("host %s: pacman repo %s: invalid signing_key_id %q", h.Name, name, c.SigningKeyID)
+		case strings.ContainsAny(c.SigLevel+strings.Join(c.Servers, ""), "\n\r"):
+			return nil, fmt.Errorf("host %s: pacman repo %s: servers and sig_level must be one line each", h.Name, name)
+		}
+		sigLevel := c.SigLevel
+		if sigLevel == "" {
+			sigLevel = "Required"
+		}
+		rs = append(
+			rs,
+			host.PacmanRepo{
+				Name:          name,
+				Servers:       slices.Clone(c.Servers),
+				SigLevel:      sigLevel,
+				SigningKeyURL: c.SigningKeyURL,
+				SigningKeyID:  c.SigningKeyID,
 			},
 		)
 	}

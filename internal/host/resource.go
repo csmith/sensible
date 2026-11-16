@@ -102,6 +102,8 @@ var resourceTypes = registry(
 	Package{},
 	AptRepo{},
 	DisownedAptSources{},
+	PacmanRepo{},
+	DisownedPacmanRepos{},
 	AURPackage{},
 	DisownedPackages{},
 	PackageUpdate{},
@@ -242,6 +244,30 @@ type AptRepo struct {
 type DisownedAptSources struct {
 	SourcesList bool `json:"sources_list,omitempty"`
 }
+
+// PacmanRepo adds a pacman repository: its section is written to
+// PacmanReposDir/<Name>.conf, which pacman.conf includes at its end, after
+// the distribution's repos. When the section changes, or the repo has never
+// been synced, only its own sync database is refreshed, so nothing else is
+// partly upgraded.
+type PacmanRepo struct {
+	Name     string   `json:"name"`
+	Servers  []string `json:"servers"`
+	SigLevel string   `json:"sig_level"`
+	// SigningKeyURL is downloaded to PacmanReposDir/<Name>.key, which is
+	// added to pacman's keyring, and SigningKeyID, a key ID or email, is
+	// locally signed so pacman trusts it. Both are empty for an unsigned
+	// repo.
+	SigningKeyURL string `json:"signing_key_url,omitempty"`
+	SigningKeyID  string `json:"signing_key_id,omitempty"`
+}
+
+// DisownedPacmanRepos warns about the repos and keys in PacmanReposDir that
+// no PacmanRepo earlier in the same run declared. Applying never removes
+// them, but pruning a repo removes it from pacman.conf, and pruning a key
+// removes it from pacman's keyring unless another key file in PacmanReposDir
+// holds it.
+type DisownedPacmanRepos struct{}
 
 // AURPackage installs a package from the AUR with paru.
 type AURPackage struct {
@@ -489,6 +515,10 @@ func (r Package) ID() string { return "package:" + r.Name }
 func (r AptRepo) ID() string { return "apt-repo:" + r.Name }
 
 func (r DisownedAptSources) ID() string { return "disowned-apt-sources" }
+
+func (r PacmanRepo) ID() string { return "pacman-repo:" + r.Name }
+
+func (r DisownedPacmanRepos) ID() string { return "disowned-pacman-repos" }
 
 func (r AURPackage) ID() string { return "aur:" + r.Name }
 

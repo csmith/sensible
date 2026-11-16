@@ -86,6 +86,7 @@ func TestResources_order(t *testing.T) {
 		{
 			osFamily: archLinux,
 			want: []string{
+				"pacman-repo:forgejo.example.com",
 				"package:nano",
 				"package:htop",
 				"aur:widget-bin",
@@ -127,6 +128,7 @@ func TestResources_order(t *testing.T) {
 				"owned-dir:/etc/sudoers.d",
 				"disowned:sshd",
 				"disowned:vim",
+				"disowned-pacman-repos",
 			},
 		},
 		{
@@ -177,6 +179,8 @@ func TestResources_order(t *testing.T) {
 				if tt.osFamily == debian {
 					h.Config.AUR.Packages = nil
 					h.Config.AptRepos = map[string]config.AptRepoConfig{"raspi": testAptRepo}
+				} else {
+					h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"forgejo.example.com": testPacmanRepo}
 				}
 				rs, err := Resources(h)
 				require.NoError(t, err)
@@ -198,6 +202,30 @@ var testAptRepo = config.AptRepoConfig{
 	Suites:        []string{"trixie"},
 	Components:    []string{"main"},
 	SigningKeyURL: "https://archive.raspberrypi.com/debian/raspberrypi.gpg.key",
+}
+
+var testPacmanRepo = config.PacmanRepoConfig{
+	Servers:       []string{"https://git.example.com/api/packages/chris/arch/forgejo/$arch"},
+	SigningKeyURL: "https://git.example.com/api/packages/chris/arch/repository.key",
+	SigningKeyID:  "chris@noreply.git.example.com",
+}
+
+func TestPacmanRepos(t *testing.T) {
+	h := testHost(archLinux)
+	h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{
+		"chris.forgejo.git.example.com": testPacmanRepo,
+		"unsigned":                      {Servers: []string{"https://a.example.com/$arch"}, SigLevel: "Never"},
+	}
+
+	rs, err := Resources(h)
+	require.NoError(t, err)
+	repo, ok := find[host.PacmanRepo](rs, "pacman-repo:chris.forgejo.git.example.com")
+	require.True(t, ok)
+	assert.Equal(t, "Required", repo.SigLevel)
+	assert.Equal(t, testPacmanRepo.SigningKeyID, repo.SigningKeyID)
+	other, ok := find[host.PacmanRepo](rs, "pacman-repo:unsigned")
+	require.True(t, ok)
+	assert.Equal(t, "Never", other.SigLevel)
 }
 
 func indexAfter(ids []string, id string, after int) int {
@@ -338,6 +366,40 @@ func TestResources_errors(t *testing.T) {
 		{"apt repo clashing with docker's", func(h *Host) {
 			h.Config.AUR.Packages = nil
 			h.Config.AptRepos = map[string]config.AptRepoConfig{"docker": testAptRepo}
+		}},
+		{"pacman repos on Debian", func(h *Host) {
+			h.Config.AUR.Packages = nil
+			h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"example": testPacmanRepo}
+		}},
+		{"invalid pacman repo name", func(h *Host) {
+			h.Facts.OSFamily = archLinux
+			h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"../example": testPacmanRepo}
+		}},
+		{"pacman repo named options", func(h *Host) {
+			h.Facts.OSFamily = archLinux
+			h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"options": testPacmanRepo}
+		}},
+		{"pacman repo without servers", func(h *Host) {
+			h.Facts.OSFamily = archLinux
+			h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"example": {}}
+		}},
+		{"pacman repo with a key URL but no ID", func(h *Host) {
+			h.Facts.OSFamily = archLinux
+			repo := testPacmanRepo
+			repo.SigningKeyID = ""
+			h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"example": repo}
+		}},
+		{"pacman repo with an option for a key ID", func(h *Host) {
+			h.Facts.OSFamily = archLinux
+			repo := testPacmanRepo
+			repo.SigningKeyID = "--import"
+			h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"example": repo}
+		}},
+		{"pacman repo with a multi-line server", func(h *Host) {
+			h.Facts.OSFamily = archLinux
+			repo := testPacmanRepo
+			repo.Servers = []string{"https://a.example.com\n[evil]"}
+			h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"example": repo}
 		}},
 		{"pam_rssh without a release", func(h *Host) {
 			h.Config.AUR.Packages = nil
@@ -1609,8 +1671,8 @@ func TestResources_recordsOnlyPackagesSafeToPrune(t *testing.T) {
 }
 
 // trailingDisowned returns the Disowned resources, requiring them,
-// DisownedPackages, DisownedAptSources and DisownedTailscale to come after
-// every other resource.
+// DisownedPackages, DisownedAptSources, DisownedPacmanRepos and
+// DisownedTailscale to come after every other resource.
 func trailingDisowned(t *testing.T, rs host.ResourceList) []host.Disowned {
 	t.Helper()
 	var disowned []host.Disowned
@@ -1620,7 +1682,7 @@ func trailingDisowned(t *testing.T, rs host.ResourceList) []host.Disowned {
 		case host.Disowned:
 			disowned = append(disowned, d)
 			trailing = true
-		case host.DisownedPackages, host.DisownedAptSources, host.DisownedTailscale:
+		case host.DisownedPackages, host.DisownedAptSources, host.DisownedPacmanRepos, host.DisownedTailscale:
 			trailing = true
 		default:
 			require.False(t, trailing, "%s comes after a disowned resource", r.ID())
