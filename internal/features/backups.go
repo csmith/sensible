@@ -133,7 +133,7 @@ func backupScriptContent(h Host) (string, error) {
 			forget = append(forget, "--keep-"+flag, strconv.Itoa(n))
 		}
 	}
-	for flag := range c.Keep {
+	for _, flag := range slices.Sorted(maps.Keys(c.Keep)) {
 		if !slices.Contains(keepFlags, flag) {
 			return "", fmt.Errorf(
 				"host %s: unknown restic.keep %q; expected one of %s",

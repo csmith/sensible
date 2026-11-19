@@ -960,8 +960,8 @@ func (r *Repo) hostRoleVhosts(host, role string, params RoleParams) ([]string, e
 	tags := slices.Clone(r.roleVhosts[role])
 	for _, declared := range r.params[role] {
 		values, _ := resolveParams(declared, params)
-		for _, v := range values {
-			tags = append(tags, findTags(v, vhostTag)...)
+		for _, name := range slices.Sorted(maps.Keys(values)) {
+			tags = append(tags, findTags(values[name], vhostTag)...)
 		}
 	}
 	var vhosts []string

@@ -1149,6 +1149,8 @@ func TestHostConfig_resticEnv(t *testing.T) {
 	require.NoError(t, err)
 	key, err := tr.open(t).Encrypt("b2key")
 	require.NoError(t, err)
+	account, err := tr.open(t).Encrypt("b2account")
+	require.NoError(t, err)
 	writeFile(
 		t,
 		tr.dir,
@@ -1157,7 +1159,8 @@ func TestHostConfig_resticEnv(t *testing.T) {
 			"  environment:\n"+
 			"    RCLONE_CONFIG_B2_TYPE: b2\n"+
 			"    RCLONE_CONFIG_B2_HARD_DELETE: false\n"+
-			"    RCLONE_CONFIG_B2_KEY: "+nest(nest(key))+"\n",
+			"    RCLONE_CONFIG_B2_KEY: "+nest(nest(key))+"\n"+
+			"    RCLONE_CONFIG_B2_ACCOUNT: "+nest(nest(account))+"\n",
 	)
 
 	c, err := tr.open(t).HostConfig("alpha", "debian")
@@ -1170,10 +1173,11 @@ func TestHostConfig_resticEnv(t *testing.T) {
 			"RCLONE_CONFIG_B2_TYPE":        "b2",
 			"RCLONE_CONFIG_B2_HARD_DELETE": "false",
 			"RCLONE_CONFIG_B2_KEY":         "b2key",
+			"RCLONE_CONFIG_B2_ACCOUNT":     "b2account",
 		},
 		c.Restic.Env,
 	)
-	assert.ElementsMatch(t, []string{"hunter2", "b2key"}, c.Restic.Secrets)
+	assert.Equal(t, []string{"hunter2", "b2account", "b2key"}, c.Restic.Secrets)
 }
 
 func TestHostConfig_resticErrors(t *testing.T) {

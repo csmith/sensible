@@ -318,7 +318,8 @@ func (c *DockerConfig) reveal() error {
 		return nil
 	}
 	c.Auths = map[string]string{}
-	for name, r := range c.Registries {
+	for _, name := range slices.Sorted(maps.Keys(c.Registries)) {
+		r := c.Registries[name]
 		if r.Username == "" {
 			return fmt.Errorf("docker.registries.%s needs a username", name)
 		}
@@ -822,7 +823,8 @@ func (c *ResticConfig) reveal() error {
 	}
 	c.Env = map[string]string{"RESTIC_REPOSITORY": c.Repository, "RESTIC_PASSWORD": password}
 	c.Secrets = []string{password}
-	for name, v := range c.Environment {
+	for _, name := range slices.Sorted(maps.Keys(c.Environment)) {
+		v := c.Environment[name]
 		if _, ok := c.Env[name]; ok {
 			return fmt.Errorf("restic.environment: %s is set from restic's own settings", name)
 		}

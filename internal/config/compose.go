@@ -335,7 +335,7 @@ func stackName(role string) string {
 
 // checkVolumes records the volumes a role declares.
 func (r *Repo) checkVolumes(role string, volumes map[string]Perms) error {
-	for name := range volumes {
+	for _, name := range slices.Sorted(maps.Keys(volumes)) {
 		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/:") {
 			return fmt.Errorf("%s: invalid volume name %q", r.path("roles", role, "role.yml"), name)
 		}

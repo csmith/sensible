@@ -457,7 +457,8 @@ func (r *Repo) partialVolumes(role string, volumes map[string]Perms) (map[string
 		if err := decode(r.keys.context(), filled, &s); err != nil {
 			return nil, fmt.Errorf("%s: %w", r.path(file), err)
 		}
-		for name, perms := range s.Volumes {
+		for _, name := range slices.Sorted(maps.Keys(s.Volumes)) {
+			perms := s.Volumes[name]
 			if prev, ok := sources[name]; ok && volumes[name] != perms {
 				return nil, fmt.Errorf(
 					"%s: %s and %s set volume %s differently",
@@ -482,8 +483,8 @@ func (r *Repo) partialVolumes(role string, volumes map[string]Perms) (map[string
 func partialVhostTags(use partialUse) []*ast.TagNode {
 	values, _ := resolveParams(use.def.params, RoleParams{node: use.args})
 	tags := make([]*ast.TagNode, 0, len(values))
-	for _, v := range values {
-		tags = append(tags, findTags(v, vhostTag)...)
+	for _, name := range slices.Sorted(maps.Keys(values)) {
+		tags = append(tags, findTags(values[name], vhostTag)...)
 	}
 	return tags
 }
