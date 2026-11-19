@@ -203,6 +203,8 @@ type Config struct {
 	// Stacks come from the host's roles that have a docker-compose.yml,
 	// rather than from a module, and are in name order.
 	Stacks []Stack `yaml:"-"`
+	// Parents are in name order.
+	Parents []Parent `yaml:"-"`
 	// Volumes are those of the host's roles and their parents, in path
 	// order.
 	Volumes []Volume `yaml:"-"`

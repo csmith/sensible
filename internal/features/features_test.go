@@ -644,6 +644,43 @@ func TestResources_stackMigrations(t *testing.T) {
 	)
 }
 
+func TestResources_parentMigrations(t *testing.T) {
+	h := testHost(archLinux)
+	compose := []config.StackFile{{Path: "docker-compose.yml", Content: "services: {}\n"}}
+	h.Config.Volumes = []config.Volume{{Path: "/srv/volumes/group/data"}}
+	h.Config.Stacks = []config.Stack{{Name: "group-a", Files: compose}, {Name: "group-b", Files: compose}}
+	h.Config.Parents = []config.Parent{
+		{
+			Name:       "group",
+			Children:   []string{"group-a", "group-b"},
+			Migrations: []config.Migration{{Name: "owner", On: "33", Before: config.Command{"chown"}}},
+		},
+	}
+	rs, err := Resources(h)
+	require.NoError(t, err)
+
+	got := ids(rs)
+	before := slices.Index(got, "migration-before:group/owner")
+	after := slices.Index(got, "migration-after:group/owner")
+	assert.Greater(t, before, slices.Index(got, "dir:/srv/volumes/group/data"), "the volume is there to migrate")
+	assert.Less(t, before, slices.Index(got, "compose:/srv/compose/group-a"))
+	assert.Greater(t, after, slices.Index(got, "compose:/srv/compose/group-b"))
+	m, ok := find[host.Migration](rs, "migration-after:group/owner")
+	require.True(t, ok)
+	assert.Equal(
+		t,
+		host.Migration{
+			Parent:   "group",
+			Children: []string{"/srv/compose/group-a", "/srv/compose/group-b"},
+			Name:     "owner",
+			Phase:    "after",
+			On:       "33",
+			Before:   []string{"chown"},
+		},
+		m,
+	)
+}
+
 func TestResources_dockerNetworks(t *testing.T) {
 	h := testHost(archLinux)
 	h.Config.Docker.Networks = map[string]config.DockerNetworkConfig{

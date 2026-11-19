@@ -23,15 +23,22 @@ func testMigration(phase, on string) Migration {
 // being recreated, as an apply would, returning each phase's diff or error.
 func migrate(t *testing.T, sys Sys, on string) (before, after string, err error) {
 	t.Helper()
+	return migrateWith(t, sys, func(phase string) Migration { return testMigration(phase, on) })
+}
+
+func migrateWith(t *testing.T, sys Sys, migration func(phase string) Migration) (before, after string, err error) {
+	t.Helper()
 	st := newRunState()
 	owed, err := readOwed(sys)
 	require.NoError(t, err)
 	st.owed = owed
 	ctx := withRunState(context.Background(), st)
 	for i, phase := range []string{PhaseBefore, PhaseAfter} {
-		r := testMigration(phase, on)
+		r := migration(phase)
 		if phase == PhaseAfter {
-			require.NoError(t, owed.settle(sys, owed.triggers, r.stackID()))
+			for _, dir := range r.stacks() {
+				require.NoError(t, owed.settle(sys, owed.triggers, ComposeStack{Dir: dir}.ID()))
+			}
 		}
 		change, cerr := r.Check(ctx, sys)
 		require.NoError(t, cerr)
@@ -157,8 +164,57 @@ func TestMigration_AfterWaitsForTheStackToBeRecreated(t *testing.T) {
 	st := newRunState()
 	st.owed = owed
 	err = testMigration(PhaseAfter, "b").Apply(withRunState(context.Background(), st), sys)
-	require.ErrorContains(t, err, "the stack hasn't been recreated since its before phase ran")
+	require.ErrorContains(t, err, "stack /srv/compose/web hasn't been recreated since its before phase ran")
 	assert.Equal(t, []string{"cd /srv/compose/web && dump"}, sys.ran)
+}
+
+func TestMigration_ParentRecreatesItsChildren(t *testing.T) {
+	sys := newTestSys(t)
+	sys.write("/srv/compose/apps-a/.env", "A='a'\n")
+	parent := func(on string) func(string) Migration {
+		return func(phase string) Migration {
+			return Migration{
+				Parent:   "apps",
+				Children: []string{"/srv/compose/apps-a", "/srv/compose/apps-b"},
+				Name:     "owner",
+				Phase:    phase,
+				On:       on,
+				Before:   []string{"chown"},
+				After:    []string{"check"},
+			}
+		}
+	}
+	_, _, err := migrateWith(t, sys, parent("1:1"))
+	require.NoError(t, err)
+	assert.True(t, sys.exists("/var/lib/sensible/migrations/apps/owner/record.json"))
+
+	var cmds []Cmd
+	for _, name := range []string{"chown", "check"} {
+		sys.commands[name] = func(c Cmd) Result {
+			cmds = append(cmds, c)
+			return Result{}
+		}
+	}
+	ctx := withRunState(context.Background(), newRunState())
+	require.NoError(t, parent("2:2")(PhaseBefore).Apply(ctx, sys))
+	owed, err := readOwed(sys)
+	require.NoError(t, err)
+	assert.True(t, owed.triggers["compose:/srv/compose/apps-a"])
+	assert.True(t, owed.triggers["compose:/srv/compose/apps-b"])
+
+	require.NoError(t, owed.settle(sys, owed.triggers, "compose:/srv/compose/apps-a"))
+	st := newRunState()
+	st.owed = owed
+	err = parent("2:2")(PhaseAfter).Apply(withRunState(context.Background(), st), sys)
+	require.ErrorContains(t, err, "stack /srv/compose/apps-b hasn't been recreated")
+
+	_, _, err = migrateWith(t, sys, parent("2:2"))
+	require.NoError(t, err)
+	require.Len(t, cmds, 2)
+	for _, c := range cmds {
+		assert.Empty(t, c.Dir, "it runs in /")
+		assert.Equal(t, map[string]string{"MIGRATION_DIR": "/var/lib/sensible/migrations/apps/owner/work"}, c.Env)
+	}
 }
 
 func TestMigration_SecretIsntShownOrKept(t *testing.T) {

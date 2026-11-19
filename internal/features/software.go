@@ -637,9 +637,27 @@ func stacks(h Host) ([]host.Resource, error) {
 	if len(h.Config.Stacks) > 0 {
 		rs = append(rs, host.Dir{Path: config.StacksDir, Owner: "root", Group: "docker", Mode: 0o750})
 	}
+	// A parent's migrations are around all of its children's stacks, which
+	// mount its volumes.
+	var after []host.Resource
+	for _, p := range h.Config.Parents {
+		children := make([]string, 0, len(p.Children))
+		for _, name := range p.Children {
+			children = append(children, config.Stack{Name: name}.Dir())
+		}
+		for _, m := range p.Migrations {
+			before := migration(m, host.PhaseBefore)
+			before.Parent, before.Children = p.Name, children
+			rs = append(rs, before)
+			finish := migration(m, host.PhaseAfter)
+			finish.Parent, finish.Children = p.Name, children
+			after = append(after, finish)
+		}
+	}
 	for _, s := range h.Config.Stacks {
 		rs = append(rs, stack(s)...)
 	}
+	rs = append(rs, after...)
 	// Networks are removed after the stacks that might use them.
 	return append(
 		rs,
@@ -652,21 +670,12 @@ func stacks(h Host) ([]host.Resource, error) {
 
 func stack(s config.Stack) []host.Resource {
 	dir := s.Dir()
-	migration := func(m config.Migration, phase string) host.Migration {
-		return host.Migration{
-			Stack:  dir,
-			Name:   m.Name,
-			Phase:  phase,
-			On:     m.On,
-			Secret: m.Secret,
-			Before: m.Before,
-			After:  m.After,
-		}
-	}
 	// Ahead of the stack's files, so a failure leaves the stack as it was.
 	rs := make([]host.Resource, 0, 2*len(s.Migrations)+2*len(s.Files)+3)
 	for _, m := range s.Migrations {
-		rs = append(rs, migration(m, host.PhaseBefore))
+		r := migration(m, host.PhaseBefore)
+		r.Stack = dir
+		rs = append(rs, r)
 	}
 	rs = append(rs, host.Dir{Path: dir, Owner: "root", Group: "docker", Mode: 0o750})
 	watch := make([]string, 0, len(s.Files)+1)
@@ -706,7 +715,20 @@ func stack(s config.Stack) []host.Resource {
 	}
 	rs = append(rs, host.ComposeStack{Dir: dir, Watch: watch})
 	for _, m := range s.Migrations {
-		rs = append(rs, migration(m, host.PhaseAfter))
+		r := migration(m, host.PhaseAfter)
+		r.Stack = dir
+		rs = append(rs, r)
 	}
 	return rs
+}
+
+func migration(m config.Migration, phase string) host.Migration {
+	return host.Migration{
+		Name:   m.Name,
+		Phase:  phase,
+		On:     m.On,
+		Secret: m.Secret,
+		Before: m.Before,
+		After:  m.After,
+	}
 }

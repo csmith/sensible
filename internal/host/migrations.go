@@ -13,7 +13,8 @@ import (
 )
 
 // MigrationsDir holds what each stack's migrations last ran with, in
-// <stack>/<migration>.
+// <stack>/<migration>. A parent role's are under the name its stack would
+// have.
 const MigrationsDir = "/var/lib/sensible/migrations"
 
 const (
@@ -31,11 +32,16 @@ const (
 // alone if it fails.
 type Migration struct {
 	// Stack is the stack's directory, where the commands run, with the
-	// variables in its .env.
-	Stack string `json:"stack"`
-	Name  string `json:"name"`
-	Phase string `json:"phase"`
-	On    string `json:"on"`
+	// variables in its .env. A parent role's migration has none.
+	Stack string `json:"stack,omitempty"`
+	// Parent is the name a parent role's stack would have, for its
+	// migration, which runs in / and recreates Children, its children's
+	// stacks' directories. It's listed ahead of and after all of them.
+	Parent   string   `json:"parent,omitempty"`
+	Children []string `json:"children,omitempty"`
+	Name     string   `json:"name"`
+	Phase    string   `json:"phase"`
+	On       string   `json:"on"`
 	// Secret keeps On out of diffs and records.
 	Secret bool `json:"secret,omitempty"`
 	// Before and After may be empty. Both get $MIGRATION_DIR, which is kept
@@ -85,8 +91,10 @@ func (r Migration) Apply(ctx context.Context, sys Sys) error {
 	if !ok || rec.Pending == nil {
 		return fmt.Errorf("migration %s hasn't run its before phase", r.Name)
 	}
-	if state(ctx).owed.triggers[r.stackID()] {
-		return fmt.Errorf("migration %s: the stack hasn't been recreated since its before phase ran", r.Name)
+	for _, dir := range r.stacks() {
+		if state(ctx).owed.triggers[ComposeStack{Dir: dir}.ID()] {
+			return fmt.Errorf("migration %s: stack %s hasn't been recreated since its before phase ran", r.Name, dir)
+		}
 	}
 	if err := r.run(ctx, sys, r.After); err != nil {
 		return err
@@ -104,9 +112,13 @@ func (r Migration) before(ctx context.Context, sys Sys, rec migrationRecord, ok 
 	if rec.Pending != nil || rec.Hash == r.value().Hash {
 		return nil
 	}
-	// Before may stop the stack, so it must be recreated, not just started,
-	// before After runs.
-	if err := state(ctx).owed.owe(sys, []string{r.stackID()}, nil); err != nil {
+	// Before may stop the stacks, so they must be recreated, not just
+	// started, before After runs.
+	ids := make([]string, 0, len(r.stacks()))
+	for _, dir := range r.stacks() {
+		ids = append(ids, ComposeStack{Dir: dir}.ID())
+	}
+	if err := state(ctx).owed.owe(sys, ids, nil); err != nil {
 		return err
 	}
 	// Left by a before that failed, which is run again from scratch.
@@ -128,12 +140,15 @@ func (r Migration) run(ctx context.Context, sys Sys, argv []string) error {
 	if len(argv) == 0 {
 		return nil
 	}
-	env, err := stackEnv(sys, r.Stack)
-	if err != nil {
-		return err
+	env := map[string]string{}
+	if r.Stack != "" {
+		var err error
+		if env, err = stackEnv(sys, r.Stack); err != nil {
+			return err
+		}
 	}
 	env["MIGRATION_DIR"] = r.workDir()
-	_, err = runOK(ctx, sys, Cmd{Argv: argv, Env: env, Dir: r.Stack})
+	_, err := runOK(ctx, sys, Cmd{Argv: argv, Env: env, Dir: r.Stack})
 	if err != nil {
 		return fmt.Errorf("migration %s: %s: %w", r.Name, r.Phase, err)
 	}
@@ -187,9 +202,20 @@ func (r Migration) value() migrationValue {
 	return migrationValue{Hash: hex.EncodeToString(sum[:]), Shown: shown}
 }
 
-func (r Migration) stackName() string { return filepath.Base(r.Stack) }
+func (r Migration) stackName() string {
+	if r.Parent != "" {
+		return r.Parent
+	}
+	return filepath.Base(r.Stack)
+}
 
-func (r Migration) stackID() string { return ComposeStack{Dir: r.Stack}.ID() }
+// stacks are the directories of the stacks recreated between its phases.
+func (r Migration) stacks() []string {
+	if r.Parent != "" {
+		return r.Children
+	}
+	return []string{r.Stack}
+}
 
 func (r Migration) dir() string { return filepath.Join(MigrationsDir, r.stackName(), r.Name) }
 

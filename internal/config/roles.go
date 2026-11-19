@@ -44,7 +44,7 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 		if e.oidcSecrets, err = r.roleOIDCSecrets(role, e.node, secretRoles); err != nil {
 			return Config{}, fmt.Errorf("%s: %w", name, err)
 		}
-		if _, ok := r.stacks[role]; ok {
+		if _, ok := r.stacks[role]; ok || e.migrations != nil {
 			expansions[role] = e
 		}
 		if err := checkConflicts("role "+role, e.node, set); err != nil {
@@ -79,12 +79,8 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 	}
 	// After the certificates, as a stack's !cert tags need to know where
 	// they're written.
-	for _, role := range slices.Sorted(maps.Keys(expansions)) {
-		s, err := r.renderStack(role, expansions[role], r.inventory.Hosts[name].Generated, c.IssuedCerts)
-		if err != nil {
-			return Config{}, fmt.Errorf("%s: role %s: %w", name, role, err)
-		}
-		c.Stacks = append(c.Stacks, s)
+	if err := r.renderStacks(name, expansions, &c); err != nil {
+		return Config{}, err
 	}
 	if err := c.finishOIDCClients(r.keys); err != nil {
 		return Config{}, fmt.Errorf("%s: %w", name, err)
@@ -95,6 +91,27 @@ func (r *Repo) HostConfig(name, osFamily string) (Config, error) {
 	slices.SortFunc(c.Stacks, func(a, b Stack) int { return strings.Compare(a.Name, b.Name) })
 	c.Volumes = r.hostVolumes(slices.Collect(maps.Keys(roles)))
 	return c, nil
+}
+
+// renderStacks renders the stacks of the host's roles that have one, and
+// the migrations of its parent roles that don't.
+func (r *Repo) renderStacks(name string, expansions map[string]expansion, c *Config) error {
+	for _, role := range slices.Sorted(maps.Keys(expansions)) {
+		if _, ok := r.stacks[role]; !ok {
+			p, err := r.renderParent(role, expansions[role], c.IssuedCerts)
+			if err != nil {
+				return fmt.Errorf("%s: role %s: %w", name, role, err)
+			}
+			c.Parents = append(c.Parents, p)
+			continue
+		}
+		s, err := r.renderStack(role, expansions[role], r.inventory.Hosts[name].Generated, c.IssuedCerts)
+		if err != nil {
+			return fmt.Errorf("%s: role %s: %w", name, role, err)
+		}
+		c.Stacks = append(c.Stacks, s)
+	}
+	return nil
 }
 
 // hostRoles are the host's roles and the children of those roles, which come
@@ -220,8 +237,8 @@ func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (expan
 		return expansion{}, err
 	}
 	merged, migrations := splitMigrations(merged)
-	if _, ok := r.stacks[role]; !ok && migrations != nil {
-		return expansion{}, fmt.Errorf("%s: migrations only work in a role with a stack", r.path("roles", role))
+	if _, ok := r.stacks[role]; !ok && migrations != nil && len(r.roles[role]) == 0 {
+		return expansion{}, fmt.Errorf("%s: migrations only work in a role with a stack or children", r.path("roles", role))
 	}
 	return expansion{
 		node:         merged,

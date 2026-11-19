@@ -122,5 +122,26 @@ from the start of `before` until `after` succeeds. `on` can be an `!age` or
 commands can't hold secrets; they read them from `compose.env`'s variables
 instead. Names are letters, digits, `-`, `_` and `.`.
 
+A parent role without a stack of its own can have migrations too, such as one
+that hands its volumes to a new owner. Its `before` runs ahead of any of its
+children's stacks being changed, all of which are then recreated, and its
+`after` runs once they're all up. It only runs on hosts with the parent role,
+not those with just one of its children. There's no stack directory or `.env`,
+so its commands run in `/` with only `$MIGRATION_DIR` added to the
+environment, and `docker compose` needs `-p <child stack>` to reach a child's
+stack. Its `on` can't be `!generated`, as there's no stack to save it for.
+
+```yaml
+# roles/media/role.yml
+children: [jellyfin, sonarr]
+compose:
+  volumes:
+    library: {owner: 1000, group: 1000}
+migrations:
+  library-owner:
+    on: "1000:1000"
+    before: [chown, -R, -h, "1000:1000", !volume library]
+```
+
 Migrations can come from partials as well, and the records of migrations
 nothing declares any more are forgotten.

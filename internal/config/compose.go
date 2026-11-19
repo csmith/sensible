@@ -79,6 +79,17 @@ type Migration struct {
 	Before, After Command
 }
 
+// Parent is a parent role without a stack of its own that has migrations,
+// which run around the recreates of its children's stacks.
+type Parent struct {
+	// Name is the name the role's stack would have.
+	Name string
+	// Children are the names of its children's stacks.
+	Children []string
+	// Migrations are in name order.
+	Migrations []Migration
+}
+
 func (s Stack) Dir() string {
 	return filepath.Join(StacksDir, s.Name)
 }
@@ -467,6 +478,32 @@ func (r *Repo) renderStack(
 		return Stack{}, fmt.Errorf("%s: %w", host.ComposeFile, err)
 	}
 	return s, nil
+}
+
+// renderParent renders the migrations of a parent role without a stack.
+func (r *Repo) renderParent(role string, e expansion, certs []Cert) (Parent, error) {
+	// There's no stack to save its values with.
+	if tag := findTag(e.migrations, generatedTag); tag != nil {
+		return Parent{}, nodeError(tag, generatedTag+" needs a stack, so can't be in a parent role's migrations")
+	}
+	p := Parent{Name: stackName(role)}
+	for _, child := range r.roles[role] {
+		if def, ok := r.stacks[child]; ok {
+			p.Children = append(p.Children, def.name)
+		}
+	}
+	c := &composeRenderer{
+		repo:         r,
+		def:          &stackDef{role: role, name: p.Name},
+		params:       e.params,
+		placeholders: e.placeholders,
+		certs:        certs,
+	}
+	var err error
+	if p.Migrations, err = c.renderMigrations(e.migrations); err != nil {
+		return Parent{}, fmt.Errorf("%s: %w", migrationsKey, err)
+	}
+	return p, nil
 }
 
 // renderCompose merges the role's compose file over its partials' and

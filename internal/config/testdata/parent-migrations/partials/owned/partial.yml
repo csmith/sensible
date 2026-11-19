@@ -1,0 +1,8 @@
+params: {volume: ~, owner: ~}
+compose:
+  volumes:
+    "{volume}": {owner: "{owner}"}
+migrations:
+  "{volume}-owner":
+    on: "{owner}"
+    before: [chown, -R, "{owner}", !volume "{volume}"]

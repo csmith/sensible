@@ -1127,7 +1127,7 @@ func TestHostConfig_migrationErrors(t *testing.T) {
 				"roles/web/role.yml":           "migrations:\n  m: {on: x, after: [true]}\n",
 				"roles/web/docker-compose.yml": "",
 			},
-			"migrations only work in a role with a stack",
+			"migrations only work in a role with a stack or children",
 		},
 		{
 			"no on",
@@ -1182,6 +1182,29 @@ func TestHostConfig_migrationErrors(t *testing.T) {
 			},
 		)
 	}
+}
+
+func TestHostConfig_parentMigrations(t *testing.T) {
+	files := readTestTree(t, "parent-migrations")
+	c, err := newTestRepo(t, files).open(t).HostConfig("alpha", "debian")
+	require.NoError(t, err)
+	assert.Equal(
+		t,
+		[]Parent{{
+			Name:     "group",
+			Children: []string{"group-one", "group-two"},
+			Migrations: []Migration{{
+				Name:   "data-owner",
+				On:     "33",
+				Before: Command{"chown", "-R", "33", "/srv/volumes/group/data"},
+			}},
+		}},
+		c.Parents,
+	)
+
+	files["roles/group/role.yml"] = "children: [one, two, plain]\nmigrations:\n  m: {on: !generated x, after: [true]}\n"
+	_, err = newTestRepo(t, files).open(t).HostConfig("alpha", "debian")
+	require.ErrorContains(t, err, "!generated needs a stack, so can't be in a parent role's migrations")
 }
 
 func TestHostConfig_oidcClientSecretIsTheStacksGeneratedValue(t *testing.T) {
