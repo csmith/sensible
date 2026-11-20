@@ -3,6 +3,8 @@ RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     systemd systemd-sysv openssh-server ca-certificates iproute2 \
  && rm -rf /var/lib/apt/lists/*
+# /dev is the host's, so gettys would take over its virtual consoles.
+RUN systemctl mask getty.target
 RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh && systemctl enable ssh \
  && printf 'PermitRootLogin prohibit-password\n' > /etc/ssh/sshd_config.d/00-test.conf
 COPY rootkey.pub /root/.ssh/authorized_keys

@@ -1,5 +1,9 @@
 FROM docker.io/library/archlinux:latest
 RUN pacman -Syu --noconfirm openssh iproute2 && pacman -Scc --noconfirm
+# /sys and /dev are the host's: udev would re-announce its devices, and gettys
+# would take over its virtual consoles.
+RUN systemctl mask systemd-udevd.service systemd-udevd-control.socket systemd-udevd-kernel.socket \
+    systemd-udevd-varlink.socket systemd-udev-trigger.service getty.target
 RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh && systemctl enable sshd && ssh-keygen -A \
  && printf 'PermitRootLogin prohibit-password\n' > /etc/ssh/sshd_config.d/00-test.conf
 COPY rootkey.pub /root/.ssh/authorized_keys

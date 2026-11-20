@@ -6,6 +6,8 @@ RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     systemd systemd-sysv openssh-server ca-certificates iproute2 $EXTRA \
  && rm -rf /var/lib/apt/lists/*
+# /dev is the host's, so gettys would take over its virtual consoles.
+RUN systemctl mask getty.target
 # sshd is left socket-activated, as Ubuntu installs it.
 RUN mkdir -p /root/.ssh && chmod 700 /root/.ssh \
  && printf 'PermitRootLogin prohibit-password\n' > /etc/ssh/sshd_config.d/00-test.conf
