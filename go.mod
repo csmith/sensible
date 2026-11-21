@@ -3,7 +3,7 @@ module chameth.com/sensible
 go 1.27.4
 
 require (
-	chameth.com/x v0.0.2
+	chameth.com/x v0.0.3
 	filippo.io/age v1.3.2
 	github.com/csmith/envflag/v2 v2.0.0
 	github.com/goccy/go-yaml v1.19.2

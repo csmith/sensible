@@ -939,67 +939,6 @@ func TestOwnedDir_PruneRemovesThenNotifies(t *testing.T) {
 	assert.Equal(t, "systemctl restart systemd-timesyncd", sys.ran[len(sys.ran)-1])
 }
 
-func TestUnifiedDiff(t *testing.T) {
-	lines := func(n int, change map[int]string) string {
-		var b strings.Builder
-		for i := 1; i <= n; i++ {
-			if s, ok := change[i]; ok {
-				b.WriteString(s)
-			} else {
-				b.WriteString("l" + strconv.Itoa(i) + "\n")
-			}
-		}
-		return b.String()
-	}
-
-	tests := []struct {
-		name     string
-		old, new string
-		want     string
-	}{
-		{name: "equal", old: "a\n", new: "a\n", want: ""},
-		{
-			name: "separate hunks",
-			old:  lines(20, nil),
-			new:  lines(20, map[int]string{2: "X\n", 18: ""}),
-			want: "@@ -1,5 +1,5 @@\n l1\n-l2\n+X\n l3\n l4\n l5\n" +
-				"@@ -15,6 +15,5 @@\n l15\n l16\n l17\n-l18\n l19\n l20\n",
-		},
-		{
-			name: "nearby changes share a hunk",
-			old:  lines(10, nil),
-			new:  lines(10, map[int]string{3: "X\n", 8: "Y\n"}),
-			want: "@@ -1,10 +1,10 @@\n l1\n l2\n-l3\n+X\n l4\n l5\n l6\n l7\n-l8\n+Y\n l9\n l10\n",
-		},
-		{
-			name: "missing final newline",
-			old:  "a\nb",
-			new:  "a\nb\n",
-			want: "@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+b\n",
-		},
-		{
-			name: "insertion",
-			old:  "a\nc\n",
-			new:  "a\nb\nc\n",
-			want: "@@ -1,2 +1,3 @@\n a\n+b\n c\n",
-		},
-		{
-			name: "removing everything",
-			old:  "a\n",
-			new:  "",
-			want: "@@ -1 +0,0 @@\n-a\n",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(
-			tt.name,
-			func(t *testing.T) {
-				assert.Equal(t, tt.want, unifiedDiff(tt.old, tt.new))
-			},
-		)
-	}
-}
-
 func TestPreviewPath_ShowsTheStartOfATextFile(t *testing.T) {
 	sys := newTestSys(t)
 	var content strings.Builder

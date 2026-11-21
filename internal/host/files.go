@@ -19,6 +19,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"chameth.com/x/text"
 )
 
 const (
@@ -96,7 +98,7 @@ func (r File) contentDiff(current string) string {
 	case !utf8.ValidString(current) || !utf8.ValidString(r.Content):
 		return "change binary content\n"
 	}
-	if diff := unifiedDiff(r.mask(current), r.mask(r.Content)); diff != "" {
+	if diff := text.UnifiedDiff(r.mask(current), r.mask(r.Content), 3); diff != "" {
 		return diff
 	}
 	return "change secret values\n"
@@ -548,7 +550,7 @@ func (r LineInFile) Check(ctx context.Context, sys Sys) (Change, error) {
 	if err != nil {
 		return Change{}, err
 	}
-	diff := unifiedDiff(current, updated)
+	diff := text.UnifiedDiff(current, updated, 3)
 	return Change{InSync: diff == "", Diff: diff}, nil
 }
 
@@ -623,7 +625,7 @@ func (r CommentOut) Check(ctx context.Context, sys Sys) (Change, error) {
 	}
 	var diff strings.Builder
 	for _, e := range edits {
-		diff.WriteString("--- " + e.path + "\n" + unifiedDiff(e.old, e.new))
+		diff.WriteString("--- " + e.path + "\n" + text.UnifiedDiff(e.old, e.new, 3))
 	}
 	return Change{InSync: len(edits) == 0, Diff: diff.String()}, nil
 }

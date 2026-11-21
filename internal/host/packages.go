@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"chameth.com/x/text"
 )
 
 const (
@@ -540,7 +542,7 @@ func (r AptRepo) Check(ctx context.Context, sys Sys) (Change, error) {
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return Change{}, err
 	}
-	diff.WriteString(unifiedDiff(string(current), r.sources(keyPath)))
+	diff.WriteString(text.UnifiedDiff(string(current), r.sources(keyPath), 3))
 	return Change{InSync: diff.Len() == 0, Diff: diff.String()}, nil
 }
 
@@ -705,7 +707,7 @@ func (r PacmanRepo) Check(ctx context.Context, sys Sys) (Change, error) {
 	if err != nil {
 		return Change{}, err
 	}
-	diff.WriteString(unifiedDiff(current, r.conf()))
+	diff.WriteString(text.UnifiedDiff(current, r.conf(), 3))
 	synced, err := r.synced(sys)
 	if err != nil {
 		return Change{}, err
@@ -721,7 +723,7 @@ func (r PacmanRepo) Check(ctx context.Context, sys Sys) (Change, error) {
 	if err != nil {
 		return Change{}, err
 	}
-	diff.WriteString(unifiedDiff(conf, included))
+	diff.WriteString(text.UnifiedDiff(conf, included, 3))
 	return Change{InSync: diff.Len() == 0, Diff: diff.String()}, nil
 }
 
