@@ -186,7 +186,9 @@ func TestServe_UpgradeReplacesAndExecs(t *testing.T) {
 	data, err := os.ReadFile(ta.agent.executable)
 	require.NoError(t, err)
 	assert.Equal(t, "new binary", string(data))
-	assert.NoFileExists(t, ta.agent.executable+".new")
+	entries, err := os.ReadDir(filepath.Dir(ta.agent.executable))
+	require.NoError(t, err)
+	assert.Len(t, entries, 1, "no temporary file is left beside the executable")
 }
 
 func TestServe_FailedUpgradeKeepsServing(t *testing.T) {

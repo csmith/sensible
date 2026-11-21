@@ -353,13 +353,6 @@ func (f fileOps) writeInPlace(data []byte, opts WriteOptions) error {
 	return file.Sync()
 }
 
-func syncDir(dir string) {
-	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync()
-		_ = d.Close()
-	}
-}
-
 func (s *localSys) Stat(path string) (FileInfo, error) {
 	return confined(s, path, followLast, fileOps.stat)
 }

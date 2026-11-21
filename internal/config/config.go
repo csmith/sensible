@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"chameth.com/x/file"
 	"filippo.io/age"
 	"github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
@@ -1057,7 +1058,7 @@ func (r *Repo) SaveDNSState(names map[string][]string) error {
 		}
 		out.WriteString("  " + strconv.Quote(name) + ": [" + strings.Join(types, ", ") + "]\n")
 	}
-	if err := writeAtomic(path, []byte(out.String()), 0o600); err != nil {
+	if err := file.Write(path, []byte(out.String()), 0o600); err != nil {
 		return err
 	}
 	r.dnsState = maps.Clone(names)
@@ -1468,15 +1469,15 @@ func stateFile(host string) string {
 // updateState rewrites the host's state file with change applied to what it
 // holds now, then reloads the inventory.
 func (r *Repo) updateState(name string, change func(*hostState)) error {
-	file := stateFile(name)
+	stateName := stateFile(name)
 	states := map[string]hostState{}
-	node, err := r.readLayer(file, true)
+	node, err := r.readLayer(stateName, true)
 	if err != nil {
 		return err
 	}
 	if node != nil {
 		if err := decode(r.keys.context(), node, &states); err != nil {
-			return fmt.Errorf("%s: %w", r.path(file), err)
+			return fmt.Errorf("%s: %w", r.path(stateName), err)
 		}
 	}
 	s := states[name]
@@ -1490,7 +1491,7 @@ func (r *Repo) updateState(name string, change func(*hostState)) error {
 		states[host].write(&out)
 	}
 
-	if err := writeAtomic(r.path(file), []byte(out.String()), 0o600); err != nil {
+	if err := file.Write(r.path(stateName), []byte(out.String()), 0o600); err != nil {
 		return err
 	}
 	return r.readHosts()
@@ -1498,31 +1499,6 @@ func (r *Repo) updateState(name string, change func(*hostState)) error {
 
 func indent(s, prefix string) string {
 	return strings.ReplaceAll(s, "\n", "\n"+prefix)
-}
-
-func writeAtomic(path string, content []byte, perm os.FileMode) error {
-	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.Remove(f.Name()) }()
-
-	if err := f.Chmod(perm); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if _, err := f.Write(content); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), path)
 }
 
 // checkLayout rejects role files that would never be read, and roles hosts

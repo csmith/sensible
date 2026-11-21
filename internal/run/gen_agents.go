@@ -5,9 +5,12 @@ package main
 import (
 	"compress/gzip"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"chameth.com/x/file"
 )
 
 // main builds the agent for each GOARCH given as an argument, writing them
@@ -51,23 +54,18 @@ func build(arch string) error {
 		return err
 	}
 
-	out, err := os.CreateTemp("agents", ".tmp-*")
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.Remove(out.Name()) }()
-	zw, err := gzip.NewWriterLevel(out, gzip.BestCompression)
-	if err != nil {
-		return err
-	}
-	if _, err := zw.Write(content); err != nil {
-		return err
-	}
-	if err := zw.Close(); err != nil {
-		return err
-	}
-	if err := out.Close(); err != nil {
-		return err
-	}
-	return os.Rename(out.Name(), filepath.Join("agents", "linux-"+arch+".gz"))
+	return file.WriteFunc(
+		filepath.Join("agents", "linux-"+arch+".gz"),
+		0o600,
+		func(w io.Writer) error {
+			zw, err := gzip.NewWriterLevel(w, gzip.BestCompression)
+			if err != nil {
+				return err
+			}
+			if _, err := zw.Write(content); err != nil {
+				return err
+			}
+			return zw.Close()
+		},
+	)
 }

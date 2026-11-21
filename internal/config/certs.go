@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"chameth.com/x/file"
 	"github.com/goccy/go-yaml/ast"
 )
 
@@ -456,7 +457,7 @@ func (r *Repo) saveAuthority(id string) error {
 	for _, id := range slices.Sorted(maps.Keys(r.cas)) {
 		out.WriteString(id + ":\n" + r.cas[id].yaml("  "))
 	}
-	if err := writeAtomic(r.path(caStateFile), []byte(out.String()), 0o600); err != nil {
+	if err := file.Write(r.path(caStateFile), []byte(out.String()), 0o600); err != nil {
 		return err
 	}
 	a.key, a.newKey = key, ""

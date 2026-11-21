@@ -11,10 +11,11 @@ import (
 	"log/syslog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
+
+	"chameth.com/x/file"
 )
 
 // Serve runs the agent protocol over the given streams until Bye or EOF.
@@ -184,30 +185,9 @@ func (a *agent) hello(conn *Conn) error {
 // upgrade replaces the executable and re-execs it, so only returns if that
 // fails. The old binary stays in place until the new one is complete.
 func (a *agent) upgrade(binary []byte) error {
-	tmp := a.executable + ".new"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755)
-	if err != nil {
+	if err := file.Write(a.executable, binary, 0o755); err != nil {
 		return err
 	}
-	if _, err := f.Write(binary); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, a.executable); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	syncDir(filepath.Dir(a.executable))
 	_, _ = fmt.Fprintf(a.log, "upgraded %s; re-executing\n", a.executable)
 	return a.exec(a.executable, os.Args, os.Environ())
 }
