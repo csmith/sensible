@@ -238,7 +238,10 @@ func (r *Repo) expandRole(host, role, osFamily string, params RoleParams) (expan
 	}
 	merged, migrations := splitMigrations(merged)
 	if _, ok := r.stacks[role]; !ok && migrations != nil && len(r.roles[role]) == 0 {
-		return expansion{}, fmt.Errorf("%s: migrations only work in a role with a stack or children", r.path("roles", role))
+		return expansion{}, fmt.Errorf(
+			"%s: migrations only work in a role with a stack or children",
+			r.path("roles", role),
+		)
 	}
 	return expansion{
 		node:         merged,
@@ -533,7 +536,12 @@ func (r *Repo) roleOIDCSecrets(
 		}
 		secretRoles[id] = role
 		if _, ok := r.stacks[role]; !ok {
-			return nil, fmt.Errorf("role %s: %s.%s.secret: !generated needs a role with a stack", role, oidcClientsKey, id)
+			return nil, fmt.Errorf(
+				"role %s: %s.%s.secret: !generated needs a role with a stack",
+				role,
+				oidcClientsKey,
+				id,
+			)
 		}
 	}
 	return secrets, nil
@@ -549,7 +557,9 @@ func oidcSecrets(node ast.Node) map[string]*ast.TagNode {
 	secrets := map[string]*ast.TagNode{}
 	for _, c := range mappingValues(clients.Value) {
 		for _, field := range mappingValues(c.Value) {
-			if tag, ok := field.Value.(*ast.TagNode); ok && keyString(field.Key) == "secret" && tag.Start.Value == generatedTag {
+			if tag, ok := field.Value.(*ast.TagNode); ok &&
+				keyString(field.Key) == "secret" &&
+				tag.Start.Value == generatedTag {
 				secrets[keyString(c.Key)] = tag
 			}
 		}
@@ -694,7 +704,9 @@ func (f roleFiller) fill(node ast.Node) (ast.Node, error) {
 	case *ast.AnchorNode:
 		n.Value, err = f.fill(n.Value)
 	case *ast.MappingNode:
-		if n.IsFlowStyle && len(n.Values) == 1 && isNull(n.Values[0].Value) &&
+		if n.IsFlowStyle &&
+			len(n.Values) == 1 &&
+			isNull(n.Values[0].Value) &&
 			rolePlaceholder.MatchString("{"+keyString(n.Values[0].Key)+"}") {
 			return nil, nodeError(n, "quote placeholders, e.g. \"{host}\", or YAML reads them as mappings")
 		}
@@ -756,7 +768,11 @@ func (f roleFiller) interpolate(at ast.Node, s string) (string, error) {
 				if f.fixed != "" && err == nil {
 					err = nodeError(
 						at,
-						fmt.Sprintf("{%s} is the host's name, which differs between hosts, but %s can't", hostPlaceholder, f.fixed),
+						fmt.Sprintf(
+							"{%s} is the host's name, which differs between hosts, but %s can't",
+							hostPlaceholder,
+							f.fixed,
+						),
 					)
 				}
 				return f.host
@@ -1087,7 +1103,8 @@ func splitVhostNames(tag *ast.TagNode, text string) ([]string, error) {
 		for _, field := range fields {
 			name := normaliseName(field)
 			labels := strings.Split(name, ".")
-			if len(labels) < 2 || slices.ContainsFunc(labels, func(l string) bool { return !domainLabel.MatchString(l) }) {
+			if len(labels) < 2 ||
+				slices.ContainsFunc(labels, func(l string) bool { return !domainLabel.MatchString(l) }) {
 				return nil, nodeError(tag, fmt.Sprintf("%q isn't a domain name", field))
 			}
 			names = append(names, name)

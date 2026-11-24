@@ -33,7 +33,8 @@ type oidcGrant struct {
 }
 
 func (g oidcGrant) equal(o oidcGrant) bool {
-	return g.client == o.client && g.user == o.user &&
+	return g.client == o.client &&
+		g.user == o.user &&
 		slices.Equal(g.clientPermissions, o.clientPermissions) &&
 		slices.Equal(g.userPermissions, o.userPermissions)
 }

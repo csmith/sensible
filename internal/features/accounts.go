@@ -23,10 +23,7 @@ func users(h Host) ([]host.Resource, error) {
 				return nil, fmt.Errorf("users.%s.%s must be an absolute path, not %q", name, p[0], p[1])
 			}
 		}
-		rs = append(
-			rs,
-			host.User{Name: name, Groups: u.Groups, Home: u.Home, Shell: u.Shell, Managed: true},
-		)
+		rs = append(rs, host.User{Name: name, Groups: u.Groups, Home: u.Home, Shell: u.Shell, Managed: true})
 	}
 	return rs, nil
 }

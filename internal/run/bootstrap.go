@@ -424,7 +424,9 @@ func (b *bootstrapper) installLocal(ctx context.Context) error {
 	}
 
 	cmd := exec.CommandContext(ctx, "sudo", "sh", "-s")
-	cmd.Stdin = strings.NewReader(bootstrapScript(b.creds.password, tmp.Name(), build.Hash, b.creds.authorizedKey, true))
+	cmd.Stdin = strings.NewReader(
+		bootstrapScript(b.creds.password, tmp.Name(), build.Hash, b.creds.authorizedKey, true),
+	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("running setup: %w\n%s", err, strings.TrimSpace(string(out)))
 	}

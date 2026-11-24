@@ -90,7 +90,10 @@ func (s *Secret) UnmarshalYAML(ctx context.Context, node ast.Node) error {
 	}
 	tag, ok := node.(*ast.TagNode)
 	if !ok || tag.Start.Value != ageTag {
-		return nodeError(node, "secrets must be encrypted: replace the value with the output of `sensible secret encrypt`")
+		return nodeError(
+			node,
+			"secrets must be encrypted: replace the value with the output of `sensible secret encrypt`",
+		)
 	}
 	var value string
 	switch v := tag.Value.(type) {

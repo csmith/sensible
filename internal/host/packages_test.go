@@ -33,7 +33,11 @@ func TestPackage_Pacman(t *testing.T) {
 		{name: "missing", resource: Package{Name: "git"}, apply: "pacman -S --needed --noconfirm git"},
 		{name: "absent", resource: Package{Name: "git", Absent: true}, inSync: true},
 		{name: "only provided, so not removed", resource: Package{Name: "xxd", Absent: true}, inSync: true},
-		{name: "installed and unwanted", resource: Package{Name: "zsh", Absent: true}, apply: "pacman -R --noconfirm zsh"},
+		{
+			name:     "installed and unwanted",
+			resource: Package{Name: "zsh", Absent: true},
+			apply:    "pacman -R --noconfirm zsh",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(
@@ -91,7 +95,11 @@ func TestPackage_PacmanInstallFailures(t *testing.T) {
 	}{
 		{"package", "pacman -S --needed --noconfirm git", Package{Name: "git"}},
 		{"aur package", "paru *", AURPackage{Name: "pam_rssh", BuildUser: "bob"}},
-		{"command", "sh -c pacman -S docker", Command{Name: "docker", ApplyArgv: []string{"sh", "-c", "pacman -S docker"}}},
+		{
+			"command",
+			"sh -c pacman -S docker",
+			Command{Name: "docker", ApplyArgv: []string{"sh", "-c", "pacman -S docker"}},
+		},
 	}
 	for _, tt := range tests {
 		for _, install := range installs {
@@ -311,7 +319,12 @@ func TestPackage_PacmanWaitsForLock(t *testing.T) {
 		{name: "unlocked"},
 		{name: "locked by no running pacman", lock: true},
 		{name: "locked by a pacman that finishes", lock: true, pacmanFor: time.Minute},
-		{name: "locked throughout", lock: true, pacmanFor: -1, wantErr: "another pacman still holds /var/lib/pacman/db.lck"},
+		{
+			name:      "locked throughout",
+			lock:      true,
+			pacmanFor: -1,
+			wantErr:   "another pacman still holds /var/lib/pacman/db.lck",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(
@@ -1033,7 +1046,9 @@ func TestPacmanRepo_RefreshFails(t *testing.T) {
 
 func TestPackage_PacmanAfterNewRepo(t *testing.T) {
 	sys := newArchSys(t)
-	sys.commands["pacman -Sp *"] = func(Cmd) Result { return Result{Stderr: "error: target not found: widget", Code: 1} }
+	sys.commands["pacman -Sp *"] = func(Cmd) Result {
+		return Result{Stderr: "error: target not found: widget", Code: 1}
+	}
 	st := newRunState()
 	st.modified[PacmanRepo{Name: "example"}.ID()] = true
 

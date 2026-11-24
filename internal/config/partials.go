@@ -605,19 +605,22 @@ func (c *composeRenderer) partialCompose(use partialUse, values map[string]ast.N
 	if err != nil {
 		return nil, err
 	}
-	fl := filler{values: values, exact: func(v, at ast.Node) (ast.Node, error) {
-		value, err := c.value(v)
-		if err != nil {
-			return nil, err
-		}
-		n, err := flowNode(value)
-		if err != nil {
-			return nil, err
-		}
-		// So overlay can move it like the nodes around it.
-		n.AddColumn(column(at) - column(n))
-		return n, nil
-	}}
+	fl := filler{
+		values: values,
+		exact: func(v, at ast.Node) (ast.Node, error) {
+			value, err := c.value(v)
+			if err != nil {
+				return nil, err
+			}
+			n, err := flowNode(value)
+			if err != nil {
+				return nil, err
+			}
+			// So overlay can move it like the nodes around it.
+			n.AddColumn(column(at) - column(n))
+			return n, nil
+		},
+	}
 	body, _, err := fl.fill(f.Docs[0].Body)
 	if err != nil {
 		return nil, err
@@ -808,7 +811,10 @@ func (f filler) value(at ast.Node, name string) (ast.Node, error) {
 	if f.fixed && findTag(v, paramTag) != nil {
 		return nil, nodeError(
 			at,
-			fmt.Sprintf("{%s} is a role parameter or the host's name here, which differ between hosts, but volumes can't", name),
+			fmt.Sprintf(
+				"{%s} is a role parameter or the host's name here, which differ between hosts, but volumes can't",
+				name,
+			),
 		)
 	}
 	return v, nil
@@ -845,7 +851,10 @@ func (f filler) interpolate(at ast.Node, s string) (string, error) {
 func scalarText(at ast.Node, name string, v ast.Node) (string, error) {
 	s, ok := v.(ast.ScalarNode)
 	if !ok || isNull(v) || v.Type() == ast.TagType {
-		return "", nodeError(at, fmt.Sprintf("{%s} must be a string, number or bool to be part of a longer value", name))
+		return "", nodeError(
+			at,
+			fmt.Sprintf("{%s} must be a string, number or bool to be part of a longer value", name),
+		)
 	}
 	return scalarValue(s), nil
 }

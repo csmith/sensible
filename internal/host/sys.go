@@ -171,11 +171,13 @@ func (s *localSys) Run(ctx context.Context, cmd Cmd) (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
-		c.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{
-			Uid:    uint32(u.UID),
-			Gid:    uint32(u.GID),
-			Groups: gids,
-		}}
+		c.SysProcAttr = &syscall.SysProcAttr{
+			Credential: &syscall.Credential{
+				Uid:    uint32(u.UID),
+				Gid:    uint32(u.GID),
+				Groups: gids,
+			},
+		}
 		env["HOME"], env["USER"], env["LOGNAME"] = u.Home, u.Name, u.Name
 		home = u.Home
 	}

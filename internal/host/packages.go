@@ -76,14 +76,7 @@ func (r Package) install(ctx context.Context, sys Sys, family string) error {
 	_, err := runOK(
 		ctx,
 		sys,
-		aptGet(
-			"install",
-			"-o",
-			"Dpkg::Options::=--force-confdef",
-			"-o",
-			"Dpkg::Options::=--force-confold",
-			target,
-		),
+		aptGet("install", "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold", target),
 	)
 	return err
 }
@@ -796,7 +789,10 @@ func (r PacmanRepo) sync(ctx context.Context, sys Sys) error {
 		_, err := runPacman(
 			ctx,
 			sys,
-			Cmd{Argv: []string{"pacman", "--config", "/dev/stdin", "--arch", "auto", "-Sy", "--noconfirm"}, Stdin: r.conf()},
+			Cmd{
+				Argv:  []string{"pacman", "--config", "/dev/stdin", "--arch", "auto", "-Sy", "--noconfirm"},
+				Stdin: r.conf(),
+			},
 		)
 		if err != nil {
 			return err
@@ -897,7 +893,8 @@ func pacmanKeyTrusted(ctx context.Context, sys Sys, id string) (bool, error) {
 		return false, nil
 	}
 	for line := range strings.Lines(res.Stdout) {
-		if fields := strings.Split(line, ":"); len(fields) > 1 && fields[0] == "pub" &&
+		if fields := strings.Split(line, ":"); len(fields) > 1 &&
+			fields[0] == "pub" &&
 			(fields[1] == "f" || fields[1] == "u") {
 			return true, nil
 		}
@@ -1067,7 +1064,9 @@ func (r AURPackage) Apply(ctx context.Context, sys Sys) error {
 func explainStaleSyncDB(res Result, err error) error {
 	// Mirrors only keep current versions, so a stale sync database names
 	// files they've deleted.
-	if out := output(res); err != nil && strings.Contains(out, "failed retrieving file") && strings.Contains(out, "404") {
+	if out := output(res); err != nil &&
+		strings.Contains(out, "failed retrieving file") &&
+		strings.Contains(out, "404") {
 		return fmt.Errorf("%w\n%s", err, staleSyncDBAdvice)
 	}
 	return err
@@ -1104,13 +1103,7 @@ func (r PackageUpdate) Apply(ctx context.Context, sys Sys) error {
 	_, err = runOK(
 		ctx,
 		sys,
-		aptGet(
-			"full-upgrade",
-			"-o",
-			"Dpkg::Options::=--force-confdef",
-			"-o",
-			"Dpkg::Options::=--force-confold",
-		),
+		aptGet("full-upgrade", "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold"),
 	)
 	return err
 }
@@ -1147,7 +1140,11 @@ func rebootWarning(ctx context.Context, sys Sys) (string, error) {
 		// A container's kernel belongs to its host.
 		return "", nil
 	case newest != "" && compareVersions(newest, running) > 0:
-		return fmt.Sprintf("the host needs a reboot to run its newest kernel, %s, instead of %s\n", newest, running), nil
+		return fmt.Sprintf(
+			"the host needs a reboot to run its newest kernel, %s, instead of %s\n",
+			newest,
+			running,
+		), nil
 	case !slices.Contains(installed, running):
 		return fmt.Sprintf("the host needs a reboot, as its running kernel, %s, is no longer installed\n", running), nil
 	default:

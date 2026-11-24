@@ -374,10 +374,7 @@ func interruptedRotation(t *testing.T, f *rotateFixture) {
 	require.NoError(t, f.repo.SavePendingCredentials("acidburn", pending.keyPEM, pending.password))
 	f.ssh.server.applied(host.Command{Env: map[string]string{"SENSIBLE_PASSWORD": pending.password}})
 	f.ssh.server.applied(
-		features.AccessFiles(
-			authorizedKey(publicKey(t, f.ssh.keyPEM), "acidburn"),
-			pending.authorizedKey,
-		)[2],
+		features.AccessFiles(authorizedKey(publicKey(t, f.ssh.keyPEM), "acidburn"), pending.authorizedKey)[2],
 	)
 }
 

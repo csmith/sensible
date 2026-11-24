@@ -185,11 +185,7 @@ func unknownHost(inv config.Inventory, name string) error {
 			return fmt.Errorf("%s is the address of %s; use its name from hosts.d", name, n)
 		}
 	}
-	return fmt.Errorf(
-		"unknown host %q; hosts.d has %s",
-		name,
-		strings.Join(slices.Sorted(maps.Keys(inv.Hosts)), ", "),
-	)
+	return fmt.Errorf("unknown host %q; hosts.d has %s", name, strings.Join(slices.Sorted(maps.Keys(inv.Hosts)), ", "))
 }
 
 func selectHosts(inv config.Inventory, requested []string) ([]string, error) {
@@ -488,10 +484,7 @@ type crossHostStep struct {
 }
 
 func anyFailed(runs []*hostRun) bool {
-	return slices.ContainsFunc(
-		runs,
-		func(h *hostRun) bool { return h.err != nil || h.failed },
-	)
+	return slices.ContainsFunc(runs, func(h *hostRun) bool { return h.err != nil || h.failed })
 }
 
 func failedErr(failed bool) error {

@@ -420,7 +420,9 @@ func TestVhosts_errors(t *testing.T) {
 		},
 		{
 			"invalid name in a host",
-			map[string]string{"hosts.d/hosts.yml": "alpha:\n  roles: {web: {name: !vhost 'a.example.com, bad!name'}}\n"},
+			map[string]string{
+				"hosts.d/hosts.yml": "alpha:\n  roles: {web: {name: !vhost 'a.example.com, bad!name'}}\n",
+			},
 			`"bad!name" isn't a domain name`,
 		},
 		{
@@ -449,7 +451,9 @@ func TestVhosts_errors(t *testing.T) {
 		},
 		{
 			"not a string",
-			map[string]string{"roles/web/docker-compose.yml": "services:\n  a:\n    labels: {v: !vhost [a.example.com]}\n"},
+			map[string]string{
+				"roles/web/docker-compose.yml": "services:\n  a:\n    labels: {v: !vhost [a.example.com]}\n",
+			},
 			"!vhost needs a domain name",
 		},
 		{
@@ -550,9 +554,13 @@ ntp:
 		)
 		assert.Equal(
 			t,
-			map[string]any{"services": map[string]any{"a": map[string]any{
-				"labels": map[string]any{"vhost": "app." + host + ".example.com"},
-			}}},
+			map[string]any{
+				"services": map[string]any{
+					"a": map[string]any{
+						"labels": map[string]any{"vhost": "app." + host + ".example.com"},
+					},
+				},
+			},
 			normaliseYAML(t, c.Stacks[0].Files[0].Content),
 		)
 	}
@@ -790,7 +798,12 @@ func TestDropGenerated_refusesValuesSetElsewhere(t *testing.T) {
 	r := tr.open(t)
 	secret, err := r.Encrypt("by hand")
 	require.NoError(t, err)
-	writeFile(t, tr.dir, "hosts.d/extra.yml", "alpha:\n  generated:\n    old:\n      db: "+indent(secret, "      ")+"\n")
+	writeFile(
+		t,
+		tr.dir,
+		"hosts.d/extra.yml",
+		"alpha:\n  generated:\n    old:\n      db: "+indent(secret, "      ")+"\n",
+	)
 	r = tr.open(t)
 
 	err = r.DropGenerated("alpha", "old", []string{"db"})
@@ -1574,7 +1587,10 @@ func TestHostConfig_oidcAPIErrors(t *testing.T) {
 		t.Run(
 			tt.name,
 			func(t *testing.T) {
-				files := map[string]string{"hosts.d/hosts.yml": "alpha:\n  roles: {pb: }\n", "roles/pb/role.yml": tt.yaml}
+				files := map[string]string{
+					"hosts.d/hosts.yml": "alpha:\n  roles: {pb: }\n",
+					"roles/pb/role.yml": tt.yaml,
+				}
 				_, err := newTestRepo(t, files).open(t).HostConfig("alpha", "debian")
 				require.ErrorContains(t, err, tt.want)
 			},

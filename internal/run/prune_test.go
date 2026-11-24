@@ -23,7 +23,9 @@ func TestPrune_asksBeforeRemovingEachLeftover(t *testing.T) {
 		f.confirmed = append(f.confirmed, prompt)
 		return answers[prompt], nil
 	}
-	agent := &fakeAgent{leftovers: map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/old", "/srv/volumes/older"}}}
+	agent := &fakeAgent{
+		leftovers: map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/old", "/srv/volumes/older"}},
+	}
 
 	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", agent)})
 
@@ -219,7 +221,9 @@ func TestPrune_offersSecretsOnceTheirVolumesAreRemoved(t *testing.T) {
 		f.confirmed = append(f.confirmed, prompt)
 		return answers[prompt], nil
 	}
-	agent := &fakeAgent{leftovers: map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/app", "/srv/volumes/kept"}}}
+	agent := &fakeAgent{
+		leftovers: map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/app", "/srv/volumes/kept"}},
+	}
 
 	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", agent)})
 
@@ -236,7 +240,11 @@ func TestPrune_offersSecretsOnceTheirVolumesAreRemoved(t *testing.T) {
 	)
 	assert.Equal(t, []string{"app", "gone"}, *dropped)
 	assert.Contains(t, f.out.String(), "- generated secrets for kept (db, token)  once /srv/volumes/kept is removed\n")
-	assert.Contains(t, f.out.String(), "- acidburn: generated secrets for kept (db, token)  kept with /srv/volumes/kept\n")
+	assert.Contains(
+		t,
+		f.out.String(),
+		"- acidburn: generated secrets for kept (db, token)  kept with /srv/volumes/kept\n",
+	)
 }
 
 func TestPrune_keepsSecretsWhenTheirVolumeRemovalFails(t *testing.T) {

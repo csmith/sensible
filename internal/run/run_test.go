@@ -453,11 +453,7 @@ func TestExecute_appliesAfterConfirmation(t *testing.T) {
 	changed := &fakeAgent{status: deferDocker}
 	clean := &fakeAgent{}
 
-	err := f.runner.Execute(
-		t.Context(),
-		[]target{f.target("acidburn", changed), f.target("penderghast", clean)},
-		false,
-	)
+	err := f.runner.Execute(t.Context(), []target{f.target("acidburn", changed), f.target("penderghast", clean)}, false)
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"Apply 1 change on 1 target; 1 more will be checked during apply? [y/N] "}, f.confirmed)
@@ -576,11 +572,7 @@ func TestExecute_compileErrorIsReportedForThatHost(t *testing.T) {
 	weird := &fakeAgent{}
 	changed := &fakeAgent{status: deferDocker}
 
-	err := f.runner.Execute(
-		t.Context(),
-		[]target{f.target("weird", weird), f.target("acidburn", changed)},
-		true,
-	)
+	err := f.runner.Execute(t.Context(), []target{f.target("weird", weird), f.target("acidburn", changed)}, true)
 
 	require.ErrorIs(t, err, errFailed)
 	assert.Contains(t, f.out.String(), "> Resolving changes on weird\n  ✗ unsupported OS family\n")
@@ -650,11 +642,7 @@ func TestExecute_dnsIsHeldBackWhenAHostFailsToPlan(t *testing.T) {
 	acidburn := f.target("acidburn", &fakeAgent{status: deferDocker, facts: host.Facts{DefaultIPv4: "203.0.113.2"}})
 	acidburn.dnsName = "acidburn.example.com"
 
-	err := f.runner.Execute(
-		t.Context(),
-		[]target{acidburn, {name: "smarts", err: errors.New("no credentials")}},
-		true,
-	)
+	err := f.runner.Execute(t.Context(), []target{acidburn, {name: "smarts", err: errors.New("no credentials")}}, true)
 
 	require.ErrorIs(t, err, errFailed)
 	out := f.out.String()
@@ -895,11 +883,7 @@ func TestRendererDrawsUnfinishedTasks(t *testing.T) {
 	assert.Equal(t, []string{"> Connecting to agents", "  ⠋ acidburn", "    smarts"}, screen(t, buf.String()))
 
 	r.finish(a, "  ✗ acidburn: refused")
-	assert.Equal(
-		t,
-		[]string{"> Connecting to agents", "  ✗ acidburn: refused", "  ✓ smarts"},
-		screen(t, buf.String()),
-	)
+	assert.Equal(t, []string{"> Connecting to agents", "  ✗ acidburn: refused", "  ✓ smarts"}, screen(t, buf.String()))
 }
 
 func TestRendererWritesSectionsAboveUnfinishedTasks(t *testing.T) {
@@ -1140,7 +1124,12 @@ func TestRendererIndentsMultiLineApplyErrors(t *testing.T) {
 	r := newRenderer(&buf)
 	h := &hostRun{name: "acidburn"}
 
-	r.applied(h, host.Applied{ID: "command:x", Status: host.StatusFailed, Error: "exit 1\n✓ file /etc/x", Output: "out"})
+	r.applied(h, host.Applied{
+		ID:     "command:x",
+		Status: host.StatusFailed,
+		Error:  "exit 1\n✓ file /etc/x",
+		Output: "out",
+	})
 	r.applyError(h, errors.New("lost\n> Applying changes on smarts"))
 	r.applyDone(h)
 
@@ -1288,7 +1277,11 @@ func TestCompiler_findsUnusedSecrets(t *testing.T) {
 		t,
 		open().SaveGenerated(
 			"alpha",
-			[]config.Stack{{Name: "app", Generated: saved}, {Name: "data", Generated: saved}, {Name: "old", Generated: saved}},
+			[]config.Stack{
+				{Name: "app", Generated: saved},
+				{Name: "data", Generated: saved},
+				{Name: "old", Generated: saved},
+			},
 		),
 	)
 	facts := host.Facts{OSFamily: "arch"}

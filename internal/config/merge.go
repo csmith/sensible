@@ -64,10 +64,17 @@ func mergeMapping(lower, upper *ast.MappingNode, path []string, replace bool) as
 		key := keyString(v.Key)
 		inner := append(slices.Clip(path), key)
 		if i, ok := index[key]; ok {
-			result.Values[i] = ast.MappingValue(v.Start, v.Key, mergeNodes(result.Values[i].Value, v.Value, inner, replace))
+			result.Values[i] = ast.MappingValue(
+				v.Start,
+				v.Key,
+				mergeNodes(result.Values[i].Value, v.Value, inner, replace),
+			)
 		} else {
 			index[key] = len(result.Values)
-			result.Values = append(result.Values, ast.MappingValue(v.Start, v.Key, mergeNodes(nil, v.Value, inner, replace)))
+			result.Values = append(
+				result.Values,
+				ast.MappingValue(v.Start, v.Key, mergeNodes(nil, v.Value, inner, replace)),
+			)
 		}
 	}
 	return result
@@ -200,10 +207,7 @@ func withoutSetSequences(lower, upper ast.Node) ast.Node {
 			result.Values = append(result.Values, v)
 		case value.Type() == ast.SequenceType:
 		default:
-			result.Values = append(
-				result.Values,
-				ast.MappingValue(v.Start, v.Key, withoutSetSequences(v.Value, value)),
-			)
+			result.Values = append(result.Values, ast.MappingValue(v.Start, v.Key, withoutSetSequences(v.Value, value)))
 		}
 	}
 	return result

@@ -55,7 +55,12 @@ func TestPartials_matchHandWrittenStack(t *testing.T) {
 		password, err := tr.open(t).Encrypt("pa$$word")
 		require.NoError(t, err)
 		for _, name := range []string{"roles/web/role.yml", "roles/web/docker-compose.yml"} {
-			writeFile(t, tr.dir, name, strings.Replace(files[name], "SECRET", strings.ReplaceAll(password, "\n", "\n      "), 1))
+			writeFile(
+				t,
+				tr.dir,
+				name,
+				strings.Replace(files[name], "SECRET", strings.ReplaceAll(password, "\n", "\n      "), 1),
+			)
 		}
 		c, err := tr.open(t).HostConfig("alpha", "debian")
 		require.NoError(t, err)
@@ -337,7 +342,9 @@ func TestPartials_errors(t *testing.T) {
 		},
 		{
 			"unknown placeholder in an included argument",
-			map[string]string{"partials/x/partial.yml": "partials: [{partial: tailscale-proxy, upstream: \"{nope}\"}]\n"},
+			map[string]string{
+				"partials/x/partial.yml": "partials: [{partial: tailscale-proxy, upstream: \"{nope}\"}]\n",
+			},
 			"unknown placeholder {nope}",
 		},
 		{

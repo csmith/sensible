@@ -55,11 +55,7 @@ type oidcAPIAdmin interface {
 	RenameAPI(ctx context.Context, id, name string) error
 	// SetPermissions replaces the API's permissions, returning each one's ID
 	// by key.
-	SetPermissions(
-		ctx context.Context,
-		id string,
-		permissions []oidcPermission,
-	) (map[string]string, error)
+	SetPermissions(ctx context.Context, id string, permissions []oidcPermission) (map[string]string, error)
 	// Grants are the clients that may call the API, by client ID.
 	Grants(ctx context.Context, id string) (map[string]oidcGrant, error)
 	// Grant replaces the client's access with g, whose permissions
@@ -166,7 +162,10 @@ func (p *oidcPlan) declared(runs []*hostRun, kind string, ids func(h *hostRun) [
 		for _, id := range slices.Sorted(slices.Values(ids(h))) {
 			if other, ok := declared[id]; ok {
 				if !conflicted[id] {
-					p.errs = append(p.errs, fmt.Errorf("%s %s: both %s and %s declare it", kind, id, other.name, h.name))
+					p.errs = append(
+						p.errs,
+						fmt.Errorf("%s %s: both %s and %s declare it", kind, id, other.name, h.name),
+					)
 				}
 				conflicted[id] = true
 				continue
@@ -472,10 +471,7 @@ func planClient(
 	if existing.restricted != want.restricted || (want.restricted && !slices.Equal(existingGroups, want.groups)) {
 		c.update = c.update || existing.restricted != want.restricted
 		c.setGroups = want.restricted
-		c.lines = append(
-			c.lines,
-			label+"groups: "+groupNames(existing, groups)+" → "+groupNames(&want, groups),
-		)
+		c.lines = append(c.lines, label+"groups: "+groupNames(existing, groups)+" → "+groupNames(&want, groups))
 	}
 
 	secrets, err := provider.Secrets(ctx, id)

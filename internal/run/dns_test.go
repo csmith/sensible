@@ -221,7 +221,11 @@ func TestZonesPlan_replacesOtherTypesInOneChange(t *testing.T) {
 	change, _, err := z.plan(
 		t.Context(),
 		"example.com",
-		map[string][]string{"A": nil, "CNAME": nil, "RRCLONE": {"(A,AAAA) new.example.net", "(A,AAAA) old.example.net"}},
+		map[string][]string{
+			"A":       nil,
+			"CNAME":   nil,
+			"RRCLONE": {"(A,AAAA) new.example.net", "(A,AAAA) old.example.net"},
+		},
 	)
 	require.NoError(t, err)
 	assert.Equal(
@@ -395,11 +399,7 @@ func TestPlanNames_vhostOutsideAccountWarns(t *testing.T) {
 		&p,
 	)
 
-	assert.Equal(
-		t,
-		[]string{"leaving vhost www.example.org alone: no domain on this account contains it"},
-		p.warnings,
-	)
+	assert.Equal(t, []string{"leaving vhost www.example.org alone: no domain on this account contains it"}, p.warnings)
 	require.Len(t, p.errs, 1)
 	assert.ErrorIs(t, p.errs[0], errNoDomain)
 }
@@ -464,12 +464,14 @@ func newFakeMyDNSHost(t *testing.T, f *fakeMyDNSHost) *myDNSHost {
 func TestMyDNSHost_zonesAreWritableWithWriteAccess(t *testing.T) {
 	zones, err := newFakeMyDNSHost(
 		t,
-		&fakeMyDNSHost{levels: map[string]string{
-			"owned.com": "owner",
-			"admin.com": "admin",
-			"write.com": "write",
-			"read.com":  "read",
-		}},
+		&fakeMyDNSHost{
+			levels: map[string]string{
+				"owned.com": "owner",
+				"admin.com": "admin",
+				"write.com": "write",
+				"read.com":  "read",
+			},
+		},
 	).Zones(t.Context())
 
 	require.NoError(t, err)
@@ -479,9 +481,11 @@ func TestMyDNSHost_zonesAreWritableWithWriteAccess(t *testing.T) {
 func TestMyDNSHost_records(t *testing.T) {
 	records, err := newFakeMyDNSHost(
 		t,
-		&fakeMyDNSHost{records: []map[string]any{
-			{"id": 7, "name": "www", "type": "A", "content": "192.0.2.1", "ttl": 60, "changed_at": 1},
-		}},
+		&fakeMyDNSHost{
+			records: []map[string]any{
+				{"id": 7, "name": "www", "type": "A", "content": "192.0.2.1", "ttl": 60, "changed_at": 1},
+			},
+		},
 	).Records(t.Context(), "example.com")
 
 	require.NoError(t, err)

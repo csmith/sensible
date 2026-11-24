@@ -49,7 +49,11 @@ func TestFile_MasksSecretsInDiff(t *testing.T) {
 	)
 	assert.Equal(t, "@@ -1,2 +1,2 @@\n-user: a\n+user: b\n pass: (secret)\n", change.Diff)
 
-	change = checkApply(t, sys, File{Path: "/etc/conf", Content: "user: b\npass: hunter3\n", Secrets: []string{"hunter3"}})
+	change = checkApply(t, sys, File{
+		Path:    "/etc/conf",
+		Content: "user: b\npass: hunter3\n",
+		Secrets: []string{"hunter3"},
+	})
 	assert.NotContains(t, change.Diff, "hunter3")
 
 	change = checkApply(
@@ -910,10 +914,7 @@ func TestOwnedDir_WithoutHeaderLeavesNothingForPrune(t *testing.T) {
 	sys := newTestSys(t)
 	sys.write("/etc/sudoers.d/stray", "")
 
-	leftovers, err := OwnedDir{Path: "/etc/sudoers.d"}.Leftovers(
-		withRunState(context.Background(), newRunState()),
-		sys,
-	)
+	leftovers, err := OwnedDir{Path: "/etc/sudoers.d"}.Leftovers(withRunState(context.Background(), newRunState()), sys)
 	require.NoError(t, err)
 	assert.Empty(t, leftovers)
 }

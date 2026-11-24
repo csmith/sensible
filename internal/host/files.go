@@ -106,10 +106,7 @@ func (r File) contentDiff(current string) string {
 
 func (r File) mask(content string) string {
 	// Longest first, so a secret containing another is masked whole.
-	secrets := slices.SortedFunc(
-		slices.Values(r.Secrets),
-		func(a, b string) int { return len(b) - len(a) },
-	)
+	secrets := slices.SortedFunc(slices.Values(r.Secrets), func(a, b string) int { return len(b) - len(a) })
 	for _, s := range secrets {
 		if s != "" {
 			content = strings.ReplaceAll(content, s, "(secret)")

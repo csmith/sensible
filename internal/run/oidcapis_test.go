@@ -269,7 +269,12 @@ func TestExecute_oidcAPIChangedByHandIsPutBack(t *testing.T) {
 			f.pocketID.grants["pb"] = map[string]fakeGrant{
 				"app":   {client: true, clientPermissions: []string{"p-read", "p-admin"}},
 				"other": {client: true},
-				"both":  {user: true, client: true, userPermissions: []string{"p-read"}, clientPermissions: []string{"p-read"}},
+				"both": {
+					user:              true,
+					client:            true,
+					userPermissions:   []string{"p-read"},
+					clientPermissions: []string{"p-read"},
+				},
 				"users": {user: true, userPermissions: []string{"p-read"}},
 			}
 		},
@@ -350,7 +355,12 @@ func TestExecute_oidcAPIGrantsAccessOnBehalfOfUsers(t *testing.T) {
 	)
 	assert.Equal(
 		t,
-		fakeGrant{user: true, client: true, userPermissions: []string{"p-read"}, clientPermissions: []string{"p-write"}},
+		fakeGrant{
+			user:              true,
+			client:            true,
+			userPermissions:   []string{"p-read"},
+			clientPermissions: []string{"p-write"},
+		},
 		f.pocketID.grants["pb"]["both"],
 	)
 	assert.Equal(t, []string{"read"}, f.pocketID.grantedKeys(testIdentifier, "app"))
@@ -365,11 +375,7 @@ func TestExecute_oidcAPIMadeByHandIsTakenOver(t *testing.T) {
 	err := f.runner.Execute(t.Context(), []target{f.target("acidburn", &fakeAgent{})}, true)
 
 	require.NoError(t, err)
-	assert.Contains(
-		t,
-		f.out.String(),
-		"> Resolving OIDC changes\n  ~ api "+testIdentifier+"  host: none → acidburn\n",
-	)
+	assert.Contains(t, f.out.String(), "> Resolving OIDC changes\n  ~ api "+testIdentifier+"  host: none → acidburn\n")
 	assert.Equal(t, []string{testIdentifier}, f.apiRecords["acidburn"])
 }
 

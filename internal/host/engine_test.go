@@ -170,7 +170,9 @@ func TestEngine_ComposeStackSeesItsFilesChange(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(
 		t,
-		[]string{"docker compose --file /srv/compose/web/docker-compose.yml up --detach --force-recreate --remove-orphans"},
+		[]string{
+			"docker compose --file /srv/compose/web/docker-compose.yml up --detach --force-recreate --remove-orphans",
+		},
 		sys.ran,
 	)
 }
@@ -423,7 +425,11 @@ func TestEngine_KeptLeftoversAreNeitherWarnedAboutNorListed(t *testing.T) {
 				e.sys = sys
 				list := ResourceList{
 					KeptLeftovers{Paths: []string{"/etc/sudoers.d/README"}, Packages: []string{tt.ignored}},
-					KeptLeftovers{Paths: []string{"/opt/tool-*", "/opt/missing"}, Packages: []string{"zsh", "nope*"}, External: true},
+					KeptLeftovers{
+						Paths:    []string{"/opt/tool-*", "/opt/missing"},
+						Packages: []string{"zsh", "nope*"},
+						External: true,
+					},
 					OwnedDir{Path: "/etc/sudoers.d", Header: "# managed"},
 					Disowned{Name: "opt", Paths: []string{"/opt/*"}},
 					DisownedPackages{},
@@ -594,7 +600,11 @@ func TestEngine_TriggerIsOwedPastAFailure(t *testing.T) {
 	list := ResourceList{
 		daemon,
 		bad,
-		Command{Name: "restart docker", Watch: []string{daemon.ID()}, ApplyArgv: []string{"systemctl", "restart", "docker"}},
+		Command{
+			Name:      "restart docker",
+			Watch:     []string{daemon.ID()},
+			ApplyArgv: []string{"systemctl", "restart", "docker"},
+		},
 	}
 
 	_, applied := run(t, sys, list)
@@ -657,7 +667,9 @@ func TestEngine_StackIsRecreatedAfterAFailedRecreate(t *testing.T) {
 	assert.Equal(t, "recreate, owed from an earlier change\n", checked[2].Diff)
 	assert.Equal(
 		t,
-		[]string{"docker compose --file /srv/compose/web/docker-compose.yml up --detach --force-recreate --remove-orphans"},
+		[]string{
+			"docker compose --file /srv/compose/web/docker-compose.yml up --detach --force-recreate --remove-orphans",
+		},
 		sys.ran,
 	)
 }

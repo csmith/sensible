@@ -64,13 +64,7 @@ func newTestSys(t *testing.T) *testSys {
 	uid, gid := os.Getuid(), os.Getgid()
 	s.write(
 		"/etc/passwd",
-		fmt.Sprintf(
-			"alice:x:%d:%d::/home/alice:/bin/bash\nbob:x:%d:%d::/home/bob:/bin/sh\n",
-			uid,
-			gid,
-			uid,
-			gid,
-		),
+		fmt.Sprintf("alice:x:%d:%d::/home/alice:/bin/bash\nbob:x:%d:%d::/home/bob:/bin/sh\n", uid, gid, uid, gid),
 	)
 	s.write("/etc/group", fmt.Sprintf("users:x:%d:\nwheel:x:%d:bob\n", gid, gid+1))
 	s.write("/etc/shadow", "alice:$y$abc:1::::::\nbob:!:1::::::\n")

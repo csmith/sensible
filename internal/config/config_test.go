@@ -504,7 +504,10 @@ func TestOpen(t *testing.T) {
 		},
 		{
 			"stack copies its role file",
-			map[string]string{"roles/web/docker-compose.yml": "", "roles/web/role.yml": "compose:\n  files: [role.yml]\n"},
+			map[string]string{
+				"roles/web/docker-compose.yml": "",
+				"roles/web/role.yml":           "compose:\n  files: [role.yml]\n",
+			},
 			"read by sensible",
 		},
 		{
@@ -528,7 +531,10 @@ func TestOpen(t *testing.T) {
 		},
 		{
 			"stack file without a path",
-			map[string]string{"roles/web/docker-compose.yml": "", "roles/web/role.yml": "compose:\n  files: [{mode: 0o600}]\n"},
+			map[string]string{
+				"roles/web/docker-compose.yml": "",
+				"roles/web/role.yml":           "compose:\n  files: [{mode: 0o600}]\n",
+			},
 			"a file needs a path",
 		},
 		{
@@ -570,7 +576,11 @@ func TestOpen(t *testing.T) {
 			map[string]string{"sensible.yml": "dns:\n  vhosts:\n    - {type: CNAME, content: '{host}'}\n"},
 			"sensible.yml: dns.provider isn't set",
 		},
-		{"unknown DNS provider", map[string]string{"sensible.yml": "dns:\n  provider: nope\n"}, `unknown provider "nope"`},
+		{
+			"unknown DNS provider",
+			map[string]string{"sensible.yml": "dns:\n  provider: nope\n"},
+			`unknown provider "nope"`,
+		},
 		{
 			"MyDNSHost without credentials",
 			map[string]string{"sensible.yml": "dns:\n  provider: mydnshost\n"},
@@ -583,7 +593,9 @@ func TestOpen(t *testing.T) {
 		},
 		{
 			"Pocket ID without an API key",
-			map[string]string{"sensible.yml": "oidc:\n  provider: pocketid\n  pocketid:\n    url: https://id.example.com\n"},
+			map[string]string{
+				"sensible.yml": "oidc:\n  provider: pocketid\n  pocketid:\n    url: https://id.example.com\n",
+			},
 			"oidc.pocketid: needs a url and api_key",
 		},
 	}
@@ -688,10 +700,7 @@ func TestOpen_mergesFragments(t *testing.T) {
 }
 
 func TestOpen_conflictingFragments(t *testing.T) {
-	_, err := newTestRepo(
-		t,
-		map[string]string{"hosts.d/extra.yml": "alpha:\n  address: elsewhere\n"},
-	).tryOpen()
+	_, err := newTestRepo(t, map[string]string{"hosts.d/extra.yml": "alpha:\n  address: elsewhere\n"}).tryOpen()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "hosts.d/extra.yml")
 	assert.Contains(t, err.Error(), "hosts.d/hosts.yml")
@@ -1205,7 +1214,12 @@ func TestHostConfig_resticErrors(t *testing.T) {
 				tr := newBackupsRepo(t)
 				password, err := tr.open(t).Encrypt("hunter2")
 				require.NoError(t, err)
-				writeFile(t, tr.dir, "roles/backups/role.yml", strings.ReplaceAll(tt.restic, "PASSWORD", nest(password)))
+				writeFile(
+					t,
+					tr.dir,
+					"roles/backups/role.yml",
+					strings.ReplaceAll(tt.restic, "PASSWORD", nest(password)),
+				)
 				_, err = tr.open(t).HostConfig("alpha", "debian")
 				assert.ErrorContains(t, err, tt.want)
 			},
@@ -1274,7 +1288,10 @@ func TestHostConfig_dockerRegistryErrors(t *testing.T) {
 		t.Run(
 			tt.name,
 			func(t *testing.T) {
-				tr := newTestRepo(t, map[string]string{"hosts.d/hosts.yml": "alpha:\n  roles: {a: }\n", "roles/a/role.yml": ""})
+				tr := newTestRepo(t, map[string]string{
+					"hosts.d/hosts.yml": "alpha:\n  roles: {a: }\n",
+					"roles/a/role.yml":  "",
+				})
 				password, err := tr.open(t).Encrypt("hunter2")
 				require.NoError(t, err)
 				writeFile(
@@ -1361,7 +1378,9 @@ files:
 		t,
 		tr.dir,
 		"roles/zram/role.debian.yml",
-		"files:\n  - path: /etc/password\n    content: "+nest(nest(password))+"\n  - {path: /etc/key, source: key.age}\n",
+		"files:\n  - path: /etc/password\n    content: "+nest(
+			nest(password),
+		)+"\n  - {path: /etc/key, source: key.age}\n",
 	)
 
 	c, err := tr.open(t).HostConfig("alpha", "debian")
@@ -1469,7 +1488,10 @@ func TestHostConfig_fileErrors(t *testing.T) {
 		},
 		{
 			"source outside the files directory",
-			map[string]string{"roles/a/role.yml": "files: [{path: /etc/x, source: ../role.yml}]\n", "roles/b/role.yml": ""},
+			map[string]string{
+				"roles/a/role.yml": "files: [{path: /etc/x, source: ../role.yml}]\n",
+				"roles/b/role.yml": "",
+			},
 			`source "../role.yml" isn't a path in files`,
 		},
 		{

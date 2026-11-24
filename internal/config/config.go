@@ -1120,7 +1120,13 @@ func (r *Repo) CheckCredentials(name string) error {
 	file := stateFile(name)
 	for _, key := range []string{"ssh_key", "sudo_password", "rotated", "pending_ssh_key", "pending_sudo_password"} {
 		if s, ok := r.sources[joinPath(name, key)]; ok && s.source != r.path(file) {
-			return fmt.Errorf("%s sets %s's %s, so its credentials can't be written to %s", s.source, name, key, r.path(file))
+			return fmt.Errorf(
+				"%s sets %s's %s, so its credentials can't be written to %s",
+				s.source,
+				name,
+				key,
+				r.path(file),
+			)
 		}
 	}
 	if len(r.recipients) == 0 {
@@ -1254,7 +1260,12 @@ func (r *Repo) DropOIDCAPI(name, id string) error {
 		return err
 	}
 	if slices.Contains(r.inventory.Hosts[name].OIDCAPIs, id) {
-		return fmt.Errorf("another file in %s sets %s's oidc_apis %s, so it can't be removed", r.path("hosts.d"), name, id)
+		return fmt.Errorf(
+			"another file in %s sets %s's oidc_apis %s, so it can't be removed",
+			r.path("hosts.d"),
+			name,
+			id,
+		)
 	}
 	return nil
 }
@@ -1539,7 +1550,13 @@ func (r *Repo) checkLayout() error {
 			}
 			if parent, _, ok := strings.Cut(role, "/"); ok {
 				if _, ok := roles[parent]; ok {
-					return fmt.Errorf("%s: %s has role %q and its parent %q, which already includes it", source, host, role, parent)
+					return fmt.Errorf(
+						"%s: %s has role %q and its parent %q, which already includes it",
+						source,
+						host,
+						role,
+						parent,
+					)
 				}
 			}
 		}
@@ -1592,7 +1609,12 @@ func (r *Repo) checkRole(role string, topLevel bool) error {
 		case isVariantFile(e.Name()):
 			family := strings.TrimSuffix(strings.TrimPrefix(e.Name(), "role."), ".yml")
 			if !slices.Contains(host.OSFamilies, family) {
-				return fmt.Errorf("%s: unknown OS %q; expected one of %s", file, family, strings.Join(host.OSFamilies, ", "))
+				return fmt.Errorf(
+					"%s: unknown OS %q; expected one of %s",
+					file,
+					family,
+					strings.Join(host.OSFamilies, ", "),
+				)
 			}
 			hasVariant = true
 		default:
@@ -1628,10 +1650,19 @@ func (r *Repo) checkChildren(role string, settings roleSettings, covered map[str
 			return nil, fmt.Errorf("%s: children: invalid name %q", r.path("roles", role, "role.yml"), name)
 		}
 		if covered[name] {
-			return nil, fmt.Errorf("%s: %q is both a child role and in compose.files", r.path("roles", role, "role.yml"), name)
+			return nil, fmt.Errorf(
+				"%s: %q is both a child role and in compose.files",
+				r.path("roles", role, "role.yml"),
+				name,
+			)
 		}
 		if info, err := os.Stat(filepath.Join(dir, name)); err != nil || !info.IsDir() {
-			return nil, fmt.Errorf("%s: children: %q isn't a directory in %s", r.path("roles", role, "role.yml"), name, dir)
+			return nil, fmt.Errorf(
+				"%s: children: %q isn't a directory in %s",
+				r.path("roles", role, "role.yml"),
+				name,
+				dir,
+			)
 		}
 		child := role + "/" + name
 		if err := r.checkRole(child, false); err != nil {

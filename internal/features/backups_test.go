@@ -105,11 +105,23 @@ func TestResources_backupErrors(t *testing.T) {
 		},
 		{"neither", func(h *Host) { h.Config.Backups["x"] = config.BackupConfig{} }, "exactly one of path and command"},
 		{"relative path", func(h *Host) { h.Config.Backups["x"] = config.BackupConfig{Path: "x"} }, "isn't absolute"},
-		{"invalid name", func(h *Host) { h.Config.Backups["X y"] = config.BackupConfig{Path: "/x"} }, "invalid backup name"},
+		{
+			"invalid name",
+			func(h *Host) { h.Config.Backups["X y"] = config.BackupConfig{Path: "/x"} },
+			"invalid backup name",
+		},
 		{"no keep", func(h *Host) { h.Config.Restic.Keep = nil }, "never forgotten"},
-		{"unknown keep", func(h *Host) { h.Config.Restic.Keep["fortnightly"] = 1 }, `unknown restic.keep "fortnightly"`},
+		{
+			"unknown keep",
+			func(h *Host) { h.Config.Restic.Keep["fortnightly"] = 1 },
+			`unknown restic.keep "fortnightly"`,
+		},
 		{"zero keep", func(h *Host) { h.Config.Restic.Keep["daily"] = 0 }, "must be at least 1"},
-		{"invalid env name", func(h *Host) { h.Config.Restic.Env["A-B"] = "x" }, `invalid restic.environment name "A-B"`},
+		{
+			"invalid env name",
+			func(h *Host) { h.Config.Restic.Env["A-B"] = "x" },
+			`invalid restic.environment name "A-B"`,
+		},
 		{
 			"job named backup",
 			func(h *Host) {

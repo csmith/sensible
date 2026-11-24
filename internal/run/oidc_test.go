@@ -526,7 +526,11 @@ func TestPocketID_reportsAPIErrors(t *testing.T) {
 
 	_, err := p.Groups(t.Context())
 
-	assert.ErrorContains(t, err, "GET /api/user-groups?pagination%5Blimit%5D=100&pagination%5Bpage%5D=1: Invalid API key")
+	assert.ErrorContains(
+		t,
+		err,
+		"GET /api/user-groups?pagination%5Blimit%5D=100&pagination%5Bpage%5D=1: Invalid API key",
+	)
 }
 
 func TestPrune_offersOIDCClientsNoLongerDeclared(t *testing.T) {
@@ -659,7 +663,9 @@ func TestExecute_oidcLogoIsOnlyUploadedWhenItsNotTheOneSensibleUploaded(t *testi
 				assert.Equal(t, map[string]string{"light": "app.svg: " + tt.data}, f.pocketID.logos["app"])
 				assert.Equal(
 					t,
-					map[string]config.SavedOIDCClient{"app": {SecretID: "ours", Logo: testHash(tt.data), DarkLogo: "dark"}},
+					map[string]config.SavedOIDCClient{
+						"app": {SecretID: "ours", Logo: testHash(tt.data), DarkLogo: "dark"},
+					},
 					f.records["acidburn"],
 				)
 				assert.NotContains(t, f.pocketID.requests, "PUT /api/oidc/clients/app")

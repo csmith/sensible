@@ -258,7 +258,11 @@ func (p *pocketID) SetPermissions(
 		if perm.description != "" {
 			description = &perm.description
 		}
-		body.Permissions = append(body.Permissions, permission{Key: perm.key, Name: perm.name, Description: description})
+		body.Permissions = append(body.Permissions, permission{
+			Key:         perm.key,
+			Name:        perm.name,
+			Description: description,
+		})
 	}
 	var res pocketIDAPI
 	if err := p.do(ctx, http.MethodPut, apiPath(id)+"/permissions", body, &res); err != nil {

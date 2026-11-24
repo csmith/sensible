@@ -336,7 +336,8 @@ func TestUsers_ListsNamedSystemAccounts(t *testing.T) {
 			"build:x:997:997::/var/lib/build:/usr/bin/nologin\n",
 	)
 
-	items, err := Users{System: []string{"aur", "build"}}.Leftovers(withRunState(context.Background(), newRunState()), sys)
+	items, err := Users{System: []string{"aur", "build"}}.
+		Leftovers(withRunState(context.Background(), newRunState()), sys)
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"user aur"}, items, "build isn't marked as sensible's")
@@ -459,7 +460,11 @@ func TestGitCheckout_MovesExisting(t *testing.T) {
 
 	change, err := r.Check(context.Background(), sys)
 	require.NoError(t, err)
-	assert.Equal(t, "origin: https://example.com/old.git → https://example.com/new.git\ncommit: old → new\n", change.Diff)
+	assert.Equal(
+		t,
+		"origin: https://example.com/old.git → https://example.com/new.git\ncommit: old → new\n",
+		change.Diff,
+	)
 
 	var users []string
 	sys.commands["git *"] = func(cmd Cmd) Result {
@@ -482,7 +487,11 @@ func TestGitCheckout_RecoversFailedFetch(t *testing.T) {
 	}{
 		{"origin right", "https://example.com/omz.git\n", nil},
 		{"origin missing", "", []string{prefix + "add origin https://example.com/omz.git"}},
-		{"origin differs", "https://example.com/old.git\n", []string{prefix + "set-url origin https://example.com/omz.git"}},
+		{
+			"origin differs",
+			"https://example.com/old.git\n",
+			[]string{prefix + "set-url origin https://example.com/omz.git"},
+		},
 	} {
 		t.Run(
 			tc.name,
@@ -585,13 +594,15 @@ func TestTailscaleSet(t *testing.T) {
 	sys.on("tailscale debug prefs", string(prefs), 0)
 	sys.on("tailscale set *", "", 0)
 
-	r := TailscaleSet{Settings: map[string]string{
-		"ssh":                 "true",
-		"operator":            "chris",
-		"advertise-exit-node": "true",
-		"auto-update":         "false",
-		"relay-server-port":   "40000",
-	}}
+	r := TailscaleSet{
+		Settings: map[string]string{
+			"ssh":                 "true",
+			"operator":            "chris",
+			"advertise-exit-node": "true",
+			"auto-update":         "false",
+			"relay-server-port":   "40000",
+		},
+	}
 	change, err := r.Check(context.Background(), sys)
 	require.NoError(t, err)
 	assert.True(t, change.InSync, change.Diff)

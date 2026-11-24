@@ -326,9 +326,17 @@ compose:
 	assert.Equal(t, []string{"web.example.com"}, cert.DNSNames)
 	dir := filepath.Join(CertsDir, "web-tls")
 	require.Len(t, c.Stacks, 1)
-	assert.Contains(t, stackFile(t, c.Stacks[0], "docker-compose.yml").Content, filepath.Join(dir, KeyFile)+":/tls.key:ro")
+	assert.Contains(
+		t,
+		stackFile(t, c.Stacks[0], "docker-compose.yml").Content,
+		filepath.Join(dir, KeyFile)+":/tls.key:ro",
+	)
 	assert.Contains(t, stackFile(t, c.Stacks[0], ".env").Content, "CA_PATH='"+filepath.Join(dir, CACertFile)+"'")
-	assert.ElementsMatch(t, []string{filepath.Join(dir, KeyFile), filepath.Join(dir, CACertFile)}, c.Stacks[0].CertPaths)
+	assert.ElementsMatch(
+		t,
+		[]string{filepath.Join(dir, KeyFile), filepath.Join(dir, CACertFile)},
+		c.Stacks[0].CertPaths,
+	)
 }
 
 func TestHostCerts_invalid(t *testing.T) {
@@ -342,7 +350,11 @@ func TestHostCerts_invalid(t *testing.T) {
 		{name: "no purpose", role: "certs: {a: {ca: internal}}", want: "needs server, client or both"},
 		{name: "bad name", role: `certs: {"a/b": {ca: internal, client: c}}`, want: "a certificate's name"},
 		{name: "bad server name", role: `certs: {a: {ca: internal, server: ["no spaces"]}}`, want: "isn't a DNS name"},
-		{name: "relative dir", role: "certs: {a: {ca: internal, client: c, dir: certs}}", want: "must be an absolute path"},
+		{
+			name: "relative dir",
+			role: "certs: {a: {ca: internal, client: c, dir: certs}}",
+			want: "must be an absolute path",
+		},
 		{name: "root dir", role: "certs: {a: {ca: internal, client: c, dir: /}}", want: "must be an absolute path"},
 		{
 			name: "shared dir",

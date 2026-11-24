@@ -382,11 +382,7 @@ func tailscale(h Host) ([]host.Resource, error) {
 			host.Absent{Path: "/etc/apt/sources.list.d/tailscale.list"},
 		)
 	}
-	rs = append(
-		rs,
-		host.Package{Name: "tailscale"},
-		host.Service{Name: "tailscaled", Enabled: true},
-	)
+	rs = append(rs, host.Package{Name: "tailscale"}, host.Service{Name: "tailscaled", Enabled: true})
 	if settings["advertise-exit-node"] == "true" || settings["advertise-routes"] != "" {
 		rs = append(
 			rs,
@@ -491,7 +487,11 @@ func docker(h Host) ([]host.Resource, error) {
 				return nil, fmt.Errorf("host %s: docker network %s: %w", h.Name, name, err)
 			}
 			if p.Addr().Is6() && !n.IPv6 {
-				return nil, fmt.Errorf("host %s: docker network %s has an IPv6 subnet, so needs ipv6: true", h.Name, name)
+				return nil, fmt.Errorf(
+					"host %s: docker network %s has an IPv6 subnet, so needs ipv6: true",
+					h.Name,
+					name,
+				)
 			}
 		}
 		rs = append(rs, host.DockerNetwork{Name: name, Subnets: n.Subnets, IPv6: n.IPv6})
@@ -603,7 +603,11 @@ func certs(h Host) ([]host.Resource, error) {
 		for _, f := range files {
 			paths = append(paths, f.Path)
 		}
-		rs = append(rs, host.CertRecord{Name: c.Name, Paths: paths}, host.Dir{Path: c.Dir, Owner: c.Owner, Group: c.Group})
+		rs = append(rs, host.CertRecord{Name: c.Name, Paths: paths}, host.Dir{
+			Path:  c.Dir,
+			Owner: c.Owner,
+			Group: c.Group,
+		})
 		for _, f := range files {
 			f.Owner, f.Group, f.Hidden, f.Notify = c.Owner, c.Group, true, notify
 			rs = append(rs, f)

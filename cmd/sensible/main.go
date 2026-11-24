@@ -84,7 +84,11 @@ func command(ctx context.Context, name string, args []string) error {
 		facts = fs.String("facts", "", "Read facts from this `file`, as the facts command prints them")
 		asJSON = fs.Bool("json", false, "Print JSON")
 	case "secret":
-		raw = fs.Bool("raw", false, "Print an armored age file, e.g. for a stack's .age file, and keep piped input exactly")
+		raw = fs.Bool(
+			"raw",
+			false,
+			"Print an armored age file, e.g. for a stack's .age file, and keep piped input exactly",
+		)
 	default:
 	}
 	args = parse(fs, args)

@@ -48,7 +48,9 @@ func testHost(osFamily string) Host {
 			Locale:     &config.LocaleConfig{Lang: "en_GB.UTF-8", Generate: []string{"en_US.UTF-8"}},
 			NTP:        &config.NTPConfig{Servers: []string{"ntp.example.com"}},
 			Stacks:     []config.Stack{{Name: "web", Files: []config.StackFile{{Path: "docker-compose.yml"}}}},
-			Jobs:       map[string]config.JobConfig{"prune": {Command: []string{"docker", "image", "prune"}, Schedule: "daily"}},
+			Jobs: map[string]config.JobConfig{
+				"prune": {Command: []string{"docker", "image", "prune"}, Schedule: "daily"},
+			},
 		},
 		Facts: host.Facts{
 			OSFamily: osFamily,
@@ -316,17 +318,23 @@ func TestResources_errors(t *testing.T) {
 	}{
 		{"unsupported OS", func(h *Host) { h.Facts.OSFamily = "redhat" }},
 		{"Debian without release", func(h *Host) { h.Facts.Release = "" }},
-		{"Docker on a Debian derivative", func(h *Host) {
-			h.Config.AUR.Packages = nil
-			h.Config.Tailscale = nil
-			h.Facts.Distro = "linuxmint"
-		}},
-		{"Tailscale on a Debian derivative", func(h *Host) {
-			h.Config.AUR.Packages = nil
-			h.Config.Docker = nil
-			h.Config.Stacks = nil
-			h.Facts.Distro = "linuxmint"
-		}},
+		{
+			"Docker on a Debian derivative",
+			func(h *Host) {
+				h.Config.AUR.Packages = nil
+				h.Config.Tailscale = nil
+				h.Facts.Distro = "linuxmint"
+			},
+		},
+		{
+			"Tailscale on a Debian derivative",
+			func(h *Host) {
+				h.Config.AUR.Packages = nil
+				h.Config.Docker = nil
+				h.Config.Stacks = nil
+				h.Facts.Distro = "linuxmint"
+			},
+		},
 		{"AUR on Debian", func(h *Host) {}},
 		{"invalid hostname", func(h *Host) { h.Config.Hostname.Name = "bad_name" }},
 		{"unknown timezone", func(h *Host) { h.Config.Timezone.Zone = "Europe/Nowhere" }},
@@ -335,80 +343,128 @@ func TestResources_errors(t *testing.T) {
 		{"locale without charset", func(h *Host) { h.Config.Locale.Generate = []string{"en_US"} }},
 		{"invalid job name", func(h *Host) { h.Config.Jobs["Prune"] = h.Config.Jobs["prune"] }},
 		{"job without a command", func(h *Host) { h.Config.Jobs["prune"] = config.JobConfig{Schedule: "daily"} }},
-		{"job without a schedule", func(h *Host) { h.Config.Jobs["prune"] = config.JobConfig{Command: []string{"true"}} }},
-		{"apt repos on Arch", func(h *Host) {
-			h.Facts.OSFamily = archLinux
-			h.Config.AptRepos = map[string]config.AptRepoConfig{"raspi": testAptRepo}
-		}},
-		{"invalid apt repo name", func(h *Host) {
-			h.Config.AUR.Packages = nil
-			h.Config.AptRepos = map[string]config.AptRepoConfig{"../raspi": testAptRepo}
-		}},
-		{"apt repo without a signing key", func(h *Host) {
-			h.Config.AUR.Packages = nil
-			repo := testAptRepo
-			repo.SigningKeyURL = ""
-			h.Config.AptRepos = map[string]config.AptRepoConfig{"raspi": repo}
-		}},
-		{"apt repo with both signing keys", func(h *Host) {
-			h.Config.AUR.Packages = nil
-			repo := testAptRepo
-			repo.SigningKey = "/usr/share/keyrings/raspberrypi-archive-keyring.gpg"
-			h.Config.AptRepos = map[string]config.AptRepoConfig{"raspi": repo}
-		}},
-		{"apt repo with a relative signing key", func(h *Host) {
-			h.Config.AUR.Packages = nil
-			repo := testAptRepo
-			repo.SigningKeyURL = ""
-			repo.SigningKey = "raspberrypi-archive-keyring.gpg"
-			h.Config.AptRepos = map[string]config.AptRepoConfig{"raspi": repo}
-		}},
-		{"apt repo clashing with docker's", func(h *Host) {
-			h.Config.AUR.Packages = nil
-			h.Config.AptRepos = map[string]config.AptRepoConfig{"docker": testAptRepo}
-		}},
-		{"pacman repos on Debian", func(h *Host) {
-			h.Config.AUR.Packages = nil
-			h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"example": testPacmanRepo}
-		}},
-		{"invalid pacman repo name", func(h *Host) {
-			h.Facts.OSFamily = archLinux
-			h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"../example": testPacmanRepo}
-		}},
-		{"pacman repo named options", func(h *Host) {
-			h.Facts.OSFamily = archLinux
-			h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"options": testPacmanRepo}
-		}},
-		{"pacman repo without servers", func(h *Host) {
-			h.Facts.OSFamily = archLinux
-			h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"example": {}}
-		}},
-		{"pacman repo with a key URL but no ID", func(h *Host) {
-			h.Facts.OSFamily = archLinux
-			repo := testPacmanRepo
-			repo.SigningKeyID = ""
-			h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"example": repo}
-		}},
-		{"pacman repo with an option for a key ID", func(h *Host) {
-			h.Facts.OSFamily = archLinux
-			repo := testPacmanRepo
-			repo.SigningKeyID = "--import"
-			h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"example": repo}
-		}},
-		{"pacman repo with a multi-line server", func(h *Host) {
-			h.Facts.OSFamily = archLinux
-			repo := testPacmanRepo
-			repo.Servers = []string{"https://a.example.com\n[evil]"}
-			h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"example": repo}
-		}},
-		{"pam_rssh without a release", func(h *Host) {
-			h.Config.AUR.Packages = nil
-			h.Facts.Release = "buster"
-		}},
-		{"pam_rssh on a Debian derivative", func(h *Host) {
-			h.Config.AUR.Packages, h.Config.Docker, h.Config.Tailscale = nil, nil, nil
-			h.Facts.Distro = "linuxmint"
-		}},
+		{
+			"job without a schedule",
+			func(h *Host) { h.Config.Jobs["prune"] = config.JobConfig{Command: []string{"true"}} },
+		},
+		{
+			"apt repos on Arch",
+			func(h *Host) {
+				h.Facts.OSFamily = archLinux
+				h.Config.AptRepos = map[string]config.AptRepoConfig{"raspi": testAptRepo}
+			},
+		},
+		{
+			"invalid apt repo name",
+			func(h *Host) {
+				h.Config.AUR.Packages = nil
+				h.Config.AptRepos = map[string]config.AptRepoConfig{"../raspi": testAptRepo}
+			},
+		},
+		{
+			"apt repo without a signing key",
+			func(h *Host) {
+				h.Config.AUR.Packages = nil
+				repo := testAptRepo
+				repo.SigningKeyURL = ""
+				h.Config.AptRepos = map[string]config.AptRepoConfig{"raspi": repo}
+			},
+		},
+		{
+			"apt repo with both signing keys",
+			func(h *Host) {
+				h.Config.AUR.Packages = nil
+				repo := testAptRepo
+				repo.SigningKey = "/usr/share/keyrings/raspberrypi-archive-keyring.gpg"
+				h.Config.AptRepos = map[string]config.AptRepoConfig{"raspi": repo}
+			},
+		},
+		{
+			"apt repo with a relative signing key",
+			func(h *Host) {
+				h.Config.AUR.Packages = nil
+				repo := testAptRepo
+				repo.SigningKeyURL = ""
+				repo.SigningKey = "raspberrypi-archive-keyring.gpg"
+				h.Config.AptRepos = map[string]config.AptRepoConfig{"raspi": repo}
+			},
+		},
+		{
+			"apt repo clashing with docker's",
+			func(h *Host) {
+				h.Config.AUR.Packages = nil
+				h.Config.AptRepos = map[string]config.AptRepoConfig{"docker": testAptRepo}
+			},
+		},
+		{
+			"pacman repos on Debian",
+			func(h *Host) {
+				h.Config.AUR.Packages = nil
+				h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"example": testPacmanRepo}
+			},
+		},
+		{
+			"invalid pacman repo name",
+			func(h *Host) {
+				h.Facts.OSFamily = archLinux
+				h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"../example": testPacmanRepo}
+			},
+		},
+		{
+			"pacman repo named options",
+			func(h *Host) {
+				h.Facts.OSFamily = archLinux
+				h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"options": testPacmanRepo}
+			},
+		},
+		{
+			"pacman repo without servers",
+			func(h *Host) {
+				h.Facts.OSFamily = archLinux
+				h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"example": {}}
+			},
+		},
+		{
+			"pacman repo with a key URL but no ID",
+			func(h *Host) {
+				h.Facts.OSFamily = archLinux
+				repo := testPacmanRepo
+				repo.SigningKeyID = ""
+				h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"example": repo}
+			},
+		},
+		{
+			"pacman repo with an option for a key ID",
+			func(h *Host) {
+				h.Facts.OSFamily = archLinux
+				repo := testPacmanRepo
+				repo.SigningKeyID = "--import"
+				h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"example": repo}
+			},
+		},
+		{
+			"pacman repo with a multi-line server",
+			func(h *Host) {
+				h.Facts.OSFamily = archLinux
+				repo := testPacmanRepo
+				repo.Servers = []string{"https://a.example.com\n[evil]"}
+				h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"example": repo}
+			},
+		},
+		{
+			"pam_rssh without a release",
+			func(h *Host) {
+				h.Config.AUR.Packages = nil
+				h.Facts.Release = "buster"
+			},
+		},
+		{
+			"pam_rssh on a Debian derivative",
+			func(h *Host) {
+				h.Config.AUR.Packages, h.Config.Docker, h.Config.Tailscale = nil, nil, nil
+				h.Facts.Distro = "linuxmint"
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(
@@ -571,7 +627,12 @@ func TestResources_stack(t *testing.T) {
 			host.Dir{Path: "/srv/volumes/twowords", Owner: "root", Group: "root", Mode: 0o755},
 			host.Dir{Path: "/srv/volumes/twowords/blobs", Owner: "33"},
 			host.Dir{Path: "/srv/volumes/twowords-centralpark", Owner: "root", Group: "root", Mode: 0o755},
-			host.Dir{Path: "/srv/volumes/twowords-centralpark/database", Owner: "postgres", Group: "postgres", Mode: 0o700},
+			host.Dir{
+				Path:  "/srv/volumes/twowords-centralpark/database",
+				Owner: "postgres",
+				Group: "postgres",
+				Mode:  0o700,
+			},
 			host.Dir{Path: "/srv/volumes/twowords-centralpark/uploads", Owner: "33", Mode: 0o750},
 			host.Dir{Path: "/srv/compose", Owner: "root", Group: "docker", Mode: 0o750},
 			host.Dir{Path: dir, Owner: "root", Group: "docker", Mode: 0o750},
@@ -627,7 +688,12 @@ func TestResources_stackMigrations(t *testing.T) {
 		},
 		got[slices.Index(got, "migration-before:web/a"):slices.Index(got, "migration-after:web/b")+1],
 	)
-	assert.Equal(t, "migrations", got[slices.Index(got, "docker-networks")+1], "records are cleaned up after the stacks")
+	assert.Equal(
+		t,
+		"migrations",
+		got[slices.Index(got, "docker-networks")+1],
+		"records are cleaned up after the stacks",
+	)
 	b, ok := find[host.Migration](rs, "migration-after:web/b")
 	require.True(t, ok)
 	assert.Equal(
@@ -757,7 +823,11 @@ func TestResources_ipForwarding(t *testing.T) {
 				f, ok := find[host.File](rs, "file:/etc/sysctl.d/99-tailscale.conf")
 				assert.Equal(t, tt.want, ok)
 				if ok {
-					assert.Equal(t, host.ResourceList{host.ServiceAction{Name: "systemd-sysctl", Action: "restart"}}, f.Notify)
+					assert.Equal(
+						t,
+						host.ResourceList{host.ServiceAction{Name: "systemd-sysctl", Action: "restart"}},
+						f.Notify,
+					)
 				}
 			},
 		)
@@ -860,7 +930,10 @@ func TestResources_pamRSSHDebianArch(t *testing.T) {
 				require.True(t, ok)
 				assert.NotEmpty(t, d.SHA256)
 				for _, service := range []string{"sudo", "sudo-i"} {
-					l, ok := find[host.LineInFile](rs, "line:/etc/pam.d/"+service+":"+`^\s*auth\s+\S+\s+\S*pam_rssh\.so`)
+					l, ok := find[host.LineInFile](
+						rs,
+						"line:/etc/pam.d/"+service+":"+`^\s*auth\s+\S+\s+\S*pam_rssh\.so`,
+					)
 					require.True(t, ok, service)
 					assert.Contains(t, l.Line, "/lib/aarch64-linux-gnu/security/libpam_rssh.so")
 				}
@@ -939,7 +1012,10 @@ func TestResources_leftoversRejectPatterns(t *testing.T) {
 		{config.LeftoversConfig{Ignore: config.KeptConfig{Paths: config.Set{"etc/x"}}}, "leftovers.ignore.paths"},
 		{config.LeftoversConfig{External: config.KeptConfig{Paths: config.Set{"/"}}}, "leftovers.external.paths"},
 		{config.LeftoversConfig{Ignore: config.KeptConfig{Paths: config.Set{"/etc/[x"}}}, "leftovers.ignore.paths"},
-		{config.LeftoversConfig{Ignore: config.KeptConfig{Packages: config.Set{"package x"}}}, "leftovers.ignore.packages"},
+		{
+			config.LeftoversConfig{Ignore: config.KeptConfig{Packages: config.Set{"package x"}}},
+			"leftovers.ignore.packages",
+		},
 		{config.LeftoversConfig{External: config.KeptConfig{Packages: config.Set{""}}}, "leftovers.external.packages"},
 	} {
 		t.Run(
@@ -1356,7 +1432,11 @@ func TestResources_sudoersCleanUpRemovesOnlyItsOwnFiles(t *testing.T) {
 func TestResources_jobs(t *testing.T) {
 	h := testHost(archLinux)
 	h.Config.Jobs = map[string]config.JobConfig{
-		"report": {Command: []string{"/usr/bin/report", `50% of "$HOME"`, `a\b`}, Schedule: "*-*-* 04:00", User: "alice"},
+		"report": {
+			Command:  []string{"/usr/bin/report", `50% of "$HOME"`, `a\b`},
+			Schedule: "*-*-* 04:00",
+			User:     "alice",
+		},
 	}
 	rs, err := Resources(h)
 	require.NoError(t, err)
@@ -1425,7 +1505,11 @@ func TestResources_firewall(t *testing.T) {
 					strings.Index(rules.Content, "\t\tct state invalid drop\n"),
 					"loopback is accepted even when conntrack marks it invalid",
 				)
-				assert.Equal(t, host.ResourceList{host.ServiceAction{Name: firewallUnit, Action: "reload"}}, rules.Notify)
+				assert.Equal(
+					t,
+					host.ResourceList{host.ServiceAction{Name: firewallUnit, Action: "reload"}},
+					rules.Notify,
+				)
 				checkRuleset(t, rules)
 
 				got := ids(rs)
@@ -1567,7 +1651,11 @@ func TestResources_dockerRegistries(t *testing.T) {
 		f,
 	)
 	assert.Less(t, indexAfter(got, "dir:/root/.docker", -1), indexAfter(got, "file:/root/.docker/config.json", -1))
-	assert.Less(t, indexAfter(got, "file:/root/.docker/config.json", -1), indexAfter(got, "compose:/srv/compose/web", -1))
+	assert.Less(
+		t,
+		indexAfter(got, "file:/root/.docker/config.json", -1),
+		indexAfter(got, "compose:/srv/compose/web", -1),
+	)
 }
 
 func TestResources_certs(t *testing.T) {

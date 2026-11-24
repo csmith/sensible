@@ -65,7 +65,13 @@ func timezone(h Host) ([]host.Resource, error) {
 		host.Symlink{Path: "/etc/localtime", Target: "/usr/share/zoneinfo/" + c.Zone},
 	}
 	if h.Facts.OSFamily == debian {
-		rs = append(rs, host.File{Path: "/etc/timezone", Content: c.Zone + "\n", Owner: "root", Group: "root", Mode: 0o644})
+		rs = append(rs, host.File{
+			Path:    "/etc/timezone",
+			Content: c.Zone + "\n",
+			Owner:   "root",
+			Group:   "root",
+			Mode:    0o644,
+		})
 	}
 	return rs, nil
 }
@@ -108,7 +114,12 @@ func locale(h Host) ([]host.Resource, error) {
 		host.Command{
 			Name: "generate locales",
 			CheckArgv: append(
-				[]string{"sh", "-c", `l=$(locale -a) && for n; do printf '%s\n' "$l" | grep -qxF "$n" || exit 1; done`, "sh"},
+				[]string{
+					"sh",
+					"-c",
+					`l=$(locale -a) && for n; do printf '%s\n' "$l" | grep -qxF "$n" || exit 1; done`,
+					"sh",
+				},
 				names...,
 			),
 			ApplyArgv: []string{"locale-gen"},
@@ -178,11 +189,7 @@ func ntp(h Host) ([]host.Resource, error) {
 			},
 		)
 	}
-	return append(
-		rs,
-		cleanUp,
-		host.Service{Name: "systemd-timesyncd", Enabled: true},
-	), nil
+	return append(rs, cleanUp, host.Service{Name: "systemd-timesyncd", Enabled: true}), nil
 }
 
 const (
@@ -321,7 +328,11 @@ func firewallPorts(h Host) (tcp, udp []string, err error) {
 		}
 		valid := lowErr == nil && highErr == nil && low >= 1 && low <= high && high <= 65535
 		if !valid || proto != "tcp" && proto != "udp" {
-			return nil, nil, fmt.Errorf("host %s: firewall.allow: %q should be like 443/tcp or 60000-61000/udp", h.Name, a)
+			return nil, nil, fmt.Errorf(
+				"host %s: firewall.allow: %q should be like 443/tcp or 60000-61000/udp",
+				h.Name,
+				a,
+			)
 		}
 		ranges[proto] = append(ranges[proto], portRange{low, high})
 	}
@@ -365,7 +376,11 @@ func jobs(h Host) ([]host.Resource, error) {
 		j := all[name]
 		switch {
 		case !jobName.MatchString(name):
-			return nil, fmt.Errorf("host %s: invalid job name %q; use lower case letters, digits, \"-\" and \"_\"", h.Name, name)
+			return nil, fmt.Errorf(
+				"host %s: invalid job name %q; use lower case letters, digits, \"-\" and \"_\"",
+				h.Name,
+				name,
+			)
 		case len(j.Command) == 0:
 			return nil, fmt.Errorf("host %s: job %s needs a command", h.Name, name)
 		case j.Schedule == "":
@@ -463,12 +478,22 @@ func leftovers(h Host) ([]host.Resource, error) {
 	} {
 		for _, p := range kept.config.Paths {
 			if _, err := path.Match(p, ""); err != nil || !path.IsAbs(p) || path.Clean(p) != p || p == "/" {
-				return nil, fmt.Errorf("host %s: leftovers.%s.paths: %q must be an absolute path or glob", h.Name, kept.name, p)
+				return nil, fmt.Errorf(
+					"host %s: leftovers.%s.paths: %q must be an absolute path or glob",
+					h.Name,
+					kept.name,
+					p,
+				)
 			}
 		}
 		for _, p := range kept.config.Packages {
 			if _, err := path.Match(p, ""); err != nil || p == "" || strings.ContainsAny(p, "/ ") {
-				return nil, fmt.Errorf("host %s: leftovers.%s.packages: %q must be a package name or glob", h.Name, kept.name, p)
+				return nil, fmt.Errorf(
+					"host %s: leftovers.%s.packages: %q must be a package name or glob",
+					h.Name,
+					kept.name,
+					p,
+				)
 			}
 		}
 		if len(kept.config.Paths) > 0 || len(kept.config.Packages) > 0 {

@@ -102,12 +102,20 @@ func Resources(h Host) (host.ResourceList, error) {
 			// other every run.
 			repo, ok := r.(host.AptRepo)
 			if ok && slices.ContainsFunc(out, func(o host.Resource) bool { return o.ID() == r.ID() }) {
-				return nil, fmt.Errorf("host %s: apt repo %s is declared twice with different settings", h.Name, repo.Name)
+				return nil, fmt.Errorf(
+					"host %s: apt repo %s is declared twice with different settings",
+					h.Name,
+					repo.Name,
+				)
 			}
 			// As can files, such as one in files that a feature also writes.
 			file, ok := r.(host.File)
 			if ok && slices.ContainsFunc(out, func(o host.Resource) bool { return o.ID() == r.ID() }) {
-				return nil, fmt.Errorf("host %s: %s is written twice with different content or settings", h.Name, file.Path)
+				return nil, fmt.Errorf(
+					"host %s: %s is written twice with different content or settings",
+					h.Name,
+					file.Path,
+				)
 			}
 			// And directories, other than those that only need to exist.
 			dir, ok := r.(host.Dir)

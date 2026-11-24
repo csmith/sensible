@@ -111,7 +111,11 @@ func TestServe_HelloFactsCheckApplyBye(t *testing.T) {
 	ta := startAgent(t, nil)
 
 	sum := sha256.Sum256([]byte("old binary"))
-	assert.Equal(t, Hello{Proto: ProtocolVersion, Hash: hex.EncodeToString(sum[:]), Arch: runtime.GOARCH}, ta.receive(t))
+	assert.Equal(
+		t,
+		Hello{Proto: ProtocolVersion, Hash: hex.EncodeToString(sum[:]), Arch: runtime.GOARCH},
+		ta.receive(t),
+	)
 
 	require.NoError(t, ta.ctrl.Send(FactsRequest{}))
 	facts := ta.receive(t).(FactsReply).Facts

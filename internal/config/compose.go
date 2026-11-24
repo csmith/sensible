@@ -280,12 +280,20 @@ func (r *Repo) checkStack(role string, s roleSettings) (map[string]bool, error) 
 	written := map[string]string{}
 	for _, entry := range files {
 		clean := filepath.Clean(entry.Path)
-		if entry.Path == "" || filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		if entry.Path == "" ||
+			filepath.IsAbs(clean) ||
+			clean == "." ||
+			clean == ".." ||
+			strings.HasPrefix(clean, "../") {
 			return nil, fmt.Errorf("%s: compose.files: %q isn't a path inside the role", roleFile, entry.Path)
 		}
 		top, _, _ := strings.Cut(clean, "/")
 		if top == "role.yml" || top == host.ComposeFile || isVariantFile(top) {
-			return nil, fmt.Errorf("%s: compose.files: %q is read by sensible, so can't be copied", roleFile, entry.Path)
+			return nil, fmt.Errorf(
+				"%s: compose.files: %q is read by sensible, so can't be copied",
+				roleFile,
+				entry.Path,
+			)
 		}
 		covered[top] = true
 		if err := def.addFiles(r.path("roles", role), clean, filePerms(entry.Perms), written); err != nil {
@@ -1002,7 +1010,10 @@ func checkMigrationCommands(section ast.Node) error {
 				}
 				for _, tag := range []string{ageTag, generatedTag} {
 					if t := findTag(cmd.Value, tag); t != nil {
-						return nodeError(t, "a migration's commands can't hold secrets; read them from compose.env's variables")
+						return nodeError(
+							t,
+							"a migration's commands can't hold secrets; read them from compose.env's variables",
+						)
 					}
 				}
 			}
