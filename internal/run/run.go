@@ -217,9 +217,22 @@ type target struct {
 	sensibleKey string
 	transport   Transport
 	// fallback has the pending credentials, tried if transport's are rejected.
-	fallback Transport
+	fallback *fallback
 	err      error
 }
+
+// fallback is a host's pending credentials, which an interrupted bootstrap
+// may have left the host with.
+type fallback struct {
+	transport   Transport
+	sensibleKey string
+	// save makes the pending credentials current.
+	save func() error
+}
+
+// savingCredentials keeps hosts that connect at the same time from writing
+// the repo at once.
+var savingCredentials sync.Mutex
 
 func newTarget(repo *config.Repo, name string) target {
 	entry := repo.Inventory().Hosts[name]
@@ -242,7 +255,15 @@ func newTarget(repo *config.Repo, name string) target {
 	t.transport = openSSH(name, address, entry.HostKeys, creds)
 	if !entry.PendingSSHKey.IsZero() {
 		if pending, err := revealCredentials(name, entry.PendingSSHKey, entry.PendingSudoPassword); err == nil {
-			t.fallback = openSSH(name, address, entry.HostKeys, pending)
+			t.fallback = &fallback{
+				transport:   openSSH(name, address, entry.HostKeys, pending),
+				sensibleKey: pending.authorizedKey,
+				save: func() error {
+					savingCredentials.Lock()
+					defer savingCredentials.Unlock()
+					return repo.WriteCredentials(name, pending.keyPEM, pending.password, time.Now())
+				},
+			}
 		}
 	}
 	return t
@@ -524,7 +545,16 @@ func (h *hostRun) connect(ctx context.Context, builds Builds) {
 	a, upgraded, err := connect(ctx, h.transport, builds)
 	if errors.Is(err, errCredentialsRejected) && h.fallback != nil {
 		debugf("%s rejected its credentials; trying the pending ones", h.name)
-		a, upgraded, err = connect(ctx, h.fallback, builds)
+		a, upgraded, err = connect(ctx, h.fallback.transport, builds)
+		if err == nil {
+			// The host has the pending credentials, so its access files must
+			// keep their key, and later runs should use them.
+			h.sensibleKey = h.fallback.sensibleKey
+			if err = h.fallback.save(); err != nil {
+				a.bye()
+				err = fmt.Errorf("saving the pending credentials the host has: %w", err)
+			}
+		}
 	}
 	if err != nil {
 		h.err = err

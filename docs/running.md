@@ -97,7 +97,7 @@ the old key. A host whose access has broken can be bootstrapped again with
 New credentials are saved as `pending_ssh_key` and `pending_sudo_password`
 before the host is given them, so a bootstrap that stops part way doesn't
 lock sensible out. Connections try them when the current ones are rejected,
-and the next `--rotate` saves them as current once they work.
+and save them as current once they work.
 
 The machine sensible runs on is bootstrapped without `--user`, with sudo
 directly. It installs and starts sshd if it's missing, as that's how it's

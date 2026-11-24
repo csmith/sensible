@@ -367,7 +367,7 @@ func TestRotate_failureBeforeThePasswordKeepsTheOldCredentials(t *testing.T) {
 
 // A rotation that changed the password but stopped before saving it leaves
 // the host with the pending credentials.
-func interruptedRotation(t *testing.T, f *rotateFixture) {
+func interruptedRotation(t *testing.T, f *rotateFixture) credentials {
 	t.Helper()
 	pending, err := newCredentials("acidburn")
 	require.NoError(t, err)
@@ -376,6 +376,7 @@ func interruptedRotation(t *testing.T, f *rotateFixture) {
 	f.ssh.server.applied(
 		features.AccessFiles(authorizedKey(publicKey(t, f.ssh.keyPEM), "acidburn"), pending.authorizedKey)[2],
 	)
+	return pending
 }
 
 func TestRotate_recoversFromAnInterruptedRotation(t *testing.T) {
@@ -393,14 +394,27 @@ func TestRotate_recoversFromAnInterruptedRotation(t *testing.T) {
 
 func TestConnect_triesPendingCredentialsWhenCurrentAreRejected(t *testing.T) {
 	f := newRotateFixture(t)
-	interruptedRotation(t, f)
+	pending := interruptedRotation(t, f)
 
-	runs := (&Runner{Builds: f.ssh.builds}).connect(t.Context(), []target{newTarget(f.reopen(t), "acidburn")})
+	repo := f.reopen(t)
+	runs := (&Runner{Builds: f.ssh.builds}).connect(t.Context(), []target{newTarget(repo, "acidburn")})
 	<-runs[0].done
 	defer byeAll(runs)
 
 	require.NoError(t, runs[0].err)
 	assert.Equal(t, "debian", runs[0].facts.OSFamily)
+
+	facts := runs[0].facts
+	facts.Release = "trixie"
+	c, err := compiler(repo)(runs[0].target, facts)
+	require.NoError(t, err)
+	keys := features.AccessFiles(pending.authorizedKey)[2]
+	assert.Contains(t, c.resources, keys, "should keep the pending key the host was reached with")
+
+	key, password, saved := f.saved(t)
+	assert.Equal(t, pending.keyPEM, key)
+	assert.Equal(t, pending.password, password)
+	assert.Empty(t, saved)
 }
 
 func TestRotate_rejectedCredentialsPointAtAnotherAccount(t *testing.T) {
