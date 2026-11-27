@@ -689,7 +689,10 @@ func (r *renderer) startApplyLocked(h *hostRun) {
 		r.floor = h
 		r.writeLocked(header)
 	} else {
-		r.held = append(r.held, &heldSection{h: h, lines: []string{header}})
+		r.held = append(r.held, &heldSection{
+			h:     h,
+			lines: []string{header},
+		})
 	}
 }
 

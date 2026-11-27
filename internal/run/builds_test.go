@@ -23,7 +23,9 @@ func TestEmbeddedBuilds_decompressesAndHashesAgent(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, zw.Close())
 	e := &EmbeddedBuilds{
-		files:  fstest.MapFS{"agents/linux-arm64.gz": {Data: compressed.Bytes()}},
+		files: fstest.MapFS{
+			"agents/linux-arm64.gz": {Data: compressed.Bytes()},
+		},
 		builds: map[string]Build{},
 	}
 

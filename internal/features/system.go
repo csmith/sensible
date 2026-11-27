@@ -109,7 +109,13 @@ func locale(h Host) ([]host.Resource, error) {
 	}
 	return append(
 		rs,
-		host.File{Path: "/etc/locale.gen", Content: managedLines(genLines), Owner: "root", Group: "root", Mode: 0o644},
+		host.File{
+			Path:    "/etc/locale.gen",
+			Content: managedLines(genLines),
+			Owner:   "root",
+			Group:   "root",
+			Mode:    0o644,
+		},
 		// Locales that are no longer listed are left until locale-gen next runs.
 		host.Command{
 			Name: "generate locales",
@@ -163,7 +169,9 @@ const timesyncdConfDir = "/etc/systemd/timesyncd.conf.d"
 // ntp removes sensible's drop-in even once ntp is unset, so the servers go
 // back to the distribution's.
 func ntp(h Host) ([]host.Resource, error) {
-	restart := host.ResourceList{host.ServiceAction{Name: "systemd-timesyncd", Action: "restart"}}
+	restart := host.ResourceList{
+		host.ServiceAction{Name: "systemd-timesyncd", Action: "restart"},
+	}
 	cleanUp := host.OwnedDir{Path: timesyncdConfDir, Header: managedMark, Notify: restart}
 	c := h.Config.NTP
 	if c == nil {
@@ -207,7 +215,9 @@ const (
 // deletes the table.
 func firewall(h Host) ([]host.Resource, error) {
 	if h.Config.Firewall == nil {
-		return []host.Resource{host.Absent{Path: firewallRules}}, nil
+		return []host.Resource{
+			host.Absent{Path: firewallRules},
+		}, nil
 	}
 	tcp, udp, err := firewallPorts(h)
 	if err != nil {
@@ -254,7 +264,9 @@ func firewall(h Host) ([]host.Resource, error) {
 			Group:    "root",
 			Mode:     0o644,
 			Validate: []string{"nft", "-c", "-f", "%s"},
-			Notify:   host.ResourceList{host.ServiceAction{Name: firewallUnit, Action: "reload"}},
+			Notify: host.ResourceList{
+				host.ServiceAction{Name: firewallUnit, Action: "reload"},
+			},
 		},
 		unit,
 		host.Command{

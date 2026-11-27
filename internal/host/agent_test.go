@@ -126,8 +126,16 @@ func TestServe_HelloFactsCheckApplyBye(t *testing.T) {
 	assert.Empty(t, facts.DefaultIPv6)
 
 	list := ResourceList{
-		scriptedResource{Name: "a", Drift: true, Notify: ResourceList{scriptedResource{Name: "h"}}},
-		scriptedResource{Name: "b"},
+		scriptedResource{
+			Name:  "a",
+			Drift: true,
+			Notify: ResourceList{
+				scriptedResource{Name: "h"},
+			},
+		},
+		scriptedResource{
+			Name: "b",
+		},
 	}
 	require.NoError(t, ta.ctrl.Send(Check{Resources: list}))
 	assert.Equal(t, Checked{ID: "scripted:a", Status: StatusDrifted, Diff: "+ a"}, ta.receive(t))
@@ -152,7 +160,11 @@ func TestServe_UnreadableOwedJournalIsAnError(t *testing.T) {
 	ta.receive(t)
 	ta.agent.sys.(*testSys).write(OwedPath, "not json")
 
-	require.NoError(t, ta.ctrl.Send(Check{Resources: ResourceList{scriptedResource{Name: "a", Drift: true}}}))
+	require.NoError(t, ta.ctrl.Send(Check{
+		Resources: ResourceList{
+			scriptedResource{Name: "a", Drift: true},
+		},
+	}))
 	msg := ta.receive(t)
 	require.IsType(t, Error{}, msg)
 	assert.Contains(t, msg.(Error).Message, OwedPath)
@@ -212,8 +224,17 @@ func TestServe_LostConnectionFinishesWithHandlers(t *testing.T) {
 	ta := startAgent(t, nil)
 	ta.receive(t)
 	list := ResourceList{
-		scriptedResource{Name: "a", Drift: true, Notify: ResourceList{scriptedResource{Name: "h"}}},
-		scriptedResource{Name: "b", Drift: true},
+		scriptedResource{
+			Name:  "a",
+			Drift: true,
+			Notify: ResourceList{
+				scriptedResource{Name: "h"},
+			},
+		},
+		scriptedResource{
+			Name:  "b",
+			Drift: true,
+		},
 	}
 	require.NoError(t, ta.ctrl.Send(Check{Resources: list}))
 	for range 3 {
@@ -234,14 +255,21 @@ func TestServe_PruneListsAndRemovesLeftovers(t *testing.T) {
 	sys.write("/srv/volumes/old/data/file", "")
 	sys.write("/srv/volumes/older/data/file", "")
 
-	require.NoError(t, ta.ctrl.Send(Check{Resources: ResourceList{Volumes{Path: "/srv/volumes"}}}))
+	require.NoError(t, ta.ctrl.Send(Check{
+		Resources: ResourceList{
+			Volumes{Path: "/srv/volumes"},
+		},
+	}))
 	ta.receive(t)
 	ta.receive(t)
 
 	require.NoError(t, ta.ctrl.Send(Prune{}))
 	assert.Equal(
 		t,
-		Leftovers{ID: "volumes:/srv/volumes", Items: []string{"/srv/volumes/old", "/srv/volumes/older"}},
+		Leftovers{
+			ID:    "volumes:/srv/volumes",
+			Items: []string{"/srv/volumes/old", "/srv/volumes/older"},
+		},
 		ta.receive(t),
 	)
 	assert.Equal(t, Done{}, ta.receive(t))
@@ -261,14 +289,22 @@ func TestServe_PreviewsOnlyListedLeftovers(t *testing.T) {
 	ta := startAgent(t, nil)
 	ta.receive(t)
 	ta.agent.sys.(*testSys).write("/srv/volumes/old/data", "")
-	require.NoError(t, ta.ctrl.Send(Check{Resources: ResourceList{Volumes{Path: "/srv/volumes"}}}))
+	require.NoError(t, ta.ctrl.Send(Check{
+		Resources: ResourceList{
+			Volumes{Path: "/srv/volumes"},
+		},
+	}))
 	ta.receive(t)
 	ta.receive(t)
 
 	require.NoError(t, ta.ctrl.Send(Preview{ID: "volumes:/srv/volumes", Item: "/srv/volumes/old"}))
 	assert.Equal(
 		t,
-		Previewed{ID: "volumes:/srv/volumes", Item: "/srv/volumes/old", Lines: []string{"data"}},
+		Previewed{
+			ID:    "volumes:/srv/volumes",
+			Item:  "/srv/volumes/old",
+			Lines: []string{"data"},
+		},
 		ta.receive(t),
 	)
 

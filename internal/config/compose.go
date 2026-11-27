@@ -263,7 +263,12 @@ var projectName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 // role directory's entries its files cover.
 func (r *Repo) checkStack(role string, s roleSettings) (map[string]bool, error) {
 	roleFile := r.path("roles", role, "role.yml")
-	def := &stackDef{role: role, name: stackName(role), perms: map[string]Perms{}, dirs: map[string]Perms{}}
+	def := &stackDef{
+		role:  role,
+		name:  stackName(role),
+		perms: map[string]Perms{},
+		dirs:  map[string]Perms{},
+	}
 	if !projectName.MatchString(def.name) {
 		return nil, fmt.Errorf(
 			"%s: %q can't be a Docker Compose project name; use lower case letters, digits, \"-\" and \"_\"",

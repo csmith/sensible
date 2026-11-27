@@ -104,7 +104,9 @@ func (m *myDNSHost) Apply(ctx context.Context, zone string, changes dnsRecordCha
 		}
 		ops = append(ops, op{Name: name, Type: rec.rtype, Content: rec.content, TTL: rec.ttl})
 	}
-	body := map[string]any{"data": map[string]any{"records": ops}}
+	body := map[string]any{
+		"data": map[string]any{"records": ops},
+	}
 	return m.do(ctx, http.MethodPost, recordsPath(zone), body, nil)
 }
 

@@ -764,7 +764,11 @@ func (r PacmanRepo) trustKey(ctx context.Context, sys Sys) error {
 	// Locally signing needs pacman's own key, which hosts made from some
 	// images, such as Arch's for Docker, don't have yet. --init only makes
 	// one if it's missing.
-	for _, args := range [][]string{{"--init"}, {"--add", r.keyPath()}, {"--lsign-key", r.SigningKeyID}} {
+	for _, args := range [][]string{
+		{"--init"},
+		{"--add", r.keyPath()},
+		{"--lsign-key", r.SigningKeyID},
+	} {
 		if _, err := runOK(ctx, sys, argv(append([]string{"pacman-key"}, args...)...)); err != nil {
 			return err
 		}

@@ -19,11 +19,25 @@ func testHost(osFamily string) Host {
 	return Host{
 		Name: "testhost",
 		Config: config.Config{
-			Packages: &config.PackagesConfig{Install: []string{"htop"}, Remove: []string{"nano"}},
-			AUR:      &config.AURConfig{Packages: []string{"widget-bin"}},
-			Users:    map[string]config.UserConfig{"alice": {Groups: []string{"wheel"}}, "bob": {}},
-			Sudoers:  map[string]config.Set{"000-alice": {"alice ALL=(ALL:ALL) ALL"}},
-			PamRSSH:  &config.PamRSSHConfig{Keys: []string{"ssh-ed25519 AAAA sudo"}},
+			Packages: &config.PackagesConfig{
+				Install: []string{"htop"},
+				Remove:  []string{"nano"},
+			},
+			AUR: &config.AURConfig{
+				Packages: []string{"widget-bin"},
+			},
+			Users: map[string]config.UserConfig{
+				"alice": {
+					Groups: []string{"wheel"},
+				},
+				"bob": {},
+			},
+			Sudoers: map[string]config.Set{
+				"000-alice": {"alice ALL=(ALL:ALL) ALL"},
+			},
+			PamRSSH: &config.PamRSSHConfig{
+				Keys: []string{"ssh-ed25519 AAAA sudo"},
+			},
 			SSHD: &config.SSHDConfig{
 				Settings: map[string]string{"MaxAuthTries": "3"},
 				AuthorizedKeys: map[string]config.Set{
@@ -31,25 +45,44 @@ func testHost(osFamily string) Host {
 					"bob":   {"ssh-ed25519 AAAA bob"},
 				},
 			},
-			Tailscale: &config.TailscaleConfig{Settings: map[string]string{"advertise-exit-node": "true"}},
+			Tailscale: &config.TailscaleConfig{
+				Settings: map[string]string{"advertise-exit-node": "true"},
+			},
 			Zsh: &config.ZshConfig{
 				Users:         []string{"alice"},
 				Plugins:       []string{"git"},
 				PromptColours: map[string]string{"alice": "blue"},
 			},
 			Docker: &config.DockerConfig{
-				Users:    []string{"alice"},
-				Networks: map[string]config.DockerNetworkConfig{"web": {}},
+				Users: []string{"alice"},
+				Networks: map[string]config.DockerNetworkConfig{
+					"web": {},
+				},
 			},
 			Vim:        &config.VimConfig{},
 			QuietLogin: &config.QuietLoginConfig{},
 			Hostname:   &config.HostnameConfig{},
 			Timezone:   &config.TimezoneConfig{Zone: "Europe/London"},
-			Locale:     &config.LocaleConfig{Lang: "en_GB.UTF-8", Generate: []string{"en_US.UTF-8"}},
-			NTP:        &config.NTPConfig{Servers: []string{"ntp.example.com"}},
-			Stacks:     []config.Stack{{Name: "web", Files: []config.StackFile{{Path: "docker-compose.yml"}}}},
+			Locale: &config.LocaleConfig{
+				Lang:     "en_GB.UTF-8",
+				Generate: []string{"en_US.UTF-8"},
+			},
+			NTP: &config.NTPConfig{
+				Servers: []string{"ntp.example.com"},
+			},
+			Stacks: []config.Stack{
+				{
+					Name: "web",
+					Files: []config.StackFile{
+						{Path: "docker-compose.yml"},
+					},
+				},
+			},
 			Jobs: map[string]config.JobConfig{
-				"prune": {Command: []string{"docker", "image", "prune"}, Schedule: "daily"},
+				"prune": {
+					Command:  []string{"docker", "image", "prune"},
+					Schedule: "daily",
+				},
 			},
 		},
 		Facts: host.Facts{
@@ -216,7 +249,10 @@ func TestPacmanRepos(t *testing.T) {
 	h := testHost(archLinux)
 	h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{
 		"chris.forgejo.git.example.com": testPacmanRepo,
-		"unsigned":                      {Servers: []string{"https://a.example.com/$arch"}, SigLevel: "Never"},
+		"unsigned": {
+			Servers:  []string{"https://a.example.com/$arch"},
+			SigLevel: "Never",
+		},
 	}
 
 	rs, err := Resources(h)
@@ -316,8 +352,14 @@ func TestResources_errors(t *testing.T) {
 		name   string
 		modify func(*Host)
 	}{
-		{"unsupported OS", func(h *Host) { h.Facts.OSFamily = "redhat" }},
-		{"Debian without release", func(h *Host) { h.Facts.Release = "" }},
+		{
+			"unsupported OS",
+			func(h *Host) { h.Facts.OSFamily = "redhat" },
+		},
+		{
+			"Debian without release",
+			func(h *Host) { h.Facts.Release = "" },
+		},
 		{
 			"Docker on a Debian derivative",
 			func(h *Host) {
@@ -335,17 +377,45 @@ func TestResources_errors(t *testing.T) {
 				h.Facts.Distro = "linuxmint"
 			},
 		},
-		{"AUR on Debian", func(h *Host) {}},
-		{"invalid hostname", func(h *Host) { h.Config.Hostname.Name = "bad_name" }},
-		{"unknown timezone", func(h *Host) { h.Config.Timezone.Zone = "Europe/Nowhere" }},
-		{"local timezone", func(h *Host) { h.Config.Timezone.Zone = "Local" }},
-		{"locale without lang", func(h *Host) { h.Config.Locale.Lang = "" }},
-		{"locale without charset", func(h *Host) { h.Config.Locale.Generate = []string{"en_US"} }},
-		{"invalid job name", func(h *Host) { h.Config.Jobs["Prune"] = h.Config.Jobs["prune"] }},
-		{"job without a command", func(h *Host) { h.Config.Jobs["prune"] = config.JobConfig{Schedule: "daily"} }},
+		{
+			"AUR on Debian",
+			func(h *Host) {},
+		},
+		{
+			"invalid hostname",
+			func(h *Host) { h.Config.Hostname.Name = "bad_name" },
+		},
+		{
+			"unknown timezone",
+			func(h *Host) { h.Config.Timezone.Zone = "Europe/Nowhere" },
+		},
+		{
+			"local timezone",
+			func(h *Host) { h.Config.Timezone.Zone = "Local" },
+		},
+		{
+			"locale without lang",
+			func(h *Host) { h.Config.Locale.Lang = "" },
+		},
+		{
+			"locale without charset",
+			func(h *Host) { h.Config.Locale.Generate = []string{"en_US"} },
+		},
+		{
+			"invalid job name",
+			func(h *Host) { h.Config.Jobs["Prune"] = h.Config.Jobs["prune"] },
+		},
+		{
+			"job without a command",
+			func(h *Host) { h.Config.Jobs["prune"] = config.JobConfig{Schedule: "daily"} },
+		},
 		{
 			"job without a schedule",
-			func(h *Host) { h.Config.Jobs["prune"] = config.JobConfig{Command: []string{"true"}} },
+			func(h *Host) {
+				h.Config.Jobs["prune"] = config.JobConfig{
+					Command: []string{"true"},
+				}
+			},
 		},
 		{
 			"apt repos on Arch",
@@ -421,7 +491,9 @@ func TestResources_errors(t *testing.T) {
 			"pacman repo without servers",
 			func(h *Host) {
 				h.Facts.OSFamily = archLinux
-				h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{"example": {}}
+				h.Config.PacmanRepos = map[string]config.PacmanRepoConfig{
+					"example": {},
+				}
 			},
 		},
 		{
@@ -543,7 +615,9 @@ func TestResources_featuresTurnOff(t *testing.T) {
 				"service:systemd-timesyncd",
 			},
 			// So the servers go back to the distribution's.
-			present: []string{"owned-dir:" + timesyncdConfDir},
+			present: []string{
+				"owned-dir:" + timesyncdConfDir,
+			},
 		},
 		{
 			name:    "no NTP servers",
@@ -584,12 +658,32 @@ func TestResources_stack(t *testing.T) {
 		{
 			Name: "twowords-centralpark",
 			Files: []config.StackFile{
-				{Path: "docker-compose.yml", Content: "services: {}\n", Perms: perms, Secrets: []string{"pw"}},
-				{Path: ".env", Content: "A=b\n", Perms: perms, Hidden: true},
-				{Path: "conf/sub/site.conf", Content: "s\n", Perms: config.Perms{Owner: "1000", Mode: 0o644}},
-				{Path: "conf/other.conf", Content: "o\n", Perms: perms},
+				{
+					Path:    "docker-compose.yml",
+					Content: "services: {}\n",
+					Perms:   perms,
+					Secrets: []string{"pw"},
+				},
+				{
+					Path:    ".env",
+					Content: "A=b\n",
+					Perms:   perms,
+					Hidden:  true,
+				},
+				{
+					Path:    "conf/sub/site.conf",
+					Content: "s\n",
+					Perms:   config.Perms{Owner: "1000", Mode: 0o644},
+				},
+				{
+					Path:    "conf/other.conf",
+					Content: "o\n",
+					Perms:   perms,
+				},
 			},
-			Dirs: map[string]config.Perms{"conf/sub": {Owner: "1000", Mode: 0o755}},
+			Dirs: map[string]config.Perms{
+				"conf/sub": {Owner: "1000", Mode: 0o755},
+			},
 		},
 	}
 	h.Config.Volumes = []config.Volume{
@@ -623,19 +717,51 @@ func TestResources_stack(t *testing.T) {
 	assert.Equal(
 		t,
 		[]host.Resource{
-			host.Dir{Path: "/srv/volumes", Owner: "root", Group: "root", Mode: 0o700},
-			host.Dir{Path: "/srv/volumes/twowords", Owner: "root", Group: "root", Mode: 0o755},
-			host.Dir{Path: "/srv/volumes/twowords/blobs", Owner: "33"},
-			host.Dir{Path: "/srv/volumes/twowords-centralpark", Owner: "root", Group: "root", Mode: 0o755},
+			host.Dir{
+				Path:  "/srv/volumes",
+				Owner: "root",
+				Group: "root",
+				Mode:  0o700,
+			},
+			host.Dir{
+				Path:  "/srv/volumes/twowords",
+				Owner: "root",
+				Group: "root",
+				Mode:  0o755,
+			},
+			host.Dir{
+				Path:  "/srv/volumes/twowords/blobs",
+				Owner: "33",
+			},
+			host.Dir{
+				Path:  "/srv/volumes/twowords-centralpark",
+				Owner: "root",
+				Group: "root",
+				Mode:  0o755,
+			},
 			host.Dir{
 				Path:  "/srv/volumes/twowords-centralpark/database",
 				Owner: "postgres",
 				Group: "postgres",
 				Mode:  0o700,
 			},
-			host.Dir{Path: "/srv/volumes/twowords-centralpark/uploads", Owner: "33", Mode: 0o750},
-			host.Dir{Path: "/srv/compose", Owner: "root", Group: "docker", Mode: 0o750},
-			host.Dir{Path: dir, Owner: "root", Group: "docker", Mode: 0o750},
+			host.Dir{
+				Path:  "/srv/volumes/twowords-centralpark/uploads",
+				Owner: "33",
+				Mode:  0o750,
+			},
+			host.Dir{
+				Path:  "/srv/compose",
+				Owner: "root",
+				Group: "docker",
+				Mode:  0o750,
+			},
+			host.Dir{
+				Path:  dir,
+				Owner: "root",
+				Group: "docker",
+				Mode:  0o750,
+			},
 			host.File{
 				Path:    dir + "/docker-compose.yml",
 				Content: "services: {}\n",
@@ -644,11 +770,38 @@ func TestResources_stack(t *testing.T) {
 				Mode:    0o640,
 				Secrets: []string{"pw"},
 			},
-			host.File{Path: dir + "/.env", Content: "A=b\n", Owner: "root", Group: "docker", Mode: 0o640, Hidden: true},
-			host.Dir{Path: dir + "/conf", Owner: "root", Group: "docker", Mode: 0o750},
-			host.Dir{Path: dir + "/conf/sub", Owner: "1000", Mode: 0o755},
-			host.File{Path: dir + "/conf/sub/site.conf", Content: "s\n", Owner: "1000", Mode: 0o644},
-			host.File{Path: dir + "/conf/other.conf", Content: "o\n", Owner: "root", Group: "docker", Mode: 0o640},
+			host.File{
+				Path:    dir + "/.env",
+				Content: "A=b\n",
+				Owner:   "root",
+				Group:   "docker",
+				Mode:    0o640,
+				Hidden:  true,
+			},
+			host.Dir{
+				Path:  dir + "/conf",
+				Owner: "root",
+				Group: "docker",
+				Mode:  0o750,
+			},
+			host.Dir{
+				Path:  dir + "/conf/sub",
+				Owner: "1000",
+				Mode:  0o755,
+			},
+			host.File{
+				Path:    dir + "/conf/sub/site.conf",
+				Content: "s\n",
+				Owner:   "1000",
+				Mode:    0o644,
+			},
+			host.File{
+				Path:    dir + "/conf/other.conf",
+				Content: "o\n",
+				Owner:   "root",
+				Group:   "docker",
+				Mode:    0o640,
+			},
 			host.OwnedDir{Path: dir, Recursive: true},
 			compose,
 			host.ComposeProjects{Path: "/srv/compose"},
@@ -662,11 +815,22 @@ func TestResources_stackMigrations(t *testing.T) {
 	h := testHost(archLinux)
 	h.Config.Stacks = []config.Stack{
 		{
-			Name:  "web",
-			Files: []config.StackFile{{Path: "docker-compose.yml", Content: "services: {}\n"}},
+			Name: "web",
+			Files: []config.StackFile{
+				{Path: "docker-compose.yml", Content: "services: {}\n"},
+			},
 			Migrations: []config.Migration{
-				{Name: "a", On: "x", Before: config.Command{"dump"}},
-				{Name: "b", On: "pw", Secret: true, After: config.Command{"alter"}},
+				{
+					Name:   "a",
+					On:     "x",
+					Before: config.Command{"dump"},
+				},
+				{
+					Name:   "b",
+					On:     "pw",
+					Secret: true,
+					After:  config.Command{"alter"},
+				},
 			},
 		},
 	}
@@ -712,14 +876,27 @@ func TestResources_stackMigrations(t *testing.T) {
 
 func TestResources_parentMigrations(t *testing.T) {
 	h := testHost(archLinux)
-	compose := []config.StackFile{{Path: "docker-compose.yml", Content: "services: {}\n"}}
-	h.Config.Volumes = []config.Volume{{Path: "/srv/volumes/group/data"}}
-	h.Config.Stacks = []config.Stack{{Name: "group-a", Files: compose}, {Name: "group-b", Files: compose}}
+	compose := []config.StackFile{
+		{Path: "docker-compose.yml", Content: "services: {}\n"},
+	}
+	h.Config.Volumes = []config.Volume{
+		{Path: "/srv/volumes/group/data"},
+	}
+	h.Config.Stacks = []config.Stack{
+		{Name: "group-a", Files: compose},
+		{Name: "group-b", Files: compose},
+	}
 	h.Config.Parents = []config.Parent{
 		{
-			Name:       "group",
-			Children:   []string{"group-a", "group-b"},
-			Migrations: []config.Migration{{Name: "owner", On: "33", Before: config.Command{"chown"}}},
+			Name:     "group",
+			Children: []string{"group-a", "group-b"},
+			Migrations: []config.Migration{
+				{
+					Name:   "owner",
+					On:     "33",
+					Before: config.Command{"chown"},
+				},
+			},
 		},
 	}
 	rs, err := Resources(h)
@@ -751,7 +928,10 @@ func TestResources_dockerNetworks(t *testing.T) {
 	h := testHost(archLinux)
 	h.Config.Docker.Networks = map[string]config.DockerNetworkConfig{
 		"web": {},
-		"six": {Subnets: []string{"fd00:dead:beef::/48", "10.1.0.0/16"}, IPv6: true},
+		"six": {
+			Subnets: []string{"fd00:dead:beef::/48", "10.1.0.0/16"},
+			IPv6:    true,
+		},
 	}
 	rs, err := Resources(h)
 	require.NoError(t, err)
@@ -760,14 +940,22 @@ func TestResources_dockerNetworks(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(
 		t,
-		host.DockerNetwork{Name: "six", Subnets: []string{"fd00:dead:beef::/48", "10.1.0.0/16"}, IPv6: true},
+		host.DockerNetwork{
+			Name:    "six",
+			Subnets: []string{"fd00:dead:beef::/48", "10.1.0.0/16"},
+			IPv6:    true,
+		},
 		six,
 	)
 	got := ids(rs)
 	assert.Less(t, indexAfter(got, "docker-network:six", -1), indexAfter(got, "docker-network:web", -1))
 
 	for subnets, want := range map[string]string{"fd00::/8": "needs ipv6: true", "10.1.0.0": "10.1.0.0"} {
-		h.Config.Docker.Networks = map[string]config.DockerNetworkConfig{"bad": {Subnets: []string{subnets}}}
+		h.Config.Docker.Networks = map[string]config.DockerNetworkConfig{
+			"bad": {
+				Subnets: []string{subnets},
+			},
+		}
 		_, err := Resources(h)
 		assert.ErrorContains(t, err, want)
 	}
@@ -776,7 +964,9 @@ func TestResources_dockerNetworks(t *testing.T) {
 func TestResources_dockerGroupMembers(t *testing.T) {
 	h := testHost(archLinux)
 	h.Config.Docker.Users = []string{"alice", "carol"}
-	h.Config.Users["bob"] = config.UserConfig{Groups: []string{"docker"}}
+	h.Config.Users["bob"] = config.UserConfig{
+		Groups: []string{"docker"},
+	}
 	rs, err := Resources(h)
 	require.NoError(t, err)
 
@@ -808,9 +998,21 @@ func TestResources_ipForwarding(t *testing.T) {
 		settings map[string]string
 		want     bool
 	}{
-		{"exit node", map[string]string{"advertise-exit-node": "true"}, true},
-		{"routes", map[string]string{"advertise-routes": "10.0.0.0/8"}, true},
-		{"neither", map[string]string{"advertise-exit-node": "false", "ssh": "true"}, false},
+		{
+			"exit node",
+			map[string]string{"advertise-exit-node": "true"},
+			true,
+		},
+		{
+			"routes",
+			map[string]string{"advertise-routes": "10.0.0.0/8"},
+			true,
+		},
+		{
+			"neither",
+			map[string]string{"advertise-exit-node": "false", "ssh": "true"},
+			false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(
@@ -825,7 +1027,9 @@ func TestResources_ipForwarding(t *testing.T) {
 				if ok {
 					assert.Equal(
 						t,
-						host.ResourceList{host.ServiceAction{Name: "systemd-sysctl", Action: "restart"}},
+						host.ResourceList{
+							host.ServiceAction{Name: "systemd-sysctl", Action: "restart"},
+						},
 						f.Notify,
 					)
 				}
@@ -893,7 +1097,9 @@ func TestResources_sshdReloadUnit(t *testing.T) {
 				h.Config.AUR.Packages = nil
 				rs, err := Resources(h)
 				require.NoError(t, err)
-				want := host.ResourceList{host.ServiceAction{Name: tt.unit, Action: "reload"}}
+				want := host.ResourceList{
+					host.ServiceAction{Name: tt.unit, Action: "reload"},
+				}
 				for _, path := range []string{
 					"/etc/ssh/sshd_config.d/05-sensible.conf",
 					"/etc/ssh/sshd_config.d/10-sensible.conf",
@@ -976,7 +1182,9 @@ func TestResources_removeRejectsPaths(t *testing.T) {
 			p,
 			func(t *testing.T) {
 				h := testHost(archLinux)
-				h.Config.Remove = &config.RemoveConfig{Paths: config.Set{p}}
+				h.Config.Remove = &config.RemoveConfig{
+					Paths: config.Set{p},
+				}
 				_, err := Resources(h)
 				assert.ErrorContains(t, err, "remove.paths")
 			},
@@ -987,8 +1195,12 @@ func TestResources_removeRejectsPaths(t *testing.T) {
 func TestResources_leftoversComeFirst(t *testing.T) {
 	h := testHost(archLinux)
 	h.Config.Leftovers = &config.LeftoversConfig{
-		Ignore:   config.KeptConfig{Paths: config.Set{"/etc/sudoers.d/README"}},
-		External: config.KeptConfig{Packages: config.Set{"tool-*"}},
+		Ignore: config.KeptConfig{
+			Paths: config.Set{"/etc/sudoers.d/README"},
+		},
+		External: config.KeptConfig{
+			Packages: config.Set{"tool-*"},
+		},
 	}
 
 	rs, err := Resources(h)
@@ -997,8 +1209,13 @@ func TestResources_leftoversComeFirst(t *testing.T) {
 	assert.Equal(
 		t,
 		[]host.Resource{
-			host.KeptLeftovers{Paths: []string{"/etc/sudoers.d/README"}},
-			host.KeptLeftovers{Packages: []string{"tool-*"}, External: true},
+			host.KeptLeftovers{
+				Paths: []string{"/etc/sudoers.d/README"},
+			},
+			host.KeptLeftovers{
+				Packages: []string{"tool-*"},
+				External: true,
+			},
 		},
 		[]host.Resource(rs[:2]),
 	)
@@ -1009,14 +1226,46 @@ func TestResources_leftoversRejectPatterns(t *testing.T) {
 		config config.LeftoversConfig
 		err    string
 	}{
-		{config.LeftoversConfig{Ignore: config.KeptConfig{Paths: config.Set{"etc/x"}}}, "leftovers.ignore.paths"},
-		{config.LeftoversConfig{External: config.KeptConfig{Paths: config.Set{"/"}}}, "leftovers.external.paths"},
-		{config.LeftoversConfig{Ignore: config.KeptConfig{Paths: config.Set{"/etc/[x"}}}, "leftovers.ignore.paths"},
 		{
-			config.LeftoversConfig{Ignore: config.KeptConfig{Packages: config.Set{"package x"}}},
+			config.LeftoversConfig{
+				Ignore: config.KeptConfig{
+					Paths: config.Set{"etc/x"},
+				},
+			},
+			"leftovers.ignore.paths",
+		},
+		{
+			config.LeftoversConfig{
+				External: config.KeptConfig{
+					Paths: config.Set{"/"},
+				},
+			},
+			"leftovers.external.paths",
+		},
+		{
+			config.LeftoversConfig{
+				Ignore: config.KeptConfig{
+					Paths: config.Set{"/etc/[x"},
+				},
+			},
+			"leftovers.ignore.paths",
+		},
+		{
+			config.LeftoversConfig{
+				Ignore: config.KeptConfig{
+					Packages: config.Set{"package x"},
+				},
+			},
 			"leftovers.ignore.packages",
 		},
-		{config.LeftoversConfig{External: config.KeptConfig{Packages: config.Set{""}}}, "leftovers.external.packages"},
+		{
+			config.LeftoversConfig{
+				External: config.KeptConfig{
+					Packages: config.Set{""},
+				},
+			},
+			"leftovers.external.packages",
+		},
 	} {
 		t.Run(
 			tt.err,
@@ -1035,8 +1284,14 @@ func TestResources_pamRSSHOffRemovesOnlyItsLine(t *testing.T) {
 		osFamily string
 		services []string
 	}{
-		{archLinux, []string{"sudo"}},
-		{debian, []string{"sudo", "sudo-i"}},
+		{
+			archLinux,
+			[]string{"sudo"},
+		},
+		{
+			debian,
+			[]string{"sudo", "sudo-i"},
+		},
 	} {
 		t.Run(
 			tt.osFamily,
@@ -1294,7 +1549,11 @@ func TestResources_userErrors(t *testing.T) {
 			config.UserConfig{Home: "var/lib/git"},
 			`users.alice.home must be an absolute path, not "var/lib/git"`,
 		},
-		{"unclean shell", config.UserConfig{Shell: "/bin/../bin/sh"}, "users.alice.shell must be an absolute path"},
+		{
+			"unclean shell",
+			config.UserConfig{Shell: "/bin/../bin/sh"},
+			"users.alice.shell must be an absolute path",
+		},
 		{
 			"shell zsh would change",
 			config.UserConfig{Shell: "/bin/bash"},
@@ -1331,7 +1590,13 @@ func TestResources_hostname(t *testing.T) {
 		want       string
 		hostsLine  string
 	}{
-		{"defaults to inventory name", archLinux, "", "testhost", ""},
+		{
+			"defaults to inventory name",
+			archLinux,
+			"",
+			"testhost",
+			"",
+		},
 		{
 			"Debian maps the short name too",
 			debian,
@@ -1339,7 +1604,13 @@ func TestResources_hostname(t *testing.T) {
 			"testhost.example.com",
 			"127.0.1.1\ttesthost.example.com testhost",
 		},
-		{"Debian short name", debian, "", "testhost", "127.0.1.1\ttesthost"},
+		{
+			"Debian short name",
+			debian,
+			"",
+			"testhost",
+			"127.0.1.1\ttesthost",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(
@@ -1384,7 +1655,9 @@ func TestResources_locale(t *testing.T) {
 func TestResources_ntpRestartsOnChange(t *testing.T) {
 	rs, err := Resources(testHost(archLinux))
 	require.NoError(t, err)
-	restart := host.ResourceList{host.ServiceAction{Name: "systemd-timesyncd", Action: "restart"}}
+	restart := host.ResourceList{
+		host.ServiceAction{Name: "systemd-timesyncd", Action: "restart"},
+	}
 
 	f, ok := find[host.File](rs, "file:"+timesyncdConfDir+"/sensible.conf")
 	require.True(t, ok)
@@ -1507,7 +1780,9 @@ func TestResources_firewall(t *testing.T) {
 				)
 				assert.Equal(
 					t,
-					host.ResourceList{host.ServiceAction{Name: firewallUnit, Action: "reload"}},
+					host.ResourceList{
+						host.ServiceAction{Name: firewallUnit, Action: "reload"},
+					},
 					rules.Notify,
 				)
 				checkRuleset(t, rules)
@@ -1559,7 +1834,9 @@ func TestResources_firewallErrors(t *testing.T) {
 			allow,
 			func(t *testing.T) {
 				h := testHost(archLinux)
-				h.Config.Firewall = &config.FirewallConfig{Allow: []string{allow}}
+				h.Config.Firewall = &config.FirewallConfig{
+					Allow: []string{allow},
+				}
 				_, err := Resources(h)
 				assert.ErrorContains(t, err, "firewall.allow")
 			},
@@ -1664,7 +1941,12 @@ func TestResources_certs(t *testing.T) {
 	h.Config.IssuedCerts = []config.Cert{
 		{Name: "app", Dir: dir, Owner: "alice", Group: "users", CACert: "ca\n", Cert: "cert\n", Key: "key\n"},
 	}
-	h.Config.Stacks = []config.Stack{{Name: "web", CertPaths: []string{dir + "/tls.key"}}}
+	h.Config.Stacks = []config.Stack{
+		{
+			Name:      "web",
+			CertPaths: []string{dir + "/tls.key"},
+		},
+	}
 	rs, err := Resources(h)
 	require.NoError(t, err)
 
@@ -1693,8 +1975,16 @@ func TestResources_certs(t *testing.T) {
 func TestResources_certsNotifyTheirUnits(t *testing.T) {
 	h := testHost(archLinux)
 	h.Config.IssuedCerts = []config.Cert{
-		{Name: "db", Dir: "/etc/postgresql/tls", Reload: []string{"nginx"}, Restart: []string{"postgresql"}},
-		{Name: "other", Dir: "/srv/certs/other"},
+		{
+			Name:    "db",
+			Dir:     "/etc/postgresql/tls",
+			Reload:  []string{"nginx"},
+			Restart: []string{"postgresql"},
+		},
+		{
+			Name: "other",
+			Dir:  "/srv/certs/other",
+		},
 	}
 	rs, err := Resources(h)
 	require.NoError(t, err)
@@ -1715,7 +2005,10 @@ func TestResources_certsNotifyTheirUnits(t *testing.T) {
 }
 
 func TestResources_certsCleanUpWithoutCerts(t *testing.T) {
-	rs, err := Resources(Host{Name: "testhost", Facts: host.Facts{OSFamily: archLinux}})
+	rs, err := Resources(Host{
+		Name:  "testhost",
+		Facts: host.Facts{OSFamily: archLinux},
+	})
 	require.NoError(t, err)
 	assert.True(t, slices.ContainsFunc(rs, func(r host.Resource) bool { return r.ID() == "cert-records" }))
 }
@@ -1867,7 +2160,10 @@ func TestResources_disownedReloadsSSHD(t *testing.T) {
 		require.True(t, ok)
 		assert.Equal(
 			t,
-			host.ResourceList{host.ServiceAction{Name: unit, Action: "reload"}, sshdSocketRestart(h)},
+			host.ResourceList{
+				host.ServiceAction{Name: unit, Action: "reload"},
+				sshdSocketRestart(h),
+			},
 			d.Notify,
 		)
 	}
@@ -1891,7 +2187,13 @@ func TestResources_sshdListenSettingsRestartSocket(t *testing.T) {
 				settings, ok := find[host.File](rs, "file:"+sshdDropIn)
 				require.True(t, ok)
 				assert.Equal(t, managedLines([]string{"MaxAuthTries 3"}), settings.Content)
-				assert.Equal(t, host.ResourceList{host.ServiceAction{Name: unit, Action: "reload"}}, settings.Notify)
+				assert.Equal(
+					t,
+					host.ResourceList{
+						host.ServiceAction{Name: unit, Action: "reload"},
+					},
+					settings.Notify,
+				)
 
 				listen, ok := find[host.File](rs, "file:"+sshdListenDropIn)
 				require.True(t, ok)
@@ -2019,7 +2321,9 @@ func TestResources_files(t *testing.T) {
 func TestResources_fileAlsoWrittenByAFeature(t *testing.T) {
 	h := testHost(debian)
 	h.Config.AUR = nil
-	h.Config.Files = []config.FileConfig{{Path: "/etc/hostname", Data: "other\n"}}
+	h.Config.Files = []config.FileConfig{
+		{Path: "/etc/hostname", Data: "other\n"},
+	}
 
 	_, err := Resources(h)
 
@@ -2063,7 +2367,9 @@ func TestResources_directories(t *testing.T) {
 					{Path: "/srv/app", Owner: "root", Group: "root", Mode: 0o755},
 					data,
 				}
-				h.Config.Files = []config.FileConfig{{Path: "/srv/app/data/a.conf", Data: "a\n"}}
+				h.Config.Files = []config.FileConfig{
+					{Path: "/srv/app/data/a.conf", Data: "a\n"},
+				}
 				rs, err := Resources(h)
 				require.NoError(t, err)
 
@@ -2079,7 +2385,13 @@ func TestResources_directories(t *testing.T) {
 						declared = append(declared, d)
 					}
 				}
-				assert.Equal(t, []host.Dir{{Path: data.Path, Owner: "alice", Group: "users", Mode: 0o770}}, declared)
+				assert.Equal(
+					t,
+					[]host.Dir{
+						{Path: data.Path, Owner: "alice", Group: "users", Mode: 0o770},
+					},
+					declared,
+				)
 
 				d, ok := find[host.Disowned](rs, "disowned:directories")
 				require.True(t, ok)

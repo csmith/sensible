@@ -211,7 +211,10 @@ func (r *Runner) planDNS(ctx context.Context, names []managedName, warnings []st
 		p.errs = append(p.errs, err)
 		return p
 	}
-	z := &dnsZones{provider: provider, records: map[string][]dnsRecord{}}
+	z := &dnsZones{
+		provider: provider,
+		records:  map[string][]dnsRecord{},
+	}
 	z.planNames(ctx, names, &p)
 	// Names already as they should be need nothing applied, so they're
 	// recorded now, even if nothing else changes.
@@ -244,9 +247,13 @@ func (z *dnsZones) planNames(ctx context.Context, names []managedName, p *dnsPla
 func (n managedName) stateChange() dnsStateChange {
 	fqdn := normaliseDomain(n.fqdn)
 	if n.retired {
-		return dnsStateChange{forget: []string{fqdn}}
+		return dnsStateChange{
+			forget: []string{fqdn},
+		}
 	}
-	return dnsStateChange{remember: map[string][]string{fqdn: slices.Collect(maps.Keys(n.types))}}
+	return dnsStateChange{
+		remember: map[string][]string{fqdn: slices.Collect(maps.Keys(n.types))},
+	}
 }
 
 func (c *dnsStateChange) add(o dnsStateChange) {

@@ -343,24 +343,53 @@ func disowned(h Host) ([]host.Resource, error) {
 				sshdSocketRestart(h),
 			},
 		},
-		host.Disowned{Name: "zsh", Paths: inHomes(".zshrc"), Header: managedMark},
-		host.Disowned{Name: "oh-my-zsh", Paths: []string{ohMyZshPath}},
-		host.Disowned{Name: "pam_rssh", Paths: []string{sudoersKeys}, Header: managedMark},
-		host.Disowned{Name: "tailscale", Paths: []string{tailscaleSysctl}, Header: managedMark},
+		host.Disowned{
+			Name:   "zsh",
+			Paths:  inHomes(".zshrc"),
+			Header: managedMark,
+		},
+		host.Disowned{
+			Name:  "oh-my-zsh",
+			Paths: []string{ohMyZshPath},
+		},
+		host.Disowned{
+			Name:   "pam_rssh",
+			Paths:  []string{sudoersKeys},
+			Header: managedMark,
+		},
+		host.Disowned{
+			Name:   "tailscale",
+			Paths:  []string{tailscaleSysctl},
+			Header: managedMark,
+		},
 		host.DisownedTailscale{},
 		// Docker reads its settings only when it starts, and restarting it
 		// would stop the containers, so it's left to pick up the change.
-		host.Disowned{Name: "docker", Paths: []string{dockerDaemonFile, dockerClientFile}, Records: host.WrittenDir},
-		host.Disowned{Name: "files", Records: filesRecords},
+		host.Disowned{
+			Name:    "docker",
+			Paths:   []string{dockerDaemonFile, dockerClientFile},
+			Records: host.WrittenDir,
+		},
+		host.Disowned{
+			Name:    "files",
+			Records: filesRecords,
+		},
 		// After files, which may be in them.
-		host.Disowned{Name: "directories", Records: directoriesRecords, Dirs: true},
+		host.Disowned{
+			Name:    "directories",
+			Records: directoriesRecords,
+			Dirs:    true,
+		},
 		host.DisownedPackages{},
 	}
 	switch h.Facts.OSFamily {
 	case debian:
 		rs = append(
 			rs,
-			host.Disowned{Name: "pam_rssh package", Paths: []string{pamRSSHDebGlob}},
+			host.Disowned{
+				Name:  "pam_rssh package",
+				Paths: []string{pamRSSHDebGlob},
+			},
 			// Declaring any repo takes over the distribution's, so the old
 			// sources.list is left over too.
 			host.DisownedAptSources{SourcesList: len(h.Config.AptRepos) > 0},
@@ -376,7 +405,9 @@ func disowned(h Host) ([]host.Resource, error) {
 }
 
 func sudoersCleanUp(Host) ([]host.Resource, error) {
-	return []host.Resource{host.OwnedDir{Path: sudoersDir, Header: managedMark}}, nil
+	return []host.Resource{
+		host.OwnedDir{Path: sudoersDir, Header: managedMark},
+	}, nil
 }
 
 // managedMark starts every file sensible writes with a comment header.
@@ -419,7 +450,9 @@ func sysctl(file string, settings map[string]string) []host.Resource {
 			Owner:   "root",
 			Group:   "root",
 			Mode:    0o644,
-			Notify:  host.ResourceList{host.ServiceAction{Name: "systemd-sysctl", Action: "restart"}},
+			Notify: host.ResourceList{
+				host.ServiceAction{Name: "systemd-sysctl", Action: "restart"},
+			},
 		},
 	}
 }

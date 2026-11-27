@@ -49,7 +49,8 @@ func TestWriteFileScript_writesExactContentAndMode(t *testing.T) {
 
 	err := runScript(
 		t,
-		"set -eu\n"+writeFileScript(host.File{Path: path, Content: content, Owner: owner, Group: group, Mode: 0o640}),
+		"set -eu\n"+
+			writeFileScript(host.File{Path: path, Content: content, Owner: owner, Group: group, Mode: 0o640}),
 	)
 
 	require.NoError(t, err)
@@ -131,7 +132,12 @@ func TestReadLocalHostKey(t *testing.T) {
 }
 
 func TestReadLocalHostKey_knownKeysAreLeftToTheConnection(t *testing.T) {
-	b := &bootstrapper{name: "acidburn", known: []config.HostKey{{PublicKey: testKey(t)}}}
+	b := &bootstrapper{
+		name: "acidburn",
+		known: []config.HostKey{
+			{PublicKey: testKey(t)},
+		},
+	}
 
 	require.NoError(t, b.readLocalHostKey(filepath.Join(t.TempDir(), "missing")))
 	assert.Nil(t, b.newHostKey)
@@ -154,7 +160,10 @@ type hostKeyFixture struct {
 
 func newHostKeyFixture(t *testing.T) *hostKeyFixture {
 	t.Helper()
-	return &hostKeyFixture{known: testKey(t), remote: &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 22}}
+	return &hostKeyFixture{
+		known:  testKey(t),
+		remote: &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 22},
+	}
 }
 
 // bootstrapper is for a host that already has the fixture's key if it's
@@ -162,7 +171,9 @@ func newHostKeyFixture(t *testing.T) *hostKeyFixture {
 func (f *hostKeyFixture) bootstrapper(name string, answer bool) *bootstrapper {
 	var known []config.HostKey
 	if name == "acidburn" {
-		known = []config.HostKey{{PublicKey: f.known}}
+		known = []config.HostKey{
+			{PublicKey: f.known},
+		}
 	}
 	return &bootstrapper{
 		name:  name,
@@ -379,7 +390,9 @@ func interruptedRotation(t *testing.T, f *rotateFixture) credentials {
 	pending, err := newCredentials("acidburn")
 	require.NoError(t, err)
 	require.NoError(t, f.repo.SavePendingCredentials("acidburn", pending.keyPEM, pending.password))
-	f.ssh.server.applied(host.Command{Env: map[string]string{"SENSIBLE_PASSWORD": pending.password}})
+	f.ssh.server.applied(host.Command{
+		Env: map[string]string{"SENSIBLE_PASSWORD": pending.password},
+	})
 	f.ssh.server.applied(
 		features.AccessFiles(authorizedKey(publicKey(t, f.ssh.keyPEM), "acidburn"), pending.authorizedKey)[2],
 	)
@@ -426,7 +439,9 @@ func TestConnect_triesPendingCredentialsWhenCurrentAreRejected(t *testing.T) {
 
 func TestRotate_rejectedCredentialsPointAtAnotherAccount(t *testing.T) {
 	f := newRotateFixture(t)
-	f.ssh.server.applied(host.Command{Env: map[string]string{"SENSIBLE_PASSWORD": "changed by hand"}})
+	f.ssh.server.applied(host.Command{
+		Env: map[string]string{"SENSIBLE_PASSWORD": "changed by hand"},
+	})
 
 	err := f.rotate(t)
 
@@ -489,7 +504,9 @@ func (f *sudoFixture) password() (string, error) {
 }
 
 func TestSudoShell_usesSudoAsItIsWhenItNeedsNoPassword(t *testing.T) {
-	f := &sudoFixture{accepted: map[string]bool{"sudo -n true ": true}}
+	f := &sudoFixture{
+		accepted: map[string]bool{"sudo -n true ": true},
+	}
 
 	command, input, err := sudoShell(f.run, f.password)
 
@@ -500,7 +517,9 @@ func TestSudoShell_usesSudoAsItIsWhenItNeedsNoPassword(t *testing.T) {
 }
 
 func TestSudoShell_givesThePasswordAheadOfTheScript(t *testing.T) {
-	f := &sudoFixture{accepted: map[string]bool{"sudo -k -S -p '' true hunter2\n": true}}
+	f := &sudoFixture{
+		accepted: map[string]bool{"sudo -k -S -p '' true hunter2\n": true},
+	}
 
 	command, input, err := sudoShell(f.run, f.password)
 

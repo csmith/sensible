@@ -82,8 +82,12 @@ func TestPlanRecords_ttl(t *testing.T) {
 	assert.Equal(
 		t,
 		dnsRecordChanges{
-			update: []dnsRecord{record("1", "192.0.2.1", 300)},
-			add:    []dnsRecord{{name: "www", rtype: "A", content: "192.0.2.3", ttl: 300}},
+			update: []dnsRecord{
+				record("1", "192.0.2.1", 300),
+			},
+			add: []dnsRecord{
+				{name: "www", rtype: "A", content: "192.0.2.3", ttl: 300},
+			},
 		},
 		p.changes("www", "A", &ttl),
 	)
@@ -95,13 +99,19 @@ func TestPlanRecords_nilTTLLeavesTTLsAlone(t *testing.T) {
 	assert.Empty(t, p.update)
 	assert.Equal(
 		t,
-		dnsRecordChanges{add: []dnsRecord{{name: "www", rtype: "A", content: "192.0.2.3"}}},
+		dnsRecordChanges{
+			add: []dnsRecord{
+				{name: "www", rtype: "A", content: "192.0.2.3"},
+			},
+		},
 		p.changes("www", "A", nil),
 	)
 }
 
 func TestPlanRecords_comparesAddressesCanonically(t *testing.T) {
-	existing := []dnsRecord{{id: "1", rtype: "AAAA", content: "2001:0db8:0000::0001"}}
+	existing := []dnsRecord{
+		{id: "1", rtype: "AAAA", content: "2001:0db8:0000::0001"},
+	}
 
 	assert.True(t, planRecords("AAAA", existing, []string{"2001:db8::1"}, nil, true).empty())
 }
@@ -171,12 +181,18 @@ func TestZonesPlan(t *testing.T) {
 			{id: "9", name: "elsewhere", rtype: "A", content: "192.0.2.1"},
 		},
 	}
-	z := &dnsZones{provider: provider, records: map[string][]dnsRecord{}}
+	z := &dnsZones{
+		provider: provider,
+		records:  map[string][]dnsRecord{},
+	}
 
 	change, unchanged, err := z.plan(
 		t.Context(),
 		"host.example.com",
-		map[string][]string{"A": {"192.0.2.2"}, "AAAA": {"2001:db8::1"}},
+		map[string][]string{
+			"A":    {"192.0.2.2"},
+			"AAAA": {"2001:db8::1"},
+		},
 	)
 	require.NoError(t, err)
 	assert.Equal(t, 1, unchanged)
@@ -188,22 +204,32 @@ func TestZonesPlan(t *testing.T) {
 		[]appliedChanges{{
 			zone: "example.com",
 			changes: dnsRecordChanges{
-				remove: []dnsRecord{provider.records[0]},
-				add:    []dnsRecord{{name: "host", rtype: "A", content: "192.0.2.2"}},
+				remove: []dnsRecord{
+					provider.records[0],
+				},
+				add: []dnsRecord{
+					{name: "host", rtype: "A", content: "192.0.2.2"},
+				},
 			},
 		}},
 		provider.applied,
 	)
 
-	none, _, err := z.plan(t.Context(), "host.example.com", map[string][]string{"AAAA": {"2001:db8::1"}})
+	none, _, err := z.plan(t.Context(), "host.example.com", map[string][]string{
+		"AAAA": {"2001:db8::1"},
+	})
 	require.NoError(t, err)
 	assert.Nil(t, none)
 
-	added, _, err := z.plan(t.Context(), "new.example.com", map[string][]string{"A": {"192.0.2.3"}})
+	added, _, err := z.plan(t.Context(), "new.example.com", map[string][]string{
+		"A": {"192.0.2.3"},
+	})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"+ A new.example.com  192.0.2.3"}, added.lines())
 
-	_, _, err = z.plan(t.Context(), "host.example.net", map[string][]string{"A": {"192.0.2.3"}})
+	_, _, err = z.plan(t.Context(), "host.example.net", map[string][]string{
+		"A": {"192.0.2.3"},
+	})
 	assert.ErrorIs(t, err, errNoDomain)
 }
 
@@ -216,7 +242,10 @@ func TestZonesPlan_replacesOtherTypesInOneChange(t *testing.T) {
 			{id: "3", name: "@", rtype: "RRCLONE", content: "(A,AAAA)  Old.example.net."},
 		},
 	}
-	z := &dnsZones{provider: provider, records: map[string][]dnsRecord{}}
+	z := &dnsZones{
+		provider: provider,
+		records:  map[string][]dnsRecord{},
+	}
 
 	change, _, err := z.plan(
 		t.Context(),
@@ -241,33 +270,55 @@ func TestZonesPlan_replacesOtherTypesInOneChange(t *testing.T) {
 	assert.Equal(
 		t,
 		dnsRecordChanges{
-			remove: []dnsRecord{provider.records[0]},
-			add:    []dnsRecord{{name: "", rtype: "RRCLONE", content: "(A,AAAA) new.example.net"}},
+			remove: []dnsRecord{
+				provider.records[0],
+			},
+			add: []dnsRecord{
+				{name: "", rtype: "RRCLONE", content: "(A,AAAA) new.example.net"},
+			},
 		},
 		provider.applied[0].changes,
 	)
 }
 
 func TestZonesPlan_onlyWritableZones(t *testing.T) {
-	provider := &fakeDNS{zones: map[string]bool{"example.com": false, "sub.example.com": true}}
-	z := &dnsZones{provider: provider, records: map[string][]dnsRecord{}}
+	provider := &fakeDNS{
+		zones: map[string]bool{"example.com": false, "sub.example.com": true},
+	}
+	z := &dnsZones{
+		provider: provider,
+		records:  map[string][]dnsRecord{},
+	}
 
-	_, _, err := z.plan(t.Context(), "www.example.com", map[string][]string{"A": {"192.0.2.1"}})
+	_, _, err := z.plan(t.Context(), "www.example.com", map[string][]string{
+		"A": {"192.0.2.1"},
+	})
 	require.ErrorIs(t, err, errReadOnly)
-	change, _, err := z.plan(t.Context(), "www.sub.example.com", map[string][]string{"A": {"192.0.2.1"}})
+	change, _, err := z.plan(t.Context(), "www.sub.example.com", map[string][]string{
+		"A": {"192.0.2.1"},
+	})
 	require.NoError(t, err)
 	assert.Equal(t, "sub.example.com", change.zone)
 
 	// A writable parent doesn't stand in for a read-only zone within it.
 	provider.zones = map[string]bool{"example.com": true, "sub.example.com": false}
-	z = &dnsZones{provider: provider, records: map[string][]dnsRecord{}}
-	_, _, err = z.plan(t.Context(), "www.sub.example.com", map[string][]string{"A": {"192.0.2.1"}})
+	z = &dnsZones{
+		provider: provider,
+		records:  map[string][]dnsRecord{},
+	}
+	_, _, err = z.plan(t.Context(), "www.sub.example.com", map[string][]string{
+		"A": {"192.0.2.1"},
+	})
 	assert.ErrorIs(t, err, errReadOnly)
 }
 
 func TestManagedNames_vhosts(t *testing.T) {
 	r := &Runner{
-		DNSSettings: config.DNSSettings{Vhosts: []config.VhostRecord{{Type: "RRCLONE", Content: "(A,AAAA) {host}"}}},
+		DNSSettings: config.DNSSettings{
+			Vhosts: []config.VhostRecord{
+				{Type: "RRCLONE", Content: "(A,AAAA) {host}"},
+			},
+		},
 		Vhosts: map[string][]string{
 			"shared.example.com":  {"acidburn", "hetzner1", "smarts"},
 			"mine.example.com":    {"acidburn"},
@@ -277,9 +328,17 @@ func TestManagedNames_vhosts(t *testing.T) {
 		DNSNames: map[string]string{"acidburn": "acidburn.example.net", "hetzner1": "hetzner1.example.net"},
 	}
 	runs := []*hostRun{
-		{name: "acidburn", agent: &agent{}},
-		{name: "smarts", agent: &agent{}},
-		{name: "unreachable"},
+		{
+			name:  "acidburn",
+			agent: &agent{},
+		},
+		{
+			name:  "smarts",
+			agent: &agent{},
+		},
+		{
+			name: "unreachable",
+		},
 	}
 
 	names, warnings := r.managedNames(runs)
@@ -290,7 +349,11 @@ func TestManagedNames_vhosts(t *testing.T) {
 	assert.Equal(
 		t,
 		[]managedName{
-			{fqdn: "mine.example.com", types: owned("(A,AAAA) acidburn.example.net"), vhost: true},
+			{
+				fqdn:  "mine.example.com",
+				types: owned("(A,AAAA) acidburn.example.net"),
+				vhost: true,
+			},
 			{
 				fqdn:  "shared.example.com",
 				types: owned("(A,AAAA) acidburn.example.net", "(A,AAAA) hetzner1.example.net"),
@@ -310,8 +373,10 @@ func TestManagedNames_vhosts(t *testing.T) {
 func TestManagedNames_retiresNamesNothingDeclares(t *testing.T) {
 	r := &Runner{
 		DNSSettings: config.DNSSettings{Provider: "mydnshost"},
-		Vhosts:      map[string][]string{"moved.example.com": {"hetzner1"}},
-		DNSNames:    map[string]string{"hetzner1": "Hetzner1.example.net"},
+		Vhosts: map[string][]string{
+			"moved.example.com": {"hetzner1"},
+		},
+		DNSNames: map[string]string{"hetzner1": "Hetzner1.example.net"},
 		DNSState: map[string][]string{
 			"gone.example.com":     {"A", "AAAA", "CNAME", "RRCLONE"},
 			"moved.example.com":    {"A", "AAAA", "CNAME"},
@@ -320,7 +385,12 @@ func TestManagedNames_retiresNamesNothingDeclares(t *testing.T) {
 		},
 	}
 
-	names, _ := r.managedNames([]*hostRun{{name: "acidburn", agent: &agent{}}})
+	names, _ := r.managedNames([]*hostRun{
+		{
+			name:  "acidburn",
+			agent: &agent{},
+		},
+	})
 
 	assert.Equal(
 		t,
@@ -330,7 +400,11 @@ func TestManagedNames_retiresNamesNothingDeclares(t *testing.T) {
 				types:   map[string][]string{"A": nil, "AAAA": nil, "CNAME": nil, "RRCLONE": nil},
 				retired: true,
 			},
-			{fqdn: "web1.example.net", types: map[string][]string{"A": nil, "AAAA": nil}, retired: true},
+			{
+				fqdn:    "web1.example.net",
+				types:   map[string][]string{"A": nil, "AAAA": nil},
+				retired: true,
+			},
 		},
 		names,
 	)
@@ -342,23 +416,46 @@ func TestManagedNames_retiresNamesNothingDeclares(t *testing.T) {
 
 func TestPlanDNS_recordsNamesAlreadyAsTheyShouldBe(t *testing.T) {
 	provider := &fakeDNS{
-		zones:   map[string]bool{"example.com": true, "readonly.com": false},
-		records: []dnsRecord{{id: "1", name: "web1", rtype: "A", content: "192.0.2.1"}},
+		zones: map[string]bool{"example.com": true, "readonly.com": false},
+		records: []dnsRecord{
+			{id: "1", name: "web1", rtype: "A", content: "192.0.2.1"},
+		},
 	}
 	var saved map[string][]string
 	r := &Runner{
-		DNS:          func(config.DNSSettings) (dnsProvider, error) { return provider, nil },
-		DNSState:     map[string][]string{"empty.example.com": {"A"}, "old.readonly.com": {"A"}},
+		DNS: func(config.DNSSettings) (dnsProvider, error) { return provider, nil },
+		DNSState: map[string][]string{
+			"empty.example.com": {"A"},
+			"old.readonly.com":  {"A"},
+		},
 		SaveDNSState: func(s map[string][]string) error { saved = s; return nil },
 	}
 
 	p := r.planDNS(
 		t.Context(),
 		[]managedName{
-			{fqdn: "Web1.example.com", types: map[string][]string{"A": {"192.0.2.1"}}},
-			{fqdn: "new.example.com", types: map[string][]string{"A": {"192.0.2.2"}}},
-			{fqdn: "empty.example.com", types: map[string][]string{"A": nil}, retired: true},
-			{fqdn: "old.readonly.com", types: map[string][]string{"A": nil}, retired: true},
+			{
+				fqdn: "Web1.example.com",
+				types: map[string][]string{
+					"A": {"192.0.2.1"},
+				},
+			},
+			{
+				fqdn: "new.example.com",
+				types: map[string][]string{
+					"A": {"192.0.2.2"},
+				},
+			},
+			{
+				fqdn:    "empty.example.com",
+				types:   map[string][]string{"A": nil},
+				retired: true,
+			},
+			{
+				fqdn:    "old.readonly.com",
+				types:   map[string][]string{"A": nil},
+				retired: true,
+			},
 		},
 		nil,
 	)
@@ -369,32 +466,71 @@ func TestPlanDNS_recordsNamesAlreadyAsTheyShouldBe(t *testing.T) {
 		[]string{"leaving retired name old.readonly.com alone: this account can't change its domain readonly.com"},
 		p.warnings,
 	)
-	assert.Equal(t, map[string][]string{"web1.example.com": {"A"}, "old.readonly.com": {"A"}}, saved)
+	assert.Equal(
+		t,
+		map[string][]string{
+			"web1.example.com": {"A"},
+			"old.readonly.com": {"A"},
+		},
+		saved,
+	)
 	assert.Equal(t, saved, r.DNSState)
 }
 
 func TestRecordDNS_keepsTypesAndOnlySavesChanges(t *testing.T) {
 	saves := 0
 	r := &Runner{
-		DNSState:     map[string][]string{"app.example.com": {"A", "RRCLONE"}},
+		DNSState: map[string][]string{
+			"app.example.com": {"A", "RRCLONE"},
+		},
 		SaveDNSState: func(map[string][]string) error { saves++; return nil },
 	}
 
-	require.NoError(t, r.recordDNS(dnsStateChange{remember: map[string][]string{"app.example.com": {"cname", "A"}}}))
-	assert.Equal(t, map[string][]string{"app.example.com": {"A", "CNAME", "RRCLONE"}}, r.DNSState)
-	require.NoError(t, r.recordDNS(dnsStateChange{remember: map[string][]string{"app.example.com": {"A"}}}))
+	require.NoError(t, r.recordDNS(dnsStateChange{
+		remember: map[string][]string{
+			"app.example.com": {"cname", "A"},
+		},
+	}))
+	assert.Equal(
+		t,
+		map[string][]string{
+			"app.example.com": {"A", "CNAME", "RRCLONE"},
+		},
+		r.DNSState,
+	)
+	require.NoError(t, r.recordDNS(dnsStateChange{
+		remember: map[string][]string{
+			"app.example.com": {"A"},
+		},
+	}))
 	assert.Equal(t, 1, saves)
 }
 
 func TestPlanNames_vhostOutsideAccountWarns(t *testing.T) {
-	z := &dnsZones{provider: &fakeDNS{zones: map[string]bool{"example.com": true}}, records: map[string][]dnsRecord{}}
+	z := &dnsZones{
+		provider: &fakeDNS{
+			zones: map[string]bool{"example.com": true},
+		},
+		records: map[string][]dnsRecord{},
+	}
 	var p dnsPlan
 
 	z.planNames(
 		t.Context(),
 		[]managedName{
-			{fqdn: "www.example.org", types: map[string][]string{"CNAME": {"x.example.com"}}, vhost: true},
-			{fqdn: "host.example.org", types: map[string][]string{"A": {"192.0.2.1"}}},
+			{
+				fqdn: "www.example.org",
+				types: map[string][]string{
+					"CNAME": {"x.example.com"},
+				},
+				vhost: true,
+			},
+			{
+				fqdn: "host.example.org",
+				types: map[string][]string{
+					"A": {"192.0.2.1"},
+				},
+			},
 		},
 		&p,
 	)
@@ -443,7 +579,10 @@ func newFakeMyDNSHost(t *testing.T, f *fakeMyDNSHost) *myDNSHost {
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			f.modified = append(f.modified, body.Data.Records...)
-			reply(w, map[string]any{"serial": 1, "changed": []any{}})
+			reply(w, map[string]any{
+				"serial":  1,
+				"changed": []any{},
+			})
 		},
 	)
 	srv := httptest.NewServer(
@@ -489,7 +628,13 @@ func TestMyDNSHost_records(t *testing.T) {
 	).Records(t.Context(), "example.com")
 
 	require.NoError(t, err)
-	assert.Equal(t, []dnsRecord{{id: "7", name: "www", rtype: "A", content: "192.0.2.1", ttl: 60}}, records)
+	assert.Equal(
+		t,
+		[]dnsRecord{
+			{id: "7", name: "www", rtype: "A", content: "192.0.2.1", ttl: 60},
+		},
+		records,
+	)
 }
 
 func TestMyDNSHost_apply(t *testing.T) {
@@ -499,8 +644,12 @@ func TestMyDNSHost_apply(t *testing.T) {
 		t.Context(),
 		"example.com",
 		dnsRecordChanges{
-			remove: []dnsRecord{{id: "1"}},
-			update: []dnsRecord{{id: "2", ttl: 300}},
+			remove: []dnsRecord{
+				{id: "1"},
+			},
+			update: []dnsRecord{
+				{id: "2", ttl: 300},
+			},
 			add: []dnsRecord{
 				{name: "", rtype: "RRCLONE", content: "(A,AAAA) host.example.net"},
 				{name: "www", rtype: "A", content: "192.0.2.3", ttl: 60},

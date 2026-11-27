@@ -109,10 +109,27 @@ compose:
 				Perms:   defaults,
 				Secrets: []string{"pa$$$$word"},
 			},
-			{Path: ".env", Content: "TOKEN=t$\n", Perms: defaults, Hidden: true},
-			{Path: "conf/.hidden", Content: "h\n", Perms: conf},
-			{Path: "conf/sub/site.conf", Content: "s\n", Perms: conf},
-			{Path: "nginx.conf", Content: "server {}\n", Perms: defaults},
+			{
+				Path:    ".env",
+				Content: "TOKEN=t$\n",
+				Perms:   defaults,
+				Hidden:  true,
+			},
+			{
+				Path:    "conf/.hidden",
+				Content: "h\n",
+				Perms:   conf,
+			},
+			{
+				Path:    "conf/sub/site.conf",
+				Content: "s\n",
+				Perms:   conf,
+			},
+			{
+				Path:    "nginx.conf",
+				Content: "server {}\n",
+				Perms:   defaults,
+			},
 		},
 		web.Files,
 	)
@@ -137,9 +154,24 @@ func TestHostConfig_stackErrors(t *testing.T) {
 			nil,
 			"role web has no parent",
 		},
-		{"unknown parameter", "services:\n  a:\n    image: !param image\n", nil, `unknown parameter "image"`},
-		{"plain secret", "services:\n  a:\n    image: !age x\n", nil, "ASCII-armored"},
-		{"invalid YAML", "services: [\n", nil, "docker-compose.yml"},
+		{
+			"unknown parameter",
+			"services:\n  a:\n    image: !param image\n",
+			nil,
+			`unknown parameter "image"`,
+		},
+		{
+			"plain secret",
+			"services:\n  a:\n    image: !age x\n",
+			nil,
+			"ASCII-armored",
+		},
+		{
+			"invalid YAML",
+			"services: [\n",
+			nil,
+			"docker-compose.yml",
+		},
 		{
 			"unencrypted .age file",
 			"services: {}\n",
@@ -279,7 +311,13 @@ func TestHostConfig_parentVolumesWithOnlyAChild(t *testing.T) {
 		},
 	).open(t).HostConfig("alpha", "debian")
 	require.NoError(t, err)
-	assert.Equal(t, []Volume{{Path: "/srv/volumes/group/blobs"}}, c.Volumes)
+	assert.Equal(
+		t,
+		[]Volume{
+			{Path: "/srv/volumes/group/blobs"},
+		},
+		c.Volumes,
+	)
 
 	_, err = newTestRepo(
 		t,
@@ -493,7 +531,14 @@ func TestVhosts_variantParamsMergeOverRoleYML(t *testing.T) {
 	).open(t)
 
 	// Either may apply, depending on the host's OS.
-	assert.Equal(t, map[string][]string{"base.example.com": {"alpha"}, "deb.example.com": {"alpha"}}, r.Vhosts())
+	assert.Equal(
+		t,
+		map[string][]string{
+			"base.example.com": {"alpha"},
+			"deb.example.com":  {"alpha"},
+		},
+		r.Vhosts(),
+	)
 	c, err := r.HostConfig("alpha", "debian")
 	require.NoError(t, err)
 	assert.Equal(t, Set{"deb.example.com"}, c.NTP.Servers)
@@ -508,7 +553,13 @@ func TestVhosts_anchoredHostEntry(t *testing.T) {
 		},
 	).open(t)
 
-	assert.Equal(t, map[string][]string{"x.example.com": {"alpha"}}, r.Vhosts())
+	assert.Equal(
+		t,
+		map[string][]string{
+			"x.example.com": {"alpha"},
+		},
+		r.Vhosts(),
+	)
 }
 
 func TestVhosts_placeholders(t *testing.T) {
@@ -678,7 +729,9 @@ func TestHostConfig_generatedLengths(t *testing.T) {
 	assert.Len(t, g["c"], 26, "never shorter than the default")
 
 	short := map[string]string{"a": "x", "b": strings.Repeat("y", 39), "c": strings.Repeat("z", 26)}
-	require.NoError(t, r.SaveGenerated("alpha", []Stack{{Name: "web", Generated: short}}))
+	require.NoError(t, r.SaveGenerated("alpha", []Stack{
+		{Name: "web", Generated: short},
+	}))
 	_, err = tr.open(t).HostConfig("alpha", "debian")
 	require.ErrorContains(t, err, "generated value b is saved with 39 characters, fewer than the 40 asked for")
 }
@@ -693,7 +746,9 @@ func TestHostConfig_previewSavedGeneratedWithoutIdentity(t *testing.T) {
 		},
 	)
 	saved := map[string]string{"key": strings.Repeat("k", 48)}
-	require.NoError(t, tr.open(t).SaveGenerated("alpha", []Stack{{Name: "web", Generated: saved}}))
+	require.NoError(t, tr.open(t).SaveGenerated("alpha", []Stack{
+		{Name: "web", Generated: saved},
+	}))
 
 	r, err := Open(tr.dir, func() (age.Identity, error) { return nil, errors.New("locked") })
 	require.NoError(t, err)
@@ -758,7 +813,12 @@ func TestSaveGenerated_keepsSavedValues(t *testing.T) {
 	assert.Equal(t, []string{"token"}, slices.Collect(maps.Keys(c.Stacks[0].Generated)))
 	assert.Contains(t, stackFile(t, c.Stacks[0], ".env").Content, "DB_PASSWORD='hand-written'")
 
-	stale := []Stack{{Name: "app", Generated: map[string]string{"db": "other", "token": "t"}}}
+	stale := []Stack{
+		{
+			Name:      "app",
+			Generated: map[string]string{"db": "other", "token": "t"},
+		},
+	}
 	require.NoError(t, r.SaveGenerated("alpha", stale))
 	alpha := tr.open(t).Inventory().Hosts["alpha"]
 	for name, want := range map[string]string{"db": "hand-written", "token": "t"} {
@@ -775,8 +835,14 @@ func TestDropGenerated_dropsOnlyThatStack(t *testing.T) {
 	tr := newGeneratedRepo(t)
 	r := tr.open(t)
 	stacks := []Stack{
-		{Name: "app", Generated: map[string]string{"db": "app-db"}},
-		{Name: "old", Generated: map[string]string{"db": "old-db", "token": "old-token"}},
+		{
+			Name:      "app",
+			Generated: map[string]string{"db": "app-db"},
+		},
+		{
+			Name:      "old",
+			Generated: map[string]string{"db": "old-db", "token": "old-token"},
+		},
 	}
 	require.NoError(t, r.SaveGenerated("alpha", stacks))
 	require.NoError(t, r.SaveGenerated("beta", stacks))
@@ -815,7 +881,12 @@ func TestDropGenerated_refusesValuesSetElsewhere(t *testing.T) {
 func TestDropGenerated_dropsOnlyTheNamedValues(t *testing.T) {
 	tr := newGeneratedRepo(t)
 	r := tr.open(t)
-	stacks := []Stack{{Name: "app", Generated: map[string]string{"db": "app-db", "old": "x", "older": "y"}}}
+	stacks := []Stack{
+		{
+			Name:      "app",
+			Generated: map[string]string{"db": "app-db", "old": "x", "older": "y"},
+		},
+	}
 	require.NoError(t, r.SaveGenerated("alpha", stacks))
 
 	require.NoError(t, r.DropGenerated("alpha", "app", []string{"old", "older"}))
@@ -828,7 +899,9 @@ func TestHostConfig_unusedGeneratedValues(t *testing.T) {
 	tr := newGeneratedRepo(t)
 	r := tr.open(t)
 	saved := map[string]string{"db": "a", "old": "b", "older": "c", "token": "d"}
-	require.NoError(t, r.SaveGenerated("alpha", []Stack{{Name: "app", Generated: saved}}))
+	require.NoError(t, r.SaveGenerated("alpha", []Stack{
+		{Name: "app", Generated: saved},
+	}))
 
 	c, err := tr.open(t).HostConfig("alpha", "debian")
 	require.NoError(t, err)
@@ -1079,7 +1152,9 @@ func TestHostConfig_generatedErrors(t *testing.T) {
 
 func TestOpen_composeEnvNeedsAStack(t *testing.T) {
 	for name, files := range map[string]map[string]string{
-		"role": {"roles/web/role.yml": "compose:\n  env: {A: b}\n"},
+		"role": {
+			"roles/web/role.yml": "compose:\n  env: {A: b}\n",
+		},
 		"partial": {
 			"partials/x/partial.yml": "compose:\n  env: {A: b}\n",
 			"roles/web/role.yml":     "partials: [{partial: x}]\n",
@@ -1356,7 +1431,9 @@ func TestHostConfig_oidcClientSecretLengthIsCheckedOnlyForRealValues(t *testing.
 				tr.write(t, "roles/app/role.yml", oidcClientYAML("    secret: "+secret+"\n"))
 				if tt.saved != "" {
 					saved := map[string]string{"x": tt.saved}
-					require.NoError(t, tr.open(t).SaveGenerated("alpha", []Stack{{Name: "app", Generated: saved}}))
+					require.NoError(t, tr.open(t).SaveGenerated("alpha", []Stack{
+						{Name: "app", Generated: saved},
+					}))
 				}
 
 				r, err := Open(tr.dir, locked)
@@ -1520,7 +1597,14 @@ func TestSaveOIDCClient_recordsClientsForTheHost(t *testing.T) {
 	require.NoError(t, r.SaveOIDCClient("alpha", "app", SavedOIDCClient{SecretID: "secret-1"}))
 	require.NoError(t, r.SaveOIDCClient("alpha", "public", logo))
 	require.NoError(t, r.SaveOIDCClient("alpha", "app", SavedOIDCClient{SecretID: "secret-2"}))
-	assert.Equal(t, map[string]SavedOIDCClient{"app": {SecretID: "secret-2"}, "public": logo}, clients())
+	assert.Equal(
+		t,
+		map[string]SavedOIDCClient{
+			"app":    {SecretID: "secret-2"},
+			"public": logo,
+		},
+		clients(),
+	)
 
 	require.NoError(t, r.DropOIDCClient("alpha", "app"))
 	assert.Equal(t, map[string]SavedOIDCClient{"public": logo}, clients())
@@ -1553,8 +1637,13 @@ func TestHostConfig_oidcAPIGrantsMergeAcrossRoles(t *testing.T) {
 					"read":  {Name: "Read records"},
 					"write": {Name: "write", Description: "Change records"},
 				},
-				Clients: map[string]Set{"app": {"read", "write"}, "backup": nil},
-				Users:   map[string]Set{"app": {"read"}},
+				Clients: map[string]Set{
+					"app":    {"read", "write"},
+					"backup": nil,
+				},
+				Users: map[string]Set{
+					"app": {"read"},
+				},
 			},
 		},
 		c.OIDCAPIs,

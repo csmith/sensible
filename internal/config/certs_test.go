@@ -122,7 +122,10 @@ func TestHostCerts_usagesKeepCertsToTheirRole(t *testing.T) {
 	verify := func(name string, usage x509.ExtKeyUsage) error {
 		cert, err := parseCertPEM(issuedCert(t, c, name).Cert)
 		require.NoError(t, err)
-		_, err = cert.Verify(x509.VerifyOptions{Roots: pool, KeyUsages: []x509.ExtKeyUsage{usage}})
+		_, err = cert.Verify(x509.VerifyOptions{
+			Roots:     pool,
+			KeyUsages: []x509.ExtKeyUsage{usage},
+		})
 		return err
 	}
 	require.NoError(t, verify("api-server", x509.ExtKeyUsageServerAuth))
@@ -218,11 +221,28 @@ func TestHostCerts_reissues(t *testing.T) {
 		after  time.Duration
 		want   bool
 	}{
-		{name: "nothing changed"},
-		{name: "not yet due", after: certLifetime - 2*certRenewal},
-		{name: "due for renewal", after: certLifetime - certRenewal/2, want: true},
-		{name: "names changed", change: workerRole("{ca: internal, client: other}"), want: true},
-		{name: "different CA", change: workerRole("{ca: other, client: worker}"), want: true},
+		{
+			name: "nothing changed",
+		},
+		{
+			name:  "not yet due",
+			after: certLifetime - 2*certRenewal,
+		},
+		{
+			name:  "due for renewal",
+			after: certLifetime - certRenewal/2,
+			want:  true,
+		},
+		{
+			name:   "names changed",
+			change: workerRole("{ca: internal, client: other}"),
+			want:   true,
+		},
+		{
+			name:   "different CA",
+			change: workerRole("{ca: other, client: worker}"),
+			want:   true,
+		},
 		{
 			name: "CA replaced",
 			change: func(t *testing.T, tr *testRepo) {
@@ -346,22 +366,46 @@ func TestHostCerts_invalid(t *testing.T) {
 		compose string
 		want    string
 	}{
-		{name: "unknown CA", role: "certs: {a: {ca: nope, client: c}}", want: `ca "nope" isn't in`},
-		{name: "no purpose", role: "certs: {a: {ca: internal}}", want: "needs server, client or both"},
-		{name: "bad name", role: `certs: {"a/b": {ca: internal, client: c}}`, want: "a certificate's name"},
-		{name: "bad server name", role: `certs: {a: {ca: internal, server: ["no spaces"]}}`, want: "isn't a DNS name"},
+		{
+			name: "unknown CA",
+			role: "certs: {a: {ca: nope, client: c}}",
+			want: `ca "nope" isn't in`,
+		},
+		{
+			name: "no purpose",
+			role: "certs: {a: {ca: internal}}",
+			want: "needs server, client or both",
+		},
+		{
+			name: "bad name",
+			role: `certs: {"a/b": {ca: internal, client: c}}`,
+			want: "a certificate's name",
+		},
+		{
+			name: "bad server name",
+			role: `certs: {a: {ca: internal, server: ["no spaces"]}}`,
+			want: "isn't a DNS name",
+		},
 		{
 			name: "relative dir",
 			role: "certs: {a: {ca: internal, client: c, dir: certs}}",
 			want: "must be an absolute path",
 		},
-		{name: "root dir", role: "certs: {a: {ca: internal, client: c, dir: /}}", want: "must be an absolute path"},
+		{
+			name: "root dir",
+			role: "certs: {a: {ca: internal, client: c, dir: /}}",
+			want: "must be an absolute path",
+		},
 		{
 			name: "shared dir",
 			role: "certs: {a: {ca: internal, client: c, dir: /x}, b: {ca: internal, client: c, dir: /x/}}",
 			want: "would both be written to /x",
 		},
-		{name: "unknown setting", role: "certs: {a: {ca: internal, client: c, mode: 0600}}", want: "mode"},
+		{
+			name: "unknown setting",
+			role: "certs: {a: {ca: internal, client: c, mode: 0600}}",
+			want: "mode",
+		},
 		{
 			name:    "unknown certificate",
 			role:    "certs: {a: {ca: internal, client: c}}",

@@ -449,9 +449,16 @@ func docker(h Host) ([]host.Resource, error) {
 		rs = append(
 			rs,
 			host.Command{
-				Name:      "start docker",
-				Watch:     []string{host.Package{Name: "docker"}.ID()},
-				ApplyArgv: []string{"systemctl", "enable", "--now", "docker"},
+				Name: "start docker",
+				Watch: []string{
+					host.Package{Name: "docker"}.ID(),
+				},
+				ApplyArgv: []string{
+					"systemctl",
+					"enable",
+					"--now",
+					"docker",
+				},
 			},
 		)
 	}
@@ -469,7 +476,10 @@ func docker(h Host) ([]host.Resource, error) {
 
 	members := slices.Clone(c.Users)
 	for _, u := range c.Users {
-		rs = append(rs, host.User{Name: u, Groups: []string{"docker"}})
+		rs = append(rs, host.User{
+			Name:   u,
+			Groups: []string{"docker"},
+		})
 	}
 	// Users given the group directly keep it too.
 	for name, u := range h.Config.Users {
@@ -544,7 +554,9 @@ func dockerClientConfig(auths map[string]string) ([]host.Resource, error) {
 	type clientConfig struct {
 		Auths map[string]auth `json:"auths"`
 	}
-	cc := clientConfig{Auths: map[string]auth{}}
+	cc := clientConfig{
+		Auths: map[string]auth{},
+	}
 	for name, a := range auths {
 		cc.Auths[name] = auth{Auth: a}
 	}
@@ -603,11 +615,15 @@ func certs(h Host) ([]host.Resource, error) {
 		for _, f := range files {
 			paths = append(paths, f.Path)
 		}
-		rs = append(rs, host.CertRecord{Name: c.Name, Paths: paths}, host.Dir{
-			Path:  c.Dir,
-			Owner: c.Owner,
-			Group: c.Group,
-		})
+		rs = append(
+			rs,
+			host.CertRecord{Name: c.Name, Paths: paths},
+			host.Dir{
+				Path:  c.Dir,
+				Owner: c.Owner,
+				Group: c.Group,
+			},
+		)
 		for _, f := range files {
 			f.Owner, f.Group, f.Hidden, f.Notify = c.Owner, c.Group, true, notify
 			rs = append(rs, f)
@@ -619,7 +635,9 @@ func certs(h Host) ([]host.Resource, error) {
 // certsCleanUp is unconditional, as the host's last certificate may just
 // have gone.
 func certsCleanUp(Host) ([]host.Resource, error) {
-	return []host.Resource{host.CertRecords{}}, nil
+	return []host.Resource{
+		host.CertRecords{},
+	}, nil
 }
 
 // stacks deploys the host's compose stacks, after the volumes they mount.

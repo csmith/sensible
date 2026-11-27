@@ -437,7 +437,10 @@ func (r User) applyPassword(ctx context.Context, sys Sys) error {
 		return nil
 	}
 	// chpasswd takes the hash on stdin, keeping it out of the process list.
-	_, err := runOK(ctx, sys, Cmd{Argv: []string{"chpasswd", "--encrypted"}, Stdin: r.Name + ":" + r.Password + "\n"})
+	_, err := runOK(ctx, sys, Cmd{
+		Argv:  []string{"chpasswd", "--encrypted"},
+		Stdin: r.Name + ":" + r.Password + "\n",
+	})
 	return err
 }
 
@@ -674,7 +677,11 @@ func (r GitCheckout) current(ctx context.Context, sys Sys) (gitState, error) {
 }
 
 func (r GitCheckout) git(args ...string) Cmd {
-	return Cmd{Argv: append([]string{"git"}, args...), User: r.Owner, Dir: r.Path}
+	return Cmd{
+		Argv: append([]string{"git"}, args...),
+		User: r.Owner,
+		Dir:  r.Path,
+	}
 }
 
 func (r Command) Check(ctx context.Context, sys Sys) (Change, error) {

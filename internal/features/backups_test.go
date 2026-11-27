@@ -20,8 +20,12 @@ func backupHost() Host {
 		Secrets:  []string{"it's secret"},
 	}
 	h.Config.Backups = map[string]config.BackupConfig{
-		"web-data": {Path: "/srv/volumes/web/data"},
-		"web-db":   {Command: config.Command{"docker", "compose", "exec", "-T", "db", "pg_dumpall", "-U", "postgres"}},
+		"web-data": {
+			Path: "/srv/volumes/web/data",
+		},
+		"web-db": {
+			Command: config.Command{"docker", "compose", "exec", "-T", "db", "pg_dumpall", "-U", "postgres"},
+		},
 	}
 	return h
 }
@@ -95,28 +99,51 @@ func TestResources_backupErrors(t *testing.T) {
 		modify func(*Host)
 		want   string
 	}{
-		{"backups without restic", func(h *Host) { h.Config.Restic = nil }, "no restic settings"},
+		{
+			"backups without restic",
+			func(h *Host) { h.Config.Restic = nil },
+			"no restic settings",
+		},
 		{
 			"path and command",
 			func(h *Host) {
-				h.Config.Backups["x"] = config.BackupConfig{Path: "/x", Command: config.Command{"true"}}
+				h.Config.Backups["x"] = config.BackupConfig{
+					Path:    "/x",
+					Command: config.Command{"true"},
+				}
 			},
 			"exactly one of path and command",
 		},
-		{"neither", func(h *Host) { h.Config.Backups["x"] = config.BackupConfig{} }, "exactly one of path and command"},
-		{"relative path", func(h *Host) { h.Config.Backups["x"] = config.BackupConfig{Path: "x"} }, "isn't absolute"},
+		{
+			"neither",
+			func(h *Host) { h.Config.Backups["x"] = config.BackupConfig{} },
+			"exactly one of path and command",
+		},
+		{
+			"relative path",
+			func(h *Host) { h.Config.Backups["x"] = config.BackupConfig{Path: "x"} },
+			"isn't absolute",
+		},
 		{
 			"invalid name",
 			func(h *Host) { h.Config.Backups["X y"] = config.BackupConfig{Path: "/x"} },
 			"invalid backup name",
 		},
-		{"no keep", func(h *Host) { h.Config.Restic.Keep = nil }, "never forgotten"},
+		{
+			"no keep",
+			func(h *Host) { h.Config.Restic.Keep = nil },
+			"never forgotten",
+		},
 		{
 			"unknown keep",
 			func(h *Host) { h.Config.Restic.Keep["fortnightly"] = 1 },
 			`unknown restic.keep "fortnightly"`,
 		},
-		{"zero keep", func(h *Host) { h.Config.Restic.Keep["daily"] = 0 }, "must be at least 1"},
+		{
+			"zero keep",
+			func(h *Host) { h.Config.Restic.Keep["daily"] = 0 },
+			"must be at least 1",
+		},
 		{
 			"invalid env name",
 			func(h *Host) { h.Config.Restic.Env["A-B"] = "x" },
@@ -125,7 +152,10 @@ func TestResources_backupErrors(t *testing.T) {
 		{
 			"job named backup",
 			func(h *Host) {
-				h.Config.Jobs["backup"] = config.JobConfig{Command: config.Command{"true"}, Schedule: "daily"}
+				h.Config.Jobs["backup"] = config.JobConfig{
+					Command:  config.Command{"true"},
+					Schedule: "daily",
+				}
 			},
 			"backup job's name",
 		},

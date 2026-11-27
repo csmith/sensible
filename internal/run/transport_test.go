@@ -185,7 +185,10 @@ func newSSHFixture(t *testing.T, serverPassword string, hostKeys func(*sshServer
 		t,
 		signer.PublicKey(),
 		serverPassword,
-		&fakeAgent{hash: builds["amd64"].Hash, facts: host.Facts{OSFamily: "debian"}},
+		&fakeAgent{
+			hash:  builds["amd64"].Hash,
+			facts: host.Facts{OSFamily: "debian"},
+		},
 	)
 
 	known := hostKeys(server)
@@ -205,7 +208,9 @@ func newSSHFixture(t *testing.T, serverPassword string, hostKeys func(*sshServer
 }
 
 func serverKey(s *sshServer) []config.HostKey {
-	return []config.HostKey{{PublicKey: s.hostKey.PublicKey()}}
+	return []config.HostKey{
+		{PublicKey: s.hostKey.PublicKey()},
+	}
 }
 
 func TestOpenSSH_connectsAndChecksHostKey(t *testing.T) {
@@ -255,7 +260,11 @@ func TestOpenSSH_rejectsChangedHostKey(t *testing.T) {
 	f := newSSHFixture(
 		t,
 		"hunter2",
-		func(*sshServer) []config.HostKey { return []config.HostKey{{PublicKey: otherKey.PublicKey()}} },
+		func(*sshServer) []config.HostKey {
+			return []config.HostKey{
+				{PublicKey: otherKey.PublicKey()},
+			}
+		},
 	)
 
 	_, _, err = connect(t.Context(), f.transport, f.builds)

@@ -32,7 +32,10 @@ type EmbeddedBuilds struct {
 }
 
 func NewEmbeddedBuilds() *EmbeddedBuilds {
-	return &EmbeddedBuilds{files: agentFiles, builds: map[string]Build{}}
+	return &EmbeddedBuilds{
+		files:  agentFiles,
+		builds: map[string]Build{},
+	}
 }
 
 // Build returns the agent for GOOS=linux and the given GOARCH.

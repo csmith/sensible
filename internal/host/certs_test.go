@@ -19,7 +19,10 @@ func certRun(t *testing.T, sys Sys, certs map[string]string) string {
 		path := dir + "/tls.key"
 		list = append(
 			list,
-			CertRecord{Name: name, Paths: []string{path}},
+			CertRecord{
+				Name:  name,
+				Paths: []string{path},
+			},
 			Dir{Path: dir},
 			File{Path: path, Content: name + "\n", Mode: 0o600},
 		)
@@ -46,7 +49,10 @@ func certRun(t *testing.T, sys Sys, certs map[string]string) string {
 
 func TestCertRecord_recordsPathsBeforeWriting(t *testing.T) {
 	sys := newTestSys(t)
-	r := CertRecord{Name: "api", Paths: []string{"/srv/certs/api/tls.crt", "/srv/certs/api/tls.key"}}
+	r := CertRecord{
+		Name:  "api",
+		Paths: []string{"/srv/certs/api/tls.crt", "/srv/certs/api/tls.key"},
+	}
 
 	change := checkApply(t, sys, r)
 
@@ -147,7 +153,14 @@ func TestCertRecords_skippedAfterAFailure(t *testing.T) {
 	sys.on("false", "", 1)
 	failed, err := e.apply(
 		context.Background(),
-		ResourceList{Command{Name: "fails", CheckArgv: []string{"false"}, ApplyArgv: []string{"false"}}, CertRecords{}},
+		ResourceList{
+			Command{
+				Name:      "fails",
+				CheckArgv: []string{"false"},
+				ApplyArgv: []string{"false"},
+			},
+			CertRecords{},
+		},
 		-1,
 		func(any) error { return nil },
 	)

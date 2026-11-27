@@ -202,7 +202,10 @@ func (p *oidcPlan) declaredClients(runs []*hostRun) map[string]*declaredClient {
 			d, ok := declared[id]
 			switch {
 			case !ok:
-				declared[id] = &declaredClient{cfg: cfg, hosts: []*hostRun{h}}
+				declared[id] = &declaredClient{
+					cfg:   cfg,
+					hosts: []*hostRun{h},
+				}
 				continue
 			case conflicted[id]:
 				continue

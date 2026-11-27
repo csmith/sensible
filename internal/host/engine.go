@@ -97,7 +97,9 @@ func (e *engine) apply(ctx context.Context, list ResourceList, checkFailedAt int
 	var (
 		failed  bool
 		sendErr error
-		due     = dueHandlers{seen: map[string]bool{}}
+		due     = dueHandlers{
+			seen: map[string]bool{},
+		}
 	)
 	for _, r := range list {
 		due.add(st.owed.handlersOf(r))
@@ -362,7 +364,10 @@ type owedFile struct {
 }
 
 func newOwedJournal() *owedJournal {
-	return &owedJournal{triggers: map[string]bool{}, handlers: map[string]bool{}}
+	return &owedJournal{
+		triggers: map[string]bool{},
+		handlers: map[string]bool{},
+	}
 }
 
 func readOwed(sys FileReader) (*owedJournal, error) {

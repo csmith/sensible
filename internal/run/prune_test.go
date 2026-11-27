@@ -11,7 +11,10 @@ import (
 	"chameth.com/sensible/internal/host"
 )
 
-var pruneResources = host.ResourceList{host.Package{Name: "zsh"}, host.Volumes{Path: "/srv/volumes"}}
+var pruneResources = host.ResourceList{
+	host.Package{Name: "zsh"},
+	host.Volumes{Path: "/srv/volumes"},
+}
 
 func TestPrune_asksBeforeRemovingEachLeftover(t *testing.T) {
 	f := newRunnerFixture(t, pruneResources)
@@ -24,7 +27,9 @@ func TestPrune_asksBeforeRemovingEachLeftover(t *testing.T) {
 		return answers[prompt], nil
 	}
 	agent := &fakeAgent{
-		leftovers: map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/old", "/srv/volumes/older"}},
+		leftovers: map[string][]string{
+			"volumes:/srv/volumes": {"/srv/volumes/old", "/srv/volumes/older"},
+		},
 	}
 
 	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", agent)})
@@ -41,7 +46,9 @@ func TestPrune_ignoreAnswerRecordsTheLeftover(t *testing.T) {
 	f.runner.Compile = func(target, host.Facts) (compiled, error) {
 		return compiled{
 			resources: pruneResources,
-			ignored:   map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/kept"}},
+			ignored: map[string][]string{
+				"volumes:/srv/volumes": {"/srv/volumes/kept"},
+			},
 			ignore: func(id, item string) error {
 				ignored = append(ignored, id+" "+item)
 				return nil
@@ -52,7 +59,11 @@ func TestPrune_ignoreAnswerRecordsTheLeftover(t *testing.T) {
 		f.confirmed = append(f.confirmed, prompt)
 		return "i", nil
 	}
-	agent := &fakeAgent{leftovers: map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/old"}}}
+	agent := &fakeAgent{
+		leftovers: map[string][]string{
+			"volumes:/srv/volumes": {"/srv/volumes/old"},
+		},
+	}
 
 	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", agent)})
 
@@ -60,7 +71,13 @@ func TestPrune_ignoreAnswerRecordsTheLeftover(t *testing.T) {
 	assert.Equal(t, []string{"Remove /srv/volumes/old from acidburn? [y/N/i/p] "}, f.confirmed)
 	assert.Equal(t, []string{"volumes:/srv/volumes /srv/volumes/old"}, ignored)
 	assert.Empty(t, agent.removed)
-	assert.Equal(t, map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/kept"}}, agent.ignored)
+	assert.Equal(
+		t,
+		map[string][]string{
+			"volumes:/srv/volumes": {"/srv/volumes/kept"},
+		},
+		agent.ignored,
+	)
 	assert.Contains(t, f.out.String(), "  - acidburn: /srv/volumes/old  ignored\n")
 }
 
@@ -74,9 +91,14 @@ func TestPrune_previewShowsAPathThenAsksAgain(t *testing.T) {
 		return answer, nil
 	}
 	agent := &fakeAgent{
-		leftovers: map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/old"}},
+		leftovers: map[string][]string{
+			"volumes:/srv/volumes": {"/srv/volumes/old"},
+		},
 		previews: map[string]host.Previewed{
-			"/srv/volumes/old": {Lines: []string{"data/", "data/\x1b[2Jfile"}, Cut: "3 more entries"},
+			"/srv/volumes/old": {
+				Lines: []string{"data/", "data/\x1b[2Jfile"},
+				Cut:   "3 more entries",
+			},
 		},
 	}
 
@@ -97,7 +119,11 @@ func TestPrune_reportsFailedPreviewThenAsksAgain(t *testing.T) {
 		answers = answers[1:]
 		return answer, nil
 	}
-	agent := &fakeAgent{leftovers: map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/old"}}}
+	agent := &fakeAgent{
+		leftovers: map[string][]string{
+			"volumes:/srv/volumes": {"/srv/volumes/old"},
+		},
+	}
 
 	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", agent)})
 
@@ -113,7 +139,11 @@ func TestPrune_offersNoPreviewOfLeftoversThatArentPaths(t *testing.T) {
 		f.confirmed = append(f.confirmed, prompt)
 		return "p", nil
 	}
-	agent := &fakeAgent{leftovers: map[string][]string{"volumes:/srv/volumes": {"user bob"}}}
+	agent := &fakeAgent{
+		leftovers: map[string][]string{
+			"volumes:/srv/volumes": {"user bob"},
+		},
+	}
 
 	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", agent)})
 
@@ -127,14 +157,22 @@ func TestPrune_keepsSecretsWhoseVolumeIsIgnored(t *testing.T) {
 	f.runner.Compile = func(target, host.Facts) (compiled, error) {
 		return compiled{
 			resources: pruneResources,
-			ignored:   map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/app"}},
+			ignored: map[string][]string{
+				"volumes:/srv/volumes": {"/srv/volumes/app"},
+			},
 			unusedSecrets: []savedSecrets{
-				{stack: "app", names: []string{"db"}, drop: func() error { return nil }},
+				{
+					stack: "app",
+					names: []string{"db"},
+					drop:  func() error { return nil },
+				},
 			},
 		}, nil
 	}
 
-	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", &fakeAgent{})})
+	err := f.runner.Prune(t.Context(), []target{
+		f.target("acidburn", &fakeAgent{}),
+	})
 
 	require.NoError(t, err)
 	assert.Empty(t, f.confirmed)
@@ -144,7 +182,9 @@ func TestPrune_keepsSecretsWhoseVolumeIsIgnored(t *testing.T) {
 func TestPrune_skipsHostsWithChangesToApply(t *testing.T) {
 	f := newRunnerFixture(t, pruneResources)
 	agent := &fakeAgent{
-		leftovers: map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/old"}},
+		leftovers: map[string][]string{
+			"volumes:/srv/volumes": {"/srv/volumes/old"},
+		},
 	}
 	agent.status = func(r host.Resource) host.Status {
 		if r.ID() == "package:zsh" {
@@ -164,7 +204,9 @@ func TestPrune_skipsHostsWithChangesToApply(t *testing.T) {
 func TestPrune_reportsFailedRemoval(t *testing.T) {
 	f := newRunnerFixture(t, pruneResources)
 	agent := &fakeAgent{
-		leftovers:     map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/old"}},
+		leftovers: map[string][]string{
+			"volumes:/srv/volumes": {"/srv/volumes/old"},
+		},
 		removeFailure: "/srv/volumes/old",
 	}
 
@@ -177,7 +219,9 @@ func TestPrune_reportsFailedRemoval(t *testing.T) {
 func TestPrune_nothingToPrune(t *testing.T) {
 	f := newRunnerFixture(t, pruneResources)
 
-	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", &fakeAgent{})})
+	err := f.runner.Prune(t.Context(), []target{
+		f.target("acidburn", &fakeAgent{}),
+	})
 
 	require.NoError(t, err)
 	assert.Empty(t, f.confirmed)
@@ -222,7 +266,9 @@ func TestPrune_offersSecretsOnceTheirVolumesAreRemoved(t *testing.T) {
 		return answers[prompt], nil
 	}
 	agent := &fakeAgent{
-		leftovers: map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/app", "/srv/volumes/kept"}},
+		leftovers: map[string][]string{
+			"volumes:/srv/volumes": {"/srv/volumes/app", "/srv/volumes/kept"},
+		},
 	}
 
 	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", agent)})
@@ -251,7 +297,9 @@ func TestPrune_keepsSecretsWhenTheirVolumeRemovalFails(t *testing.T) {
 	f := newRunnerFixture(t, nil)
 	dropped := withUnusedSecrets(f, "app")
 	agent := &fakeAgent{
-		leftovers:     map[string][]string{"volumes:/srv/volumes": {"/srv/volumes/app"}},
+		leftovers: map[string][]string{
+			"volumes:/srv/volumes": {"/srv/volumes/app"},
+		},
 		removeFailure: "/srv/volumes/app",
 	}
 
@@ -296,7 +344,9 @@ func TestPrune_warnsAboutSecretsOfStacksStillThere(t *testing.T) {
 		f.confirmed = append(f.confirmed, prompt)
 		return "y", nil
 	}
-	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", &fakeAgent{})})
+	err := f.runner.Prune(t.Context(), []target{
+		f.target("acidburn", &fakeAgent{}),
+	})
 
 	require.NoError(t, err)
 	assert.Equal(

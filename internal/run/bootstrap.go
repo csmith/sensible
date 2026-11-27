@@ -579,8 +579,10 @@ func runRemote(client *ssh.Client, command string, stdin io.Reader, forwardAgent
 
 func setPassword(password string) host.Command {
 	return host.Command{
-		Name:      "sensible-password",
-		CheckArgv: []string{"false"},
+		Name: "sensible-password",
+		CheckArgv: []string{
+			"false",
+		},
 		ApplyArgv: []string{
 			"/bin/sh",
 			"-c",

@@ -96,7 +96,13 @@ partials:
 `,
 	}
 	r := newTestRepo(t, withPartials(t, files)).open(t)
-	assert.Equal(t, map[string][]string{"proxy.example.com": {"alpha"}}, r.Vhosts())
+	assert.Equal(
+		t,
+		map[string][]string{
+			"proxy.example.com": {"alpha"},
+		},
+		r.Vhosts(),
+	)
 
 	c, err := r.HostConfig("alpha", "debian")
 	require.NoError(t, err)
@@ -121,7 +127,13 @@ partials:
 		},
 		normaliseYAML(t, c.Stacks[0].Files[0].Content),
 	)
-	assert.Equal(t, map[string]BackupConfig{"proxy-tailscale": {Path: "/srv/volumes/proxy/tailscale"}}, c.Backups)
+	assert.Equal(
+		t,
+		map[string]BackupConfig{
+			"proxy-tailscale": {Path: "/srv/volumes/proxy/tailscale"},
+		},
+		c.Backups,
+	)
 }
 
 func TestPartials_nullDropsKey(t *testing.T) {
@@ -152,7 +164,13 @@ func TestPartials_settingsOnly(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, c.Stacks)
 	assert.Equal(t, Set{"vim", "htop", "git"}, c.Packages.Install)
-	assert.Equal(t, map[string]UserConfig{"u7": {}}, c.Users)
+	assert.Equal(
+		t,
+		map[string]UserConfig{
+			"u7": {},
+		},
+		c.Users,
+	)
 }
 
 func TestPartials_nested(t *testing.T) {
@@ -167,7 +185,10 @@ func TestPartials_nested(t *testing.T) {
 		t,
 		map[string]any{
 			"services": map[string]any{
-				"pg": map[string]any{"image": "postgres", "environment": map[string]any{"POSTGRES_PASSWORD": db}},
+				"pg": map[string]any{
+					"image":       "postgres",
+					"environment": map[string]any{"POSTGRES_PASSWORD": db},
+				},
 			},
 		},
 		normaliseYAML(t, stackFile(t, s, "docker-compose.yml").Content),
@@ -175,10 +196,25 @@ func TestPartials_nested(t *testing.T) {
 	assert.Equal(t, "LOG_LEVEL='lvl-debug'\nPG_PASSWORD='"+db+"'\n", stackFile(t, s, ".env").Content)
 	assert.Equal(
 		t,
-		[]Migration{{Name: "pg-password", On: db, Secret: true, After: Command{"psql", "-c", "ALTER USER u-pg"}}},
+		[]Migration{
+			{
+				Name:   "pg-password",
+				On:     db,
+				Secret: true,
+				After:  Command{"psql", "-c", "ALTER USER u-pg"},
+			},
+		},
 		s.Migrations,
 	)
-	assert.Equal(t, map[string]BackupConfig{"app-pg": {Command: Command{"dump", "pg"}}}, c.Backups)
+	assert.Equal(
+		t,
+		map[string]BackupConfig{
+			"app-pg": {
+				Command: Command{"dump", "pg"},
+			},
+		},
+		c.Backups,
+	)
 }
 
 func TestPartials_nestedDefaults(t *testing.T) {

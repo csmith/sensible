@@ -125,10 +125,7 @@ func command(ctx context.Context, name string, args []string) error {
 			},
 		)
 	case name == "bootstrap-binary" && len(args) == 0 && *output != "":
-		return run.BootstrapBinary(
-			ctx,
-			run.BootstrapBinaryOptions{ConfigDir: *configDir, Output: *output, Arch: *arch},
-		)
+		return run.BootstrapBinary(ctx, run.BootstrapBinaryOptions{ConfigDir: *configDir, Output: *output, Arch: *arch})
 	case name == "apply":
 		return run.Run(
 			ctx,

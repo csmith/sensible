@@ -19,8 +19,12 @@ import (
 
 func TestRunnerFacts_printsReachableHostsAndReportsTheRest(t *testing.T) {
 	f := newRunnerFixture(t, nil)
-	acidburn := &fakeAgent{facts: host.Facts{OSFamily: "debian", Release: "trixie"}}
-	penderghast := &fakeAgent{facts: host.Facts{OSFamily: "arch"}}
+	acidburn := &fakeAgent{
+		facts: host.Facts{OSFamily: "debian", Release: "trixie"},
+	}
+	penderghast := &fakeAgent{
+		facts: host.Facts{OSFamily: "arch"},
+	}
 	targets := []target{
 		f.target("acidburn", acidburn),
 		{name: "smarts", err: errors.New("no credentials")},
@@ -49,7 +53,13 @@ func TestRunnerFacts_succeedsWhenEveryHostIsReached(t *testing.T) {
 	f := newRunnerFixture(t, nil)
 	var out bytes.Buffer
 
-	err := f.runner.Facts(t.Context(), []target{f.target("acidburn", &fakeAgent{})}, &out)
+	err := f.runner.Facts(
+		t.Context(),
+		[]target{
+			f.target("acidburn", &fakeAgent{}),
+		},
+		&out,
+	)
 
 	require.NoError(t, err)
 	assert.Contains(t, out.String(), `"acidburn"`)
@@ -220,7 +230,9 @@ func TestRunnerRender_textShowsFilesInFullAndTheRestOnALine(t *testing.T) {
 				Owner:    "root",
 				Mode:     0o640,
 				Validate: []string{"app", "-t", "%s"},
-				Notify:   host.ResourceList{host.ServiceAction{Name: "app", Action: "reload"}},
+				Notify: host.ResourceList{
+					host.ServiceAction{Name: "app", Action: "reload"},
+				},
 			},
 			host.Dir{Path: "/srv/app", Owner: "app", Group: "app", Mode: 0o750},
 			host.Package{Name: "zsh"},
@@ -231,8 +243,13 @@ func TestRunnerRender_textShowsFilesInFullAndTheRestOnALine(t *testing.T) {
 
 	err := f.runner.Render(
 		t.Context(),
-		[]target{{name: "acidburn"}, {name: "smarts"}},
-		map[string]host.Facts{"acidburn": {OSFamily: "arch"}},
+		[]target{
+			{name: "acidburn"},
+			{name: "smarts"},
+		},
+		map[string]host.Facts{
+			"acidburn": {OSFamily: "arch"},
+		},
 		&out,
 		false,
 	)
@@ -249,9 +266,15 @@ func TestRunnerRender_jsonConnectsForFacts(t *testing.T) {
 	var facts host.Facts
 	f.runner.Compile = func(_ target, got host.Facts) (compiled, error) {
 		facts = got
-		return compiled{resources: host.ResourceList{host.File{Path: "/etc/a", Content: "x"}}}, nil
+		return compiled{
+			resources: host.ResourceList{
+				host.File{Path: "/etc/a", Content: "x"},
+			},
+		}, nil
 	}
-	agent := &fakeAgent{facts: host.Facts{OSFamily: "debian", Release: "trixie"}}
+	agent := &fakeAgent{
+		facts: host.Facts{OSFamily: "debian", Release: "trixie"},
+	}
 	var out bytes.Buffer
 
 	err := f.runner.Render(t.Context(), []target{f.target("acidburn", agent)}, nil, &out, true)

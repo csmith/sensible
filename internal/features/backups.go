@@ -69,7 +69,13 @@ func backups(h Host) ([]host.Resource, error) {
 			Mode:    0o755,
 		},
 		host.Dir{Path: path.Dir(backupScript), Owner: "root", Group: "root", Mode: 0o755},
-		host.File{Path: backupScript, Content: script, Owner: "root", Group: "root", Mode: 0o755},
+		host.File{
+			Path:    backupScript,
+			Content: script,
+			Owner:   "root",
+			Group:   "root",
+			Mode:    0o755,
+		},
 	), nil
 }
 
@@ -82,7 +88,10 @@ func backupJobConfig(h Host) (config.JobConfig, bool) {
 	if schedule == "" {
 		schedule = "daily"
 	}
-	return config.JobConfig{Command: config.Command{backupScript}, Schedule: schedule}, true
+	return config.JobConfig{
+		Command:  config.Command{backupScript},
+		Schedule: schedule,
+	}, true
 }
 
 // backupScriptContent backs up each entry, continuing past failures, then

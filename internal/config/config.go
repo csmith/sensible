@@ -567,7 +567,10 @@ func (c *Config) finishOIDCAPIs() error {
 		for _, g := range []struct {
 			field  string
 			grants map[string]Set
-		}{{"clients", api.Clients}, {"users", api.Users}} {
+		}{
+			{"clients", api.Clients},
+			{"users", api.Users},
+		} {
 			for _, client := range slices.Sorted(maps.Keys(g.grants)) {
 				for _, key := range g.grants[client] {
 					if _, ok := api.Permissions[key]; !ok {
@@ -1020,7 +1023,11 @@ func Open(dir string, identity IdentitySource) (*Repo, error) {
 // OpenSettings reads only the repo's sensible.yml, which is enough to
 // encrypt secrets, without checking the rest of the repo.
 func OpenSettings(dir string) (*Repo, error) {
-	r := &Repo{dir: dir, keys: &keyring{}, now: time.Now}
+	r := &Repo{
+		dir:  dir,
+		keys: &keyring{},
+		now:  time.Now,
+	}
 	if err := r.readSettings(); err != nil {
 		return nil, err
 	}
@@ -1435,7 +1442,9 @@ func (r *Repo) readHosts() error {
 		merged = mergeFragments(merged, node)
 	}
 
-	inv := Inventory{Hosts: map[string]HostEntry{}}
+	inv := Inventory{
+		Hosts: map[string]HostEntry{},
+	}
 	if merged != nil {
 		if err := decode(r.keys.context(), merged, &inv.Hosts); err != nil {
 			return fmt.Errorf("merging %s: %w", dir, err)

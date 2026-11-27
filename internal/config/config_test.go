@@ -113,7 +113,15 @@ tailscale:
 	assert.Equal(t, Set{"vim", "kitty-terminfo"}, c.Packages.Install)
 	assert.Equal(t, Set{"autojump-rs"}, c.Packages.Remove)
 	assert.Equal(t, Set{"autojump-rs-bin"}, c.AUR.Packages)
-	assert.Equal(t, map[string]UserConfig{"chris": {Groups: []string{"wheel"}}}, c.Users)
+	assert.Equal(
+		t,
+		map[string]UserConfig{
+			"chris": {
+				Groups: []string{"wheel"},
+			},
+		},
+		c.Users,
+	)
 	assert.Equal(t, Set{"chris"}, c.Zsh.Users)
 	assert.Equal(t, map[string]string{"chris": "green", "root": "red"}, c.Zsh.PromptColours)
 	assert.Equal(t, map[string]string{"ssh": "true", "relay-server-port": "40000"}, c.Tailscale.Settings)
@@ -188,7 +196,13 @@ func TestHostConfig_bareModuleIsOn(t *testing.T) {
 		},
 	).open(t).HostConfig("alpha", "debian")
 	require.NoError(t, err)
-	assert.Equal(t, map[string]UserConfig{"chris": {}}, c.Users)
+	assert.Equal(
+		t,
+		map[string]UserConfig{
+			"chris": {},
+		},
+		c.Users,
+	)
 	assert.Equal(t, &VimConfig{}, c.Vim)
 	assert.Equal(t, Set{"chris"}, c.Docker.Users)
 	assert.Nil(t, c.SSHD)
@@ -226,7 +240,15 @@ users: !replace
 	).open(t).HostConfig("alpha", "debian")
 	require.NoError(t, err)
 	assert.Equal(t, Set{"nano"}, c.Packages.Install)
-	assert.Equal(t, map[string]UserConfig{"chris": {Groups: []string{"docker"}}}, c.Users)
+	assert.Equal(
+		t,
+		map[string]UserConfig{
+			"chris": {
+				Groups: []string{"docker"},
+			},
+		},
+		c.Users,
+	)
 	assert.Equal(t, map[string]string{"chris": "green"}, c.Zsh.PromptColours)
 }
 
@@ -394,33 +416,81 @@ func TestOpen(t *testing.T) {
 		files map[string]string
 		want  string
 	}{
-		{"wrong extension", map[string]string{"hosts.d/alpha.yaml": ""}, "alpha.yaml"},
-		{"directory in hosts.d", map[string]string{"hosts.d/old/alpha.yml": ""}, "old"},
-		{"unknown inventory key", map[string]string{"hosts.d/hosts.yml": "a: {addr: x}\n"}, "addr"},
-		{"error names its file", map[string]string{"hosts.d/extra.yml": "alpha: {addr: x}\n"}, "hosts.d/extra.yml"},
-		{"not a mapping", map[string]string{"hosts.d/extra.yml": "- alpha\n"}, "hosts.d/extra.yml"},
+		{
+			"wrong extension",
+			map[string]string{"hosts.d/alpha.yaml": ""},
+			"alpha.yaml",
+		},
+		{
+			"directory in hosts.d",
+			map[string]string{"hosts.d/old/alpha.yml": ""},
+			"old",
+		},
+		{
+			"unknown inventory key",
+			map[string]string{"hosts.d/hosts.yml": "a: {addr: x}\n"},
+			"addr",
+		},
+		{
+			"error names its file",
+			map[string]string{"hosts.d/extra.yml": "alpha: {addr: x}\n"},
+			"hosts.d/extra.yml",
+		},
+		{
+			"not a mapping",
+			map[string]string{"hosts.d/extra.yml": "- alpha\n"},
+			"hosts.d/extra.yml",
+		},
 		{
 			"invalid host key",
 			map[string]string{"hosts.d/hosts.yml": "a: {host_keys: [ssh-ed25519 nope]}\n"},
 			"host key",
 		},
-		{"plain credential", map[string]string{"hosts.d/hosts.yml": "a: {ssh_key: hunter2}\n"}, "encrypt"},
+		{
+			"plain credential",
+			map[string]string{"hosts.d/hosts.yml": "a: {ssh_key: hunter2}\n"},
+			"encrypt",
+		},
 		{
 			"role parameters not a mapping",
 			map[string]string{"hosts.d/hosts.yml": "a: {roles: {base: [x]}}\n"},
 			"mapping",
 		},
-		{"unknown role", map[string]string{"hosts.d/hosts.yml": "a: {roles: {base: }}\n"}, `role "base"`},
-		{"file in roles", map[string]string{"roles/base.yml": ""}, "base.yml"},
-		{"missing role.yml", map[string]string{"roles/base/role.arch.yml": ""}, "missing role.yml"},
+		{
+			"unknown role",
+			map[string]string{"hosts.d/hosts.yml": "a: {roles: {base: }}\n"},
+			`role "base"`,
+		},
+		{
+			"file in roles",
+			map[string]string{"roles/base.yml": ""},
+			"base.yml",
+		},
+		{
+			"missing role.yml",
+			map[string]string{"roles/base/role.arch.yml": ""},
+			"missing role.yml",
+		},
 		{
 			"unknown OS",
 			map[string]string{"roles/base/role.yml": "", "roles/base/role.archlinux.yml": ""},
 			`"archlinux"`,
 		},
-		{"unexpected role file", map[string]string{"roles/base/role.yml": "", "roles/base/notes.txt": ""}, "notes.txt"},
-		{"syntax error", map[string]string{"roles/base/role.yml": "users: [\n"}, "roles/base/role.yml"},
-		{"role not a mapping", map[string]string{"roles/base/role.yml": "- a\n- b\n"}, "mapping"},
+		{
+			"unexpected role file",
+			map[string]string{"roles/base/role.yml": "", "roles/base/notes.txt": ""},
+			"notes.txt",
+		},
+		{
+			"syntax error",
+			map[string]string{"roles/base/role.yml": "users: [\n"},
+			"roles/base/role.yml",
+		},
+		{
+			"role not a mapping",
+			map[string]string{"roles/base/role.yml": "- a\n- b\n"},
+			"mapping",
+		},
 		{
 			"child role missing role.yml",
 			map[string]string{"roles/base/role.yml": "children: [child]\n", "roles/base/child/role.arch.yml": ""},
@@ -564,8 +634,16 @@ func TestOpen(t *testing.T) {
 			map[string]string{"roles/web/docker-compose.yml": "", "roles/web/role.arch.yml": ""},
 			"roles/web: missing role.yml",
 		},
-		{"bad recipient", map[string]string{"sensible.yml": "secrets:\n  recipients: [nope]\n"}, "recipients"},
-		{"unknown settings key", map[string]string{"sensible.yml": "identity: op://x\n"}, "identity"},
+		{
+			"bad recipient",
+			map[string]string{"sensible.yml": "secrets:\n  recipients: [nope]\n"},
+			"recipients",
+		},
+		{
+			"unknown settings key",
+			map[string]string{"sensible.yml": "identity: op://x\n"},
+			"identity",
+		},
 		{
 			"plain DNS secret",
 			map[string]string{"sensible.yml": "dns:\n  provider: mydnshost\n  mydnshost:\n    auth_key: hunter2\n"},
@@ -660,7 +738,10 @@ func TestOIDCSettings_pocketIDURLMustBeHTTPS(t *testing.T) {
 			func(t *testing.T) {
 				s := OIDCSettings{
 					Provider: "pocketid",
-					PocketID: PocketIDSettings{URL: tt.url, APIKey: Secret{armored: "key"}},
+					PocketID: PocketIDSettings{
+						URL:    tt.url,
+						APIKey: Secret{armored: "key"},
+					},
 				}
 				err := s.check()
 				if tt.want == "" {
@@ -679,7 +760,8 @@ func TestOpen_mergesFragments(t *testing.T) {
 	inv := newTestRepo(
 		t,
 		map[string]string{
-			"hosts.d/hosts.yml":         "alpha:\n  address: a\n  host_keys: [" + k1.String() + "]\n  roles: {base: }\nbeta:\n",
+			"hosts.d/hosts.yml": "alpha:\n  address: a\n  host_keys: [" + k1.String() +
+				"]\n  roles: {base: }\nbeta:\n",
 			"hosts.d/alpha.zsh.yml":     "alpha:\n  roles:\n    zsh: {colours: !replace {chris: green}}\n",
 			"hosts.d/alpha.state.yml":   "alpha:\n  host_keys: [" + k1.String() + ", " + k2.String() + "]\n",
 			"hosts.d/everything.yml":    "alpha:\n  address: a\ngamma:\n  address: g\n",
@@ -845,15 +927,30 @@ func TestCheckCredentials(t *testing.T) {
 		host  string
 		want  string
 	}{
-		{"writable", map[string]string{}, "alpha", ""},
-		{"unknown host", map[string]string{}, "gamma", `host "gamma" isn't in`},
+		{
+			"writable",
+			map[string]string{},
+			"alpha",
+			"",
+		},
+		{
+			"unknown host",
+			map[string]string{},
+			"gamma",
+			`host "gamma" isn't in`,
+		},
 		{
 			"set in another file",
 			map[string]string{"hosts.d/hosts.yml": "alpha:\n  rotated: 2026-01-01T00:00:00Z\n"},
 			"alpha",
 			"hosts.d/hosts.yml sets alpha's rotated",
 		},
-		{"no recipients", map[string]string{"sensible.yml": "{}\n"}, "alpha", "no secrets.recipients"},
+		{
+			"no recipients",
+			map[string]string{"sensible.yml": "{}\n"},
+			"alpha",
+			"no secrets.recipients",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(
@@ -1098,7 +1195,13 @@ func TestHostConfig_dockerNetworks(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(
 		t,
-		map[string]DockerNetworkConfig{"web": {}, "six": {IPv6: true, Subnets: []string{"fd00:dead:beef::/48"}}},
+		map[string]DockerNetworkConfig{
+			"web": {},
+			"six": {
+				IPv6:    true,
+				Subnets: []string{"fd00:dead:beef::/48"},
+			},
+		},
 		c.Docker.Networks,
 	)
 }
@@ -1193,9 +1296,21 @@ func TestHostConfig_resticErrors(t *testing.T) {
 	tests := []struct {
 		name, restic, want string
 	}{
-		{"no repository", "restic:\n  password: PASSWORD\n", "restic needs a repository"},
-		{"no password", "restic:\n  repository: r\n", "restic.password: secret is not set"},
-		{"plain password", "restic:\n  repository: r\n  password: hunter2\n", "secrets must be encrypted"},
+		{
+			"no repository",
+			"restic:\n  password: PASSWORD\n",
+			"restic needs a repository",
+		},
+		{
+			"no password",
+			"restic:\n  repository: r\n",
+			"restic.password: secret is not set",
+		},
+		{
+			"plain password",
+			"restic:\n  repository: r\n  password: hunter2\n",
+			"secrets must be encrypted",
+		},
 		{
 			"environment overriding restic's",
 			"restic:\n  repository: r\n  password: PASSWORD\n  environment: {RESTIC_REPOSITORY: other}\n",
@@ -1252,7 +1367,13 @@ func TestDNSVhostRecords(t *testing.T) {
 	dns := string(settings) + myDNSHostSettings(enc, enc)
 
 	writeFile(t, tr.dir, "sensible.yml", dns+"  vhosts:\n    - {type: rrclone, content: '(A,AAAA) {host}'}\n")
-	assert.Equal(t, []VhostRecord{{Type: "RRCLONE", Content: "(A,AAAA) {host}"}}, tr.open(t).DNS().Vhosts)
+	assert.Equal(
+		t,
+		[]VhostRecord{
+			{Type: "RRCLONE", Content: "(A,AAAA) {host}"},
+		},
+		tr.open(t).DNS().Vhosts,
+	)
 
 	writeFile(t, tr.dir, "sensible.yml", dns+"  vhosts:\n    - {type: CNAME}\n")
 	_, err = tr.tryOpen()
@@ -1335,8 +1456,13 @@ leftovers:
 	assert.Equal(
 		t,
 		&LeftoversConfig{
-			Ignore:   KeptConfig{Paths: Set{"/etc/sudoers.d/README", "/etc/apt/sources.list.d/*.sources"}},
-			External: KeptConfig{Paths: Set{"/opt/tool"}, Packages: Set{"tool-git"}},
+			Ignore: KeptConfig{
+				Paths: Set{"/etc/sudoers.d/README", "/etc/apt/sources.list.d/*.sources"},
+			},
+			External: KeptConfig{
+				Paths:    Set{"/opt/tool"},
+				Packages: Set{"tool-git"},
+			},
 		},
 		c.Leftovers,
 	)

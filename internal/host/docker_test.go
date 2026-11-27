@@ -70,7 +70,10 @@ func TestComposeStack_StartsWhatIsDown(t *testing.T) {
 		0,
 	)
 	sys.on(composeArgs+"up --detach --no-recreate --remove-orphans", "", 0)
-	r := ComposeStack{Dir: "/srv/compose/web", Watch: []string{"file:/srv/compose/web/docker-compose.yml"}}
+	r := ComposeStack{
+		Dir:   "/srv/compose/web",
+		Watch: []string{"file:/srv/compose/web/docker-compose.yml"},
+	}
 
 	change, err := r.Check(context.Background(), sys)
 	require.NoError(t, err)
@@ -183,7 +186,11 @@ func TestDockerNetwork_Creates(t *testing.T) {
 	sys := newTestSys(t)
 	sys.on(networkLs+"name=^six$ --format {{.Name}}", "sixth\n", 0)
 	sys.on("docker network create *", "", 0)
-	r := DockerNetwork{Name: "six", Subnets: []string{"fd00:dead:beef::/48"}, IPv6: true}
+	r := DockerNetwork{
+		Name:    "six",
+		Subnets: []string{"fd00:dead:beef::/48"},
+		IPv6:    true,
+	}
 
 	change, err := r.Check(context.Background(), sys)
 	require.NoError(t, err)
@@ -203,16 +210,32 @@ func TestDockerNetwork_ComparesDeclaredFamilies(t *testing.T) {
 		network DockerNetwork
 		warning string
 	}{
-		{"matching IPv6 subnet", DockerNetwork{Subnets: []string{"fd00:dead:beef::/48"}, IPv6: true}, ""},
-		{"no subnets declared", DockerNetwork{IPv6: true}, ""},
+		{
+			"matching IPv6 subnet",
+			DockerNetwork{
+				Subnets: []string{"fd00:dead:beef::/48"},
+				IPv6:    true,
+			},
+			"",
+		},
+		{
+			"no subnets declared",
+			DockerNetwork{IPv6: true},
+			"",
+		},
 		{
 			"different IPv4 subnet",
-			DockerNetwork{Subnets: []string{"fd00:dead:beef::/48", "10.0.0.0/8"}, IPv6: true},
+			DockerNetwork{
+				Subnets: []string{"fd00:dead:beef::/48", "10.0.0.0/8"},
+				IPv6:    true,
+			},
 			"subnets are 172.18.0.0/16 rather than 10.0.0.0/8\n",
 		},
 		{
 			"IPv6 off",
-			DockerNetwork{Subnets: []string{"10.0.0.0/8"}},
+			DockerNetwork{
+				Subnets: []string{"10.0.0.0/8"},
+			},
 			"IPv6 is on rather than off\nsubnets are 172.18.0.0/16 rather than 10.0.0.0/8\n",
 		},
 	}

@@ -18,7 +18,10 @@ func users(h Host) ([]host.Resource, error) {
 	rs := make([]host.Resource, 0, len(h.Config.Users))
 	for _, name := range slices.Sorted(maps.Keys(h.Config.Users)) {
 		u := h.Config.Users[name]
-		for _, p := range [][2]string{{"home", u.Home}, {"shell", u.Shell}} {
+		for _, p := range [][2]string{
+			{"home", u.Home},
+			{"shell", u.Shell},
+		} {
 			if p[1] != "" && (!path.IsAbs(p[1]) || path.Clean(p[1]) != p[1]) {
 				return nil, fmt.Errorf("users.%s.%s must be an absolute path, not %q", name, p[0], p[1])
 			}
@@ -31,7 +34,11 @@ func users(h Host) ([]host.Resource, error) {
 func usersCleanUp(Host) ([]host.Resource, error) {
 	// The AUR build account, so it and its home are left for prune once
 	// nothing builds AUR packages.
-	return []host.Resource{host.Users{System: []string{aurUser}}}, nil
+	return []host.Resource{
+		host.Users{
+			System: []string{aurUser},
+		},
+	}, nil
 }
 
 func home(h Host, name string) string {
@@ -231,8 +238,13 @@ func sshd(h Host) ([]host.Resource, error) {
 		rs = append(
 			rs,
 			host.Command{
-				Name:      "use the package's sshd_config",
-				CheckArgv: []string{"test", "!", "-e", sshdConfig + ".pacnew"},
+				Name: "use the package's sshd_config",
+				CheckArgv: []string{
+					"test",
+					"!",
+					"-e",
+					sshdConfig + ".pacnew",
+				},
 				ApplyArgv: []string{
 					"sh",
 					"-c",
@@ -323,8 +335,10 @@ func sshdPatternMatches(pattern, s string) bool {
 func sshdSocketRestart(h Host) host.Command {
 	socket := sshdService(h) + ".socket"
 	return host.Command{
-		Name:      "restart " + socket + " if active",
-		CheckArgv: []string{"false"},
+		Name: "restart " + socket + " if active",
+		CheckArgv: []string{
+			"false",
+		},
 		ApplyArgv: []string{
 			"sh",
 			"-c",

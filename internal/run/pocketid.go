@@ -161,7 +161,9 @@ func (p *pocketID) SetLogo(ctx context.Context, id string, dark bool, name strin
 	return p.send(
 		ctx,
 		http.MethodPost,
-		clientPath(id)+"/logo?"+url.Values{"light": {strconv.FormatBool(!dark)}}.Encode(),
+		clientPath(id)+"/logo?"+url.Values{
+			"light": {strconv.FormatBool(!dark)},
+		}.Encode(),
 		w.FormDataContentType(),
 		&body,
 		nil,
@@ -252,7 +254,9 @@ func (p *pocketID) SetPermissions(
 	}
 	body := struct {
 		Permissions []permission `json:"permissions"`
-	}{Permissions: []permission{}}
+	}{
+		Permissions: []permission{},
+	}
 	for _, perm := range permissions {
 		var description *string
 		if perm.description != "" {
@@ -394,7 +398,10 @@ func eachPage[T any](ctx context.Context, p *pocketID, path string, add func(T))
 				TotalPages int `json:"totalPages"`
 			} `json:"pagination"`
 		}
-		q := url.Values{"pagination[page]": {strconv.Itoa(page)}, "pagination[limit]": {"100"}}
+		q := url.Values{
+			"pagination[page]":  {strconv.Itoa(page)},
+			"pagination[limit]": {"100"},
+		}
 		if err := p.do(ctx, http.MethodGet, path+"?"+q.Encode(), nil, &res); err != nil {
 			return err
 		}

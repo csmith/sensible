@@ -56,7 +56,11 @@ type agent struct {
 }
 
 func (a *agent) serve(ctx context.Context, in io.Reader, out io.Writer) error {
-	sess := &session{agent: a, conn: NewConn(in, out), engine: &engine{sys: a.sys, log: a.log}}
+	sess := &session{
+		agent:  a,
+		conn:   NewConn(in, out),
+		engine: &engine{sys: a.sys, log: a.log},
+	}
 	if err := a.hello(sess.conn); err != nil {
 		return err
 	}

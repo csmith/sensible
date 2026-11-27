@@ -61,7 +61,10 @@ func (f *fakePocketID) listAPIs(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(
 		w,
 		http.StatusOK,
-		map[string]any{"data": slices.Collect(maps.Values(f.apis)), "pagination": map[string]int{"totalPages": 1}},
+		map[string]any{
+			"data":       slices.Collect(maps.Values(f.apis)),
+			"pagination": map[string]int{"totalPages": 1},
+		},
 	)
 }
 
@@ -135,7 +138,10 @@ func (f *fakePocketID) listGrants(w http.ResponseWriter, _ *http.Request, a *fak
 			},
 		)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": data, "pagination": map[string]int{"totalPages": 1}})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data":       data,
+		"pagination": map[string]int{"totalPages": 1},
+	})
 }
 
 func (f *fakePocketID) grant(w http.ResponseWriter, r *http.Request, a *fakeAPI) {
@@ -193,7 +199,9 @@ var testAPI = config.OIDCAPIConfig{
 		"read":  {Name: "Read"},
 		"write": {Name: "Write", Description: "Change records"},
 	},
-	Clients: map[string]config.Set{"app": {"read"}},
+	Clients: map[string]config.Set{
+		"app": {"read"},
+	},
 }
 
 // existingAPI puts testAPI in Pocket ID with app granted it as declared,
@@ -209,7 +217,12 @@ func (f *oidcFixture) existingAPI(change func(a *fakeAPI)) {
 		},
 	}
 	f.pocketID.apis[testIdentifier] = a
-	f.pocketID.grants["pb"] = map[string]fakeGrant{"app": {client: true, clientPermissions: []string{"p-read"}}}
+	f.pocketID.grants["pb"] = map[string]fakeGrant{
+		"app": {
+			client:            true,
+			clientPermissions: []string{"p-read"},
+		},
+	}
 	if change != nil {
 		change(a)
 	}
@@ -228,7 +241,10 @@ func TestExecute_oidcAPIIsCreatedAndGrantedToAClientMadeInTheSameRun(t *testing.
 
 	err := f.runner.Execute(
 		t.Context(),
-		[]target{f.target("acidburn", &fakeAgent{}), f.target("smarts", &fakeAgent{})},
+		[]target{
+			f.target("acidburn", &fakeAgent{}),
+			f.target("smarts", &fakeAgent{}),
+		},
 		true,
 	)
 
@@ -249,7 +265,13 @@ func TestExecute_oidcAPINeedsNoChange(t *testing.T) {
 	f.manageAPI()
 	f.declaredAPIs["acidburn"] = map[string]config.OIDCAPIConfig{testIdentifier: testAPI}
 
-	err := f.runner.Execute(t.Context(), []target{f.target("acidburn", &fakeAgent{})}, false)
+	err := f.runner.Execute(
+		t.Context(),
+		[]target{
+			f.target("acidburn", &fakeAgent{}),
+		},
+		false,
+	)
 
 	require.NoError(t, err)
 	assert.Contains(t, f.out.String(), "> Resolving OIDC changes\n  ✓ 1 unchanged\n")
@@ -267,24 +289,42 @@ func TestExecute_oidcAPIChangedByHandIsPutBack(t *testing.T) {
 			a.Permissions[1].Name = "Write by hand"
 			a.Permissions = append(a.Permissions, fakePermission{ID: "p-admin", Key: "admin", Name: "Admin"})
 			f.pocketID.grants["pb"] = map[string]fakeGrant{
-				"app":   {client: true, clientPermissions: []string{"p-read", "p-admin"}},
-				"other": {client: true},
+				"app": {
+					client:            true,
+					clientPermissions: []string{"p-read", "p-admin"},
+				},
+				"other": {
+					client: true,
+				},
 				"both": {
 					user:              true,
 					client:            true,
 					userPermissions:   []string{"p-read"},
 					clientPermissions: []string{"p-read"},
 				},
-				"users": {user: true, userPermissions: []string{"p-read"}},
+				"users": {
+					user:            true,
+					userPermissions: []string{"p-read"},
+				},
 			}
 		},
 	)
 	f.manageAPI()
 	api := testAPI
-	api.Clients = map[string]config.Set{"app": {"read", "write"}, "both": {"read"}, "users": {"read"}}
+	api.Clients = map[string]config.Set{
+		"app":   {"read", "write"},
+		"both":  {"read"},
+		"users": {"read"},
+	}
 	f.declaredAPIs["acidburn"] = map[string]config.OIDCAPIConfig{testIdentifier: api}
 
-	err := f.runner.Execute(t.Context(), []target{f.target("acidburn", &fakeAgent{})}, true)
+	err := f.runner.Execute(
+		t.Context(),
+		[]target{
+			f.target("acidburn", &fakeAgent{}),
+		},
+		true,
+	)
 
 	require.NoError(t, err)
 	label := "api " + testIdentifier + "  "
@@ -314,7 +354,11 @@ func TestExecute_oidcAPIChangedByHandIsPutBack(t *testing.T) {
 	for _, client := range []string{"both", "users"} {
 		assert.Equal(
 			t,
-			fakeGrant{client: true, userPermissions: []string{}, clientPermissions: []string{"p-read"}},
+			fakeGrant{
+				client:            true,
+				userPermissions:   []string{},
+				clientPermissions: []string{"p-read"},
+			},
 			f.pocketID.grants["pb"][client],
 		)
 	}
@@ -328,16 +372,31 @@ func TestExecute_oidcAPIGrantsAccessOnBehalfOfUsers(t *testing.T) {
 	f.existing("public", map[string]any{"isPublic": true}, "ours")
 	f.existingAPI(
 		func(*fakeAPI) {
-			f.pocketID.grants["pb"]["both"] = fakeGrant{user: true, userPermissions: []string{"p-read"}}
+			f.pocketID.grants["pb"]["both"] = fakeGrant{
+				user:            true,
+				userPermissions: []string{"p-read"},
+			}
 		},
 	)
 	f.manageAPI()
 	api := testAPI
-	api.Clients = map[string]config.Set{"app": {"read"}, "both": {"write"}}
-	api.Users = map[string]config.Set{"public": {"read", "write"}, "both": {"read"}}
+	api.Clients = map[string]config.Set{
+		"app":  {"read"},
+		"both": {"write"},
+	}
+	api.Users = map[string]config.Set{
+		"public": {"read", "write"},
+		"both":   {"read"},
+	}
 	f.declaredAPIs["acidburn"] = map[string]config.OIDCAPIConfig{testIdentifier: api}
 
-	err := f.runner.Execute(t.Context(), []target{f.target("acidburn", &fakeAgent{})}, true)
+	err := f.runner.Execute(
+		t.Context(),
+		[]target{
+			f.target("acidburn", &fakeAgent{}),
+		},
+		true,
+	)
 
 	require.NoError(t, err)
 	label := "api " + testIdentifier + "  "
@@ -350,7 +409,11 @@ func TestExecute_oidcAPIGrantsAccessOnBehalfOfUsers(t *testing.T) {
 	)
 	assert.Equal(
 		t,
-		fakeGrant{user: true, userPermissions: []string{"p-read", "p-write"}, clientPermissions: []string{}},
+		fakeGrant{
+			user:              true,
+			userPermissions:   []string{"p-read", "p-write"},
+			clientPermissions: []string{},
+		},
 		f.pocketID.grants["pb"]["public"],
 	)
 	assert.Equal(
@@ -372,7 +435,13 @@ func TestExecute_oidcAPIMadeByHandIsTakenOver(t *testing.T) {
 	f.existingAPI(nil)
 	f.declaredAPIs["acidburn"] = map[string]config.OIDCAPIConfig{testIdentifier: testAPI}
 
-	err := f.runner.Execute(t.Context(), []target{f.target("acidburn", &fakeAgent{})}, true)
+	err := f.runner.Execute(
+		t.Context(),
+		[]target{
+			f.target("acidburn", &fakeAgent{}),
+		},
+		true,
+	)
 
 	require.NoError(t, err)
 	assert.Contains(t, f.out.String(), "> Resolving OIDC changes\n  ~ api "+testIdentifier+"  host: none → acidburn\n")
@@ -388,7 +457,10 @@ func TestExecute_oidcAPIMovesBetweenHostsInTheSameRun(t *testing.T) {
 
 	err := f.runner.Execute(
 		t.Context(),
-		[]target{f.target("acidburn", &fakeAgent{}), f.target("smarts", &fakeAgent{})},
+		[]target{
+			f.target("acidburn", &fakeAgent{}),
+			f.target("smarts", &fakeAgent{}),
+		},
 		true,
 	)
 
@@ -425,7 +497,11 @@ func TestExecute_oidcAPIPlanErrors(t *testing.T) {
 			"public client",
 			func(f *oidcFixture) {
 				f.declared["smarts"] = map[string]config.OIDCClientConfig{
-					"app": {Name: "App", CallbackURLs: config.Set{"https://app.example.com/callback"}, Public: true},
+					"app": {
+						Name:         "App",
+						CallbackURLs: config.Set{"https://app.example.com/callback"},
+						Public:       true,
+					},
 				}
 				f.declaredAPIs["acidburn"] = map[string]config.OIDCAPIConfig{testIdentifier: testAPI}
 			},
@@ -466,7 +542,10 @@ func TestExecute_oidcAPIPlanErrors(t *testing.T) {
 
 				err := f.runner.Execute(
 					t.Context(),
-					[]target{f.target("acidburn", &fakeAgent{}), f.target("smarts", &fakeAgent{})},
+					[]target{
+						f.target("acidburn", &fakeAgent{}),
+						f.target("smarts", &fakeAgent{}),
+					},
 					true,
 				)
 
@@ -484,7 +563,9 @@ func TestPrune_offersOIDCAPIsNoLongerDeclared(t *testing.T) {
 	f.existingAPI(nil)
 	f.manageAPI()
 
-	err := f.runner.Prune(t.Context(), []target{f.target("acidburn", &fakeAgent{})})
+	err := f.runner.Prune(t.Context(), []target{
+		f.target("acidburn", &fakeAgent{}),
+	})
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"Remove OIDC API " + testIdentifier + " from acidburn? [y/N] "}, f.confirmed)

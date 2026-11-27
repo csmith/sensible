@@ -213,7 +213,11 @@ func TestUser_Create(t *testing.T) {
 func TestUser_Modify(t *testing.T) {
 	sys := newTestSys(t)
 	sys.on("usermod *", "", 0)
-	r := User{Name: "alice", Shell: "/usr/bin/zsh", Groups: []string{"users", "wheel"}}
+	r := User{
+		Name:   "alice",
+		Shell:  "/usr/bin/zsh",
+		Groups: []string{"users", "wheel"},
+	}
 
 	change, err := r.Check(context.Background(), sys)
 	require.NoError(t, err)
@@ -227,9 +231,20 @@ func TestUser_InSync(t *testing.T) {
 	sys := newTestSys(t)
 
 	for _, r := range []User{
-		{Name: "bob", Shell: "/bin/sh", Groups: []string{"wheel", "users"}, Password: "!"},
-		{Name: "alice", Password: "$y$abc"},
-		{Name: "carol", Absent: true},
+		{
+			Name:     "bob",
+			Shell:    "/bin/sh",
+			Groups:   []string{"wheel", "users"},
+			Password: "!",
+		},
+		{
+			Name:     "alice",
+			Password: "$y$abc",
+		},
+		{
+			Name:   "carol",
+			Absent: true,
+		},
 	} {
 		change, err := r.Check(context.Background(), sys)
 		require.NoError(t, err)
@@ -336,7 +351,9 @@ func TestUsers_ListsNamedSystemAccounts(t *testing.T) {
 			"build:x:997:997::/var/lib/build:/usr/bin/nologin\n",
 	)
 
-	items, err := Users{System: []string{"aur", "build"}}.
+	items, err := Users{
+		System: []string{"aur", "build"},
+	}.
 		Leftovers(withRunState(context.Background(), newRunState()), sys)
 
 	require.NoError(t, err)
@@ -349,7 +366,17 @@ func TestUsers_PruneDeletesAccount(t *testing.T) {
 	sys.on("userdel *", "", 0)
 	e := &engine{sys: sys, log: io.Discard}
 
-	require.NoError(t, e.remove(context.Background(), ResourceList{Users{}}, "users", "user carol"))
+	require.NoError(
+		t,
+		e.remove(
+			context.Background(),
+			ResourceList{
+				Users{},
+			},
+			"users",
+			"user carol",
+		),
+	)
 
 	assert.Equal(t, []string{"userdel carol"}, sys.ran)
 }
@@ -363,7 +390,14 @@ func TestUsers_PruneDeletesOwnedHome(t *testing.T) {
 	sys.on("userdel *", "", 0)
 	e := &engine{sys: sys, log: io.Discard}
 
-	err := e.remove(context.Background(), ResourceList{Users{}}, "users", "user carol and /home/carol")
+	err := e.remove(
+		context.Background(),
+		ResourceList{
+			Users{},
+		},
+		"users",
+		"user carol and /home/carol",
+	)
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{"userdel --remove carol"}, sys.ran)
@@ -374,7 +408,15 @@ func TestUsers_PruneKeepsDeclaredAccounts(t *testing.T) {
 	sys.write("/etc/passwd", "carol:x:1000:1000:,,,,managed by sensible:/home/carol:/bin/sh\n")
 	e := &engine{sys: sys, log: io.Discard}
 
-	err := e.remove(context.Background(), ResourceList{User{Name: "carol"}, Users{}}, "users", "user carol")
+	err := e.remove(
+		context.Background(),
+		ResourceList{
+			User{Name: "carol"},
+			Users{},
+		},
+		"users",
+		"user carol",
+	)
 
 	require.Error(t, err)
 	assert.Empty(t, sys.ran)
@@ -384,7 +426,10 @@ func TestGroupMembers_RemovesUndeclared(t *testing.T) {
 	sys := newTestSys(t)
 	sys.write("/etc/group", "docker:x:970:alice,bob,carol\n")
 	sys.on("gpasswd --delete *", "", 0)
-	r := GroupMembers{Group: "docker", Members: []string{"bob"}}
+	r := GroupMembers{
+		Group:   "docker",
+		Members: []string{"bob"},
+	}
 
 	change, err := r.Check(context.Background(), sys)
 	require.NoError(t, err)
@@ -399,9 +444,16 @@ func TestGroupMembers_InSync(t *testing.T) {
 	sys.write("/etc/group", "docker:x:970:bob\nempty:x:971:\n")
 
 	for _, r := range []GroupMembers{
-		{Group: "docker", Members: []string{"alice", "bob"}},
-		{Group: "empty"},
-		{Group: "missing"},
+		{
+			Group:   "docker",
+			Members: []string{"alice", "bob"},
+		},
+		{
+			Group: "empty",
+		},
+		{
+			Group: "missing",
+		},
 	} {
 		change, err := r.Check(context.Background(), sys)
 		require.NoError(t, err)
@@ -412,7 +464,10 @@ func TestGroupMembers_InSync(t *testing.T) {
 func TestUser_MissingGroupIsNotYetCheckable(t *testing.T) {
 	sys := newTestSys(t)
 
-	_, err := User{Name: "alice", Groups: []string{"docker"}}.Check(context.Background(), sys)
+	_, err := User{
+		Name:   "alice",
+		Groups: []string{"docker"},
+	}.Check(context.Background(), sys)
 
 	assert.ErrorIs(t, err, ErrNotYetCheckable)
 }
@@ -485,8 +540,16 @@ func TestGitCheckout_RecoversFailedFetch(t *testing.T) {
 		origin string
 		remote []string
 	}{
-		{"origin right", "https://example.com/omz.git\n", nil},
-		{"origin missing", "", []string{prefix + "add origin https://example.com/omz.git"}},
+		{
+			"origin right",
+			"https://example.com/omz.git\n",
+			nil,
+		},
+		{
+			"origin missing",
+			"",
+			[]string{prefix + "add origin https://example.com/omz.git"},
+		},
 		{
 			"origin differs",
 			"https://example.com/old.git\n",
@@ -546,7 +609,11 @@ func TestCommand(t *testing.T) {
 	sys.on("sh -c build", "", 3)
 	require.ErrorContains(t, r.Apply(context.Background(), sys), "status 3")
 
-	_, err = Command{Name: "x", CheckArgv: []string{"true"}, User: "aur"}.Check(context.Background(), sys)
+	_, err = Command{
+		Name:      "x",
+		CheckArgv: []string{"true"},
+		User:      "aur",
+	}.Check(context.Background(), sys)
 	assert.ErrorIs(t, err, ErrNotYetCheckable)
 }
 
@@ -564,7 +631,11 @@ func TestCommand_PackagesWaitForPacman(t *testing.T) {
 		}
 	}
 
-	r := Command{Name: "paru", ApplyArgv: []string{"sh", "-c", "build"}, Packages: []string{"paru"}}
+	r := Command{
+		Name:      "paru",
+		ApplyArgv: []string{"sh", "-c", "build"},
+		Packages:  []string{"paru"},
+	}
 	require.NoError(t, r.Apply(context.Background(), sys))
 	assert.Equal(t, []string{"sh -c build"}, sys.ran)
 	assert.Equal(t, time.Minute, sys.now.Sub(start))
@@ -574,7 +645,11 @@ func TestCommand_WatchRunsOnlyAfterAChange(t *testing.T) {
 	sys := newTestSys(t)
 	st := newRunState()
 	ctx := withRunState(context.Background(), st)
-	r := Command{Name: "start", Watch: []string{"package:docker"}, ApplyArgv: []string{"start"}}
+	r := Command{
+		Name:      "start",
+		Watch:     []string{"package:docker"},
+		ApplyArgv: []string{"start"},
+	}
 
 	change, err := r.Check(ctx, sys)
 	require.NoError(t, err)
@@ -607,7 +682,9 @@ func TestTailscaleSet(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, change.InSync, change.Diff)
 
-	r = TailscaleSet{Settings: map[string]string{"accept-dns": "true", "advertise-exit-node": "false", "new-flag": "x"}}
+	r = TailscaleSet{
+		Settings: map[string]string{"accept-dns": "true", "advertise-exit-node": "false", "new-flag": "x"},
+	}
 	change, err = r.Check(context.Background(), sys)
 	require.NoError(t, err)
 	assert.Equal(
@@ -622,7 +699,9 @@ func TestTailscaleSet(t *testing.T) {
 
 func TestTailscaleSet_Unavailable(t *testing.T) {
 	sys := newTestSys(t)
-	r := TailscaleSet{Settings: map[string]string{"ssh": "true"}}
+	r := TailscaleSet{
+		Settings: map[string]string{"ssh": "true"},
+	}
 
 	_, err := r.Check(context.Background(), sys)
 	require.ErrorIs(t, err, ErrNotYetCheckable, "tailscale isn't installed")

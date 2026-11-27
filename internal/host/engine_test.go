@@ -103,12 +103,31 @@ func TestEngineCheck_Statuses(t *testing.T) {
 	got, failed := collectChecked(
 		t,
 		ResourceList{
-			&fakeResource{id: "early", needs: &fakeResource{}, log: &log},
-			&fakeResource{id: "ok", inSync: true, log: &log},
+			&fakeResource{
+				id:    "early",
+				needs: &fakeResource{},
+				log:   &log,
+			},
+			&fakeResource{
+				id:     "ok",
+				inSync: true,
+				log:    &log,
+			},
 			repo,
-			&fakeResource{id: "pkg", needs: repo, log: &log},
-			&fakeResource{id: "broken", checkErr: errors.New("boom"), log: &log},
-			&fakeResource{id: "after", log: &log},
+			&fakeResource{
+				id:    "pkg",
+				needs: repo,
+				log:   &log,
+			},
+			&fakeResource{
+				id:       "broken",
+				checkErr: errors.New("boom"),
+				log:      &log,
+			},
+			&fakeResource{
+				id:  "after",
+				log: &log,
+			},
 		},
 	)
 
@@ -143,7 +162,10 @@ func TestEngineCheck_SkipsCleanUpAfterFailure(t *testing.T) {
 
 func TestEngine_ComposeStackSeesItsFilesChange(t *testing.T) {
 	var log []string
-	stack := ComposeStack{Dir: "/srv/compose/web", Watch: []string{"conf", "env"}}
+	stack := ComposeStack{
+		Dir:   "/srv/compose/web",
+		Watch: []string{"conf", "env"},
+	}
 	repo := &fakeResource{id: "repo", log: &log}
 	got, _ := collectChecked(
 		t,
@@ -163,7 +185,11 @@ func TestEngine_ComposeStackSeesItsFilesChange(t *testing.T) {
 	e.sys = sys
 	_, err := e.apply(
 		context.Background(),
-		ResourceList{&fakeResource{id: "conf", inSync: true, log: &log}, &fakeResource{id: "env", log: &log}, stack},
+		ResourceList{
+			&fakeResource{id: "conf", inSync: true, log: &log},
+			&fakeResource{id: "env", log: &log},
+			stack,
+		},
 		-1,
 		func(any) error { return nil },
 	)
@@ -180,16 +206,30 @@ func TestEngine_ComposeStackSeesItsFilesChange(t *testing.T) {
 func TestEngineApply_AppliesDeferredAndRunsHandlersOnce(t *testing.T) {
 	var log []string
 	reload := &fakeResource{id: "reload", log: &log}
-	repo := &fakeResource{id: "repo", log: &log, notify: ResourceList{reload}}
+	repo := &fakeResource{
+		id:     "repo",
+		log:    &log,
+		notify: ResourceList{reload},
+	}
 	never := &fakeResource{id: "never", log: &log}
 	reloadAgain := &fakeResource{id: "reload", log: &log}
 
 	got, failed := collectApplied(
 		t,
 		ResourceList{
-			&fakeResource{id: "quiet", inSync: true, log: &log, notify: ResourceList{never}},
+			&fakeResource{
+				id:     "quiet",
+				inSync: true,
+				log:    &log,
+				notify: ResourceList{never},
+			},
 			repo,
-			&fakeResource{id: "pkg", needs: repo, log: &log, notify: ResourceList{reloadAgain}},
+			&fakeResource{
+				id:     "pkg",
+				needs:  repo,
+				log:    &log,
+				notify: ResourceList{reloadAgain},
+			},
 		},
 	)
 
@@ -206,8 +246,16 @@ func TestEngineApply_AnnouncesEachChangeBeforeMakingIt(t *testing.T) {
 	_, err := newTestEngine(t).apply(
 		context.Background(),
 		ResourceList{
-			&fakeResource{id: "quiet", inSync: true, log: &log},
-			&fakeResource{id: "config", log: &log, notify: ResourceList{reload}},
+			&fakeResource{
+				id:     "quiet",
+				inSync: true,
+				log:    &log,
+			},
+			&fakeResource{
+				id:     "config",
+				log:    &log,
+				notify: ResourceList{reload},
+			},
 		},
 		-1,
 		func(msg any) error {
@@ -243,9 +291,21 @@ func TestEngineApply_FailureSkipsRestButRunsDueHandlers(t *testing.T) {
 	got, failed := collectApplied(
 		t,
 		ResourceList{
-			&fakeResource{id: "config", log: &log, notify: ResourceList{reload}},
-			&fakeResource{id: "bad", applyErr: errors.New("boom"), log: &log, notify: ResourceList{restart}},
-			&fakeResource{id: "later", log: &log},
+			&fakeResource{
+				id:     "config",
+				log:    &log,
+				notify: ResourceList{reload},
+			},
+			&fakeResource{
+				id:       "bad",
+				applyErr: errors.New("boom"),
+				log:      &log,
+				notify:   ResourceList{restart},
+			},
+			&fakeResource{
+				id:  "later",
+				log: &log,
+			},
 			OwnedDir{Path: "/etc/sudoers.d"},
 		},
 	)
@@ -262,7 +322,13 @@ func TestEngineApply_FailureSkipsRestButRunsDueHandlers(t *testing.T) {
 
 func TestEngineApply_NotYetCheckableFailsDuringApply(t *testing.T) {
 	var log []string
-	got, failed := collectApplied(t, ResourceList{&fakeResource{id: "pkg", needs: &fakeResource{}, log: &log}})
+	got, failed := collectApplied(t, ResourceList{
+		&fakeResource{
+			id:    "pkg",
+			needs: &fakeResource{},
+			log:   &log,
+		},
+	})
 
 	assert.True(t, failed)
 	assert.Equal(t, StatusFailed, got[0].Status)
@@ -289,8 +355,15 @@ func TestEngineApply_LostConnectionStopsAfterCurrentResource(t *testing.T) {
 	failed, err := newTestEngine(t).apply(
 		context.Background(),
 		ResourceList{
-			&fakeResource{id: "config", log: &log, notify: ResourceList{reload}},
-			&fakeResource{id: "next", log: &log},
+			&fakeResource{
+				id:     "config",
+				log:    &log,
+				notify: ResourceList{reload},
+			},
+			&fakeResource{
+				id:  "next",
+				log: &log,
+			},
 		},
 		-1,
 		func(any) error { return lost },
@@ -397,8 +470,14 @@ func TestEngine_IgnoredLeftoversAreNeitherWarnedAboutNorListed(t *testing.T) {
 	assert.Equal(
 		t,
 		[]Leftovers{
-			{ID: "owned-dir:/etc/sudoers.d", Items: []string{"/etc/sudoers.d/stray"}},
-			{ID: "owned-dir:/etc/early.d", Items: []string{"/etc/early.d/README"}},
+			{
+				ID:    "owned-dir:/etc/sudoers.d",
+				Items: []string{"/etc/sudoers.d/stray"},
+			},
+			{
+				ID:    "owned-dir:/etc/early.d",
+				Items: []string{"/etc/early.d/README"},
+			},
 		},
 		found,
 	)
@@ -424,14 +503,20 @@ func TestEngine_KeptLeftoversAreNeitherWarnedAboutNorListed(t *testing.T) {
 				e := newTestEngine(t)
 				e.sys = sys
 				list := ResourceList{
-					KeptLeftovers{Paths: []string{"/etc/sudoers.d/README"}, Packages: []string{tt.ignored}},
+					KeptLeftovers{
+						Paths:    []string{"/etc/sudoers.d/README"},
+						Packages: []string{tt.ignored},
+					},
 					KeptLeftovers{
 						Paths:    []string{"/opt/tool-*", "/opt/missing"},
 						Packages: []string{"zsh", "nope*"},
 						External: true,
 					},
 					OwnedDir{Path: "/etc/sudoers.d", Header: "# managed"},
-					Disowned{Name: "opt", Paths: []string{"/opt/*"}},
+					Disowned{
+						Name:  "opt",
+						Paths: []string{"/opt/*"},
+					},
 					DisownedPackages{},
 				}
 
@@ -473,8 +558,14 @@ func TestEngine_KeptLeftoversAreNeitherWarnedAboutNorListed(t *testing.T) {
 				assert.Equal(
 					t,
 					[]Leftovers{
-						{ID: "owned-dir:/etc/sudoers.d", Items: []string{"/etc/sudoers.d/stray"}},
-						{ID: "disowned:opt", Items: []string{"/opt/other"}},
+						{
+							ID:    "owned-dir:/etc/sudoers.d",
+							Items: []string{"/etc/sudoers.d/stray"},
+						},
+						{
+							ID:    "disowned:opt",
+							Items: []string{"/opt/other"},
+						},
 					},
 					found,
 				)
@@ -520,7 +611,11 @@ func TestEngine_ApplySkipsCleanUpsAfterFailedCheck(t *testing.T) {
 	e.sys = sys
 	var log []string
 	flaky := &fakeResource{id: "flaky", checkErr: errors.New("timed out"), log: &log}
-	list := ResourceList{OwnedDir{Path: "/etc/early.d"}, flaky, OwnedDir{Path: "/etc/sudoers.d"}}
+	list := ResourceList{
+		OwnedDir{Path: "/etc/early.d"},
+		flaky,
+		OwnedDir{Path: "/etc/sudoers.d"},
+	}
 
 	failedAt, err := e.check(context.Background(), list, func(Checked) error { return nil })
 	require.NoError(t, err)
@@ -655,7 +750,10 @@ func TestEngine_StackIsRecreatedAfterAFailedRecreate(t *testing.T) {
 	list := ResourceList{
 		Dir{Path: "/srv/compose/web"},
 		compose,
-		ComposeStack{Dir: "/srv/compose/web", Watch: []string{compose.ID()}},
+		ComposeStack{
+			Dir:   "/srv/compose/web",
+			Watch: []string{compose.ID()},
+		},
 	}
 
 	_, applied := run(t, sys, list)
@@ -678,8 +776,15 @@ func TestEngine_FailedHandlerIsRetried(t *testing.T) {
 	sys := newTestSys(t)
 	var log []string
 	reload := &fakeResource{id: "reload", applyErr: errors.New("boom"), log: &log}
-	config := &fakeResource{id: "config", log: &log, notify: ResourceList{reload}}
-	list := ResourceList{config, &fakeResource{id: "other", inSync: true, log: &log}}
+	config := &fakeResource{
+		id:     "config",
+		log:    &log,
+		notify: ResourceList{reload},
+	}
+	list := ResourceList{
+		config,
+		&fakeResource{id: "other", inSync: true, log: &log},
+	}
 
 	_, applied := run(t, sys, list)
 	assert.Equal(t, []string{"config changed", "other in-sync", "reload failed"}, statuses(applied))
@@ -700,7 +805,12 @@ func TestEngine_OwedHandlerDoesNotTriggerWatchers(t *testing.T) {
 	sys := newTestSys(t)
 	var log []string
 	reload := &fakeResource{id: "reload", log: &log}
-	config := &fakeResource{id: "config", inSync: true, log: &log, notify: ResourceList{reload}}
+	config := &fakeResource{
+		id:     "config",
+		inSync: true,
+		log:    &log,
+		notify: ResourceList{reload},
+	}
 	require.NoError(t, newOwedJournal().owe(sys, nil, []string{"reload"}))
 
 	checked, _ := run(
@@ -708,7 +818,11 @@ func TestEngine_OwedHandlerDoesNotTriggerWatchers(t *testing.T) {
 		sys,
 		ResourceList{
 			config,
-			Command{Name: "restart web", Watch: []string{"config"}, ApplyArgv: []string{"systemctl", "restart", "web"}},
+			Command{
+				Name:      "restart web",
+				Watch:     []string{"config"},
+				ApplyArgv: []string{"systemctl", "restart", "web"},
+			},
 		},
 	)
 

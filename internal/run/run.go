@@ -582,7 +582,12 @@ func (r *Runner) checkAll(runs []*hostRun) {
 			continue
 		}
 		if r.UpdatePackages {
-			c.resources = append(host.ResourceList{host.PackageUpdate{}}, c.resources...)
+			c.resources = append(
+				host.ResourceList{
+					host.PackageUpdate{},
+				},
+				c.resources...,
+			)
 		}
 		h.resources, h.save, h.unusedSecrets = c.resources, c.save, c.unusedSecrets
 		h.ignored, h.ignore = c.ignored, c.ignore

@@ -304,7 +304,13 @@ func TestConnect_reportsFailedUpgrade(t *testing.T) {
 }
 
 func TestConnect_reportsEarlyExit(t *testing.T) {
-	_, _, err := connect(t.Context(), pipeTransport{&fakeAgent{silent: true}}, newFakeBuilds(t))
+	_, _, err := connect(
+		t.Context(),
+		pipeTransport{
+			&fakeAgent{silent: true},
+		},
+		newFakeBuilds(t),
+	)
 	assert.ErrorIs(t, err, errTestRejected)
 }
 
@@ -323,7 +329,10 @@ type runnerFixture struct {
 
 func newRunnerFixture(t *testing.T, resources host.ResourceList) *runnerFixture {
 	t.Helper()
-	f := &runnerFixture{out: &bytes.Buffer{}, answer: true}
+	f := &runnerFixture{
+		out:    &bytes.Buffer{},
+		answer: true,
+	}
 	f.runner = &Runner{
 		Out: f.out,
 		Confirm: func(prompt string) (bool, error) {
@@ -347,13 +356,18 @@ func newRunnerFixture(t *testing.T, resources host.ResourceList) *runnerFixture 
 
 func (f *runnerFixture) target(name string, agent *fakeAgent) target {
 	agent.hash = f.runner.Builds.(fakeBuilds)["amd64"].Hash
-	return target{name: name, transport: pipeTransport{agent}}
+	return target{
+		name:      name,
+		transport: pipeTransport{agent},
+	}
 }
 
 var testResources = host.ResourceList{
 	host.File{
-		Path:   "/etc/ssh/sshd_config.d/10-sensible.conf",
-		Notify: host.ResourceList{host.ServiceAction{Name: "ssh", Action: "reload"}},
+		Path: "/etc/ssh/sshd_config.d/10-sensible.conf",
+		Notify: host.ResourceList{
+			host.ServiceAction{Name: "ssh", Action: "reload"},
+		},
 	},
 	host.Package{Name: "zsh"},
 	host.Service{Name: "docker"},
@@ -555,7 +569,13 @@ func TestExecute_nothingToDo(t *testing.T) {
 func TestExecute_failuresDontClaimNoChanges(t *testing.T) {
 	f := newRunnerFixture(t, testResources)
 
-	err := f.runner.Execute(t.Context(), []target{{name: "smarts", err: errors.New("no credentials")}}, false)
+	err := f.runner.Execute(
+		t.Context(),
+		[]target{
+			{name: "smarts", err: errors.New("no credentials")},
+		},
+		false,
+	)
 
 	require.ErrorIs(t, err, errFailed)
 	assert.NotContains(t, f.out.String(), "No changes")
@@ -613,7 +633,14 @@ func TestExecute_dnsIsPlannedFromFactsAndAppliedAfterHosts(t *testing.T) {
 	)
 	acidburn.dnsName = "acidburn.example.com"
 
-	err := f.runner.Execute(t.Context(), []target{acidburn, f.target("smarts", &fakeAgent{})}, true)
+	err := f.runner.Execute(
+		t.Context(),
+		[]target{
+			acidburn,
+			f.target("smarts", &fakeAgent{}),
+		},
+		true,
+	)
 
 	require.NoError(t, err)
 	assert.Equal(t, "mydnshost", opened.Provider)
@@ -639,10 +666,20 @@ func TestExecute_dnsIsPlannedFromFactsAndAppliedAfterHosts(t *testing.T) {
 
 func TestExecute_dnsIsHeldBackWhenAHostFailsToPlan(t *testing.T) {
 	f, provider, _ := dnsFixture(t)
-	acidburn := f.target("acidburn", &fakeAgent{status: deferDocker, facts: host.Facts{DefaultIPv4: "203.0.113.2"}})
+	acidburn := f.target("acidburn", &fakeAgent{
+		status: deferDocker,
+		facts:  host.Facts{DefaultIPv4: "203.0.113.2"},
+	})
 	acidburn.dnsName = "acidburn.example.com"
 
-	err := f.runner.Execute(t.Context(), []target{acidburn, {name: "smarts", err: errors.New("no credentials")}}, true)
+	err := f.runner.Execute(
+		t.Context(),
+		[]target{
+			acidburn,
+			{name: "smarts", err: errors.New("no credentials")},
+		},
+		true,
+	)
 
 	require.ErrorIs(t, err, errFailed)
 	out := f.out.String()
@@ -661,12 +698,16 @@ func TestExecute_dnsRemovesRetiredNames(t *testing.T) {
 		dnsRecord{id: "4", name: "old", rtype: "MX", content: "mail.example.com"},
 	)
 	var saved []map[string][]string
-	f.runner.DNSState = map[string][]string{"old.example.com": {"A", "AAAA", "CNAME"}}
+	f.runner.DNSState = map[string][]string{
+		"old.example.com": {"A", "AAAA", "CNAME"},
+	}
 	f.runner.SaveDNSState = func(s map[string][]string) error {
 		saved = append(saved, s)
 		return nil
 	}
-	acidburn := f.target("acidburn", &fakeAgent{facts: host.Facts{DefaultIPv4: "203.0.113.2"}})
+	acidburn := f.target("acidburn", &fakeAgent{
+		facts: host.Facts{DefaultIPv4: "203.0.113.2"},
+	})
 	acidburn.dnsName = "acidburn.example.com"
 	f.runner.DNSNames = map[string]string{"acidburn": "acidburn.example.com"}
 
@@ -678,19 +719,35 @@ func TestExecute_dnsRemovesRetiredNames(t *testing.T) {
 	require.Len(t, provider.applied, 2)
 	assert.Equal(t, []dnsRecord{provider.records[2]}, provider.applied[1].changes.remove)
 	assert.Empty(t, provider.applied[1].changes.add)
-	assert.Equal(t, []map[string][]string{{"acidburn.example.com": {"A"}}}, saved)
+	assert.Equal(
+		t,
+		[]map[string][]string{
+			{
+				"acidburn.example.com": {"A"},
+			},
+		},
+		saved,
+	)
 }
 
 func TestExecute_retiredNamesAreKeptWhenAHostFailsToPlan(t *testing.T) {
 	f, provider, _ := dnsFixture(t)
 	provider.records = append(provider.records, dnsRecord{id: "3", name: "old", rtype: "A", content: "203.0.113.1"})
-	f.runner.DNSState = map[string][]string{"old.example.com": {"A"}}
+	f.runner.DNSState = map[string][]string{
+		"old.example.com": {"A"},
+	}
 	f.runner.SaveDNSState = func(map[string][]string) error {
 		t.Error("saved DNS state")
 		return nil
 	}
 
-	err := f.runner.Execute(t.Context(), []target{{name: "smarts", err: errors.New("no credentials")}}, true)
+	err := f.runner.Execute(
+		t.Context(),
+		[]target{
+			{name: "smarts", err: errors.New("no credentials")},
+		},
+		true,
+	)
 
 	require.ErrorIs(t, err, errFailed)
 	assert.Contains(t, f.out.String(), "- A old.example.com  203.0.113.1")
@@ -1025,7 +1082,10 @@ func TestRendererSendsEachUpdateInOneSynchronisedWrite(t *testing.T) {
 
 func TestHostPlanLines_showsWarnings(t *testing.T) {
 	h := &hostRun{
-		resources: host.ResourceList{host.DockerNetwork{Name: "web"}, host.DockerNetwork{Name: "six"}},
+		resources: host.ResourceList{
+			host.DockerNetwork{Name: "web"},
+			host.DockerNetwork{Name: "six"},
+		},
 		checked: []host.Checked{
 			{ID: "docker-network:web", Status: host.StatusInSync, Warning: "IPv6 is on rather than off\n"},
 			{ID: "docker-network:six", Status: host.StatusInSync},
@@ -1041,7 +1101,9 @@ func TestHostPlanLines_showsWarnings(t *testing.T) {
 
 func TestHostPlanLines_indentsMultiLineErrors(t *testing.T) {
 	h := &hostRun{
-		resources: host.ResourceList{host.DockerNetwork{Name: "web"}},
+		resources: host.ResourceList{
+			host.DockerNetwork{Name: "web"},
+		},
 		checked: []host.Checked{
 			{ID: "docker-network:web", Status: host.StatusFailed, Error: "inspecting:\n✓ file /etc/x\n"},
 		},
@@ -1155,7 +1217,14 @@ func TestExecute_savesGeneratedValuesBeforeApplying(t *testing.T) {
 		wantMessages []string
 		wantOut      string
 	}{
-		{"declined", false, nil, nil, []string{"FactsRequest", "Check", "Bye"}, ""},
+		{
+			"declined",
+			false,
+			nil,
+			nil,
+			[]string{"FactsRequest", "Check", "Bye"},
+			"",
+		},
 		{
 			"applied",
 			true,
@@ -1323,7 +1392,16 @@ func TestExecute_updatePackagesComesFirstAndWarnsOnceApplied(t *testing.T) {
 	require.NoError(t, f.runner.Execute(t.Context(), []target{f.target("acidburn", agent)}, false))
 
 	require.Len(t, agent.checks, 1)
-	assert.Equal(t, append(host.ResourceList{host.PackageUpdate{}}, testResources...), agent.checks[0])
+	assert.Equal(
+		t,
+		append(
+			host.ResourceList{
+				host.PackageUpdate{},
+			},
+			testResources...,
+		),
+		agent.checks[0],
+	)
 	assert.Contains(t, f.out.String(), "  ~ package-update\n")
 	assert.Equal(t, []string{"Apply 1 change on 1 target? [y/N] "}, f.confirmed)
 	assert.Contains(t, f.out.String(), "✓ package-update\n  ! package-update\n    the host needs a reboot\n")

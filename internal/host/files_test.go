@@ -45,7 +45,11 @@ func TestFile_MasksSecretsInDiff(t *testing.T) {
 	change := checkApply(
 		t,
 		sys,
-		File{Path: "/etc/conf", Content: "user: b\npass: hunter2\n", Secrets: []string{"hunter2"}},
+		File{
+			Path:    "/etc/conf",
+			Content: "user: b\npass: hunter2\n",
+			Secrets: []string{"hunter2"},
+		},
 	)
 	assert.Equal(t, "@@ -1,2 +1,2 @@\n-user: a\n+user: b\n pass: (secret)\n", change.Diff)
 
@@ -59,7 +63,11 @@ func TestFile_MasksSecretsInDiff(t *testing.T) {
 	change = checkApply(
 		t,
 		sys,
-		File{Path: "/etc/conf", Content: "user: b\npass: hunter4\n", Secrets: []string{"hunter4", "hunter3"}},
+		File{
+			Path:    "/etc/conf",
+			Content: "user: b\npass: hunter4\n",
+			Secrets: []string{"hunter4", "hunter3"},
+		},
 	)
 	assert.Equal(t, "change secret values\n", change.Diff)
 }
@@ -117,7 +125,11 @@ func TestFile_ValidatesTemporaryCopy(t *testing.T) {
 		return Result{Code: 1, Stderr: "syntax error"}
 	}
 
-	err := File{Path: "/etc/sudoers.d/x", Content: "bad\n", Validate: []string{"visudo", "-cf", "%s"}}.
+	err := File{
+		Path:     "/etc/sudoers.d/x",
+		Content:  "bad\n",
+		Validate: []string{"visudo", "-cf", "%s"},
+	}.
 		Apply(context.Background(), sys)
 
 	require.ErrorContains(t, err, "syntax error")
@@ -146,7 +158,11 @@ func TestFile_ValidatesTheCopyEvenIfItsDirIsSwapped(t *testing.T) {
 		return Result{Code: 1}
 	}
 
-	err := File{Path: "/home/alice/.ssh/config", Content: "bad\n", Validate: []string{"check", "%s"}}.
+	err := File{
+		Path:     "/home/alice/.ssh/config",
+		Content:  "bad\n",
+		Validate: []string{"check", "%s"},
+	}.
 		Apply(context.Background(), sys)
 
 	require.Error(t, err)
@@ -366,13 +382,19 @@ func TestSys_RunsCommandsInDirWithoutFollowingUserLinks(t *testing.T) {
 	userHome(t, sys, "../../srv/app")
 	local := &localSys{root: sys.root}
 
-	res, err := local.Run(context.Background(), Cmd{Argv: []string{"pwd", "-P"}, Dir: "/srv/app"})
+	res, err := local.Run(context.Background(), Cmd{
+		Argv: []string{"pwd", "-P"},
+		Dir:  "/srv/app",
+	})
 	require.NoError(t, err)
 	want, err := filepath.EvalSymlinks(sys.path("/srv/app"))
 	require.NoError(t, err)
 	assert.Equal(t, want+"\n", res.Stdout)
 
-	_, err = local.Run(context.Background(), Cmd{Argv: []string{"pwd"}, Dir: "/home/alice/.ssh"})
+	_, err = local.Run(context.Background(), Cmd{
+		Argv: []string{"pwd"},
+		Dir:  "/home/alice/.ssh",
+	})
 	assert.ErrorIs(t, err, errUntrustedLink)
 }
 
@@ -388,13 +410,19 @@ func TestSys_RunsUsersCommandsInTheirHomeUnlessItIsALink(t *testing.T) {
 	require.NoError(t, os.Symlink("alice", sys.path("/home/bob")))
 	local := &localSys{root: sys.root}
 
-	res, err := local.Run(context.Background(), Cmd{Argv: []string{"pwd", "-P"}, User: "alice"})
+	res, err := local.Run(context.Background(), Cmd{
+		Argv: []string{"pwd", "-P"},
+		User: "alice",
+	})
 	require.NoError(t, err)
 	want, err := filepath.EvalSymlinks(sys.path("/home/alice"))
 	require.NoError(t, err)
 	assert.Equal(t, want+"\n", res.Stdout)
 
-	res, err = local.Run(context.Background(), Cmd{Argv: []string{"pwd", "-P"}, User: "bob"})
+	res, err = local.Run(context.Background(), Cmd{
+		Argv: []string{"pwd", "-P"},
+		User: "bob",
+	})
 	require.NoError(t, err)
 	assert.Equal(t, "/\n", res.Stdout)
 }
@@ -485,7 +513,11 @@ func TestDisowned_TargetLimitsToSymlinks(t *testing.T) {
 	sys.write("/usr/local/bin/view", "binary")
 	require.NoError(t, sys.Symlink("/usr/bin/vim", "/usr/local/bin/vi"))
 	require.NoError(t, sys.Symlink("/usr/bin/nvim", "/usr/local/bin/ex"))
-	r := Disowned{Name: "vim", Paths: []string{"/usr/local/bin/*"}, Target: "/usr/bin/vim"}
+	r := Disowned{
+		Name:   "vim",
+		Paths:  []string{"/usr/local/bin/*"},
+		Target: "/usr/bin/vim",
+	}
 
 	got, err := r.Leftovers(context.Background(), sys)
 
@@ -536,7 +568,11 @@ func TestDisowned_RecordedForgetsFilesNoLongerAsWritten(t *testing.T) {
 	sys.write("/etc/docker/daemon.json", `{"by": "hand"}`)
 	sys.write("/etc/docker/declared.json", `{"by": "hand"}`)
 	require.NoError(t, os.Remove(sys.path("/etc/docker/gone.json")))
-	r := Disowned{Name: "docker", Paths: []string{"/etc/docker/*.json"}, Records: WrittenDir}
+	r := Disowned{
+		Name:    "docker",
+		Paths:   []string{"/etc/docker/*.json"},
+		Records: WrittenDir,
+	}
 	st := newRunState()
 	st.declare(File{Path: "/etc/docker/declared.json"})
 	ctx := withRunState(context.Background(), st)
@@ -640,7 +676,9 @@ func TestDisowned_DirsFindsEmptyDirectories(t *testing.T) {
 
 func TestFile_CarriesContentThatIsNotUTF8(t *testing.T) {
 	for _, content := range []string{"text\n", "\x7fELF\x00\xff\xfe"} {
-		data, err := json.Marshal(ResourceList{File{Path: "/usr/local/bin/tool", Content: content}})
+		data, err := json.Marshal(ResourceList{
+			File{Path: "/usr/local/bin/tool", Content: content},
+		})
 		require.NoError(t, err)
 		var got ResourceList
 		require.NoError(t, json.Unmarshal(data, &got))
@@ -667,7 +705,10 @@ func TestDisowned_SkipsWhatOtherResourcesDeclare(t *testing.T) {
 	st.declare(Symlink{Path: "/usr/local/bin/vi"})
 	st.declare(GitCheckout{Path: "/usr/share/oh-my-zsh"})
 	st.declare(Download{Path: "/var/cache/pam-rssh.deb"})
-	r := Disowned{Name: "all", Paths: []string{"/usr/local/bin/vi", "/usr/share/oh-my-zsh", "/var/cache/*.deb"}}
+	r := Disowned{
+		Name:  "all",
+		Paths: []string{"/usr/local/bin/vi", "/usr/share/oh-my-zsh", "/var/cache/*.deb"},
+	}
 
 	got, err := r.Leftovers(withRunState(context.Background(), st), sys)
 
@@ -676,7 +717,10 @@ func TestDisowned_SkipsWhatOtherResourcesDeclare(t *testing.T) {
 }
 
 func TestDisowned_NothingWhenAbsent(t *testing.T) {
-	r := Disowned{Name: "docker", Paths: []string{"/etc/docker/daemon.json"}}
+	r := Disowned{
+		Name:  "docker",
+		Paths: []string{"/etc/docker/daemon.json"},
+	}
 
 	change, err := r.Check(context.Background(), newTestSys(t))
 
@@ -690,9 +734,11 @@ func TestDisowned_PruneRemovesThenNotifies(t *testing.T) {
 	sys.on("systemctl show --property=LoadState,ActiveState ssh", "LoadState=loaded\nActiveState=active\n", 0)
 	sys.on("systemctl reload ssh", "", 0)
 	r := Disowned{
-		Name:   "sshd",
-		Paths:  []string{"/etc/ssh/sshd_config.d/10-sensible.conf"},
-		Notify: ResourceList{ServiceAction{Name: "ssh", Action: "reload"}},
+		Name:  "sshd",
+		Paths: []string{"/etc/ssh/sshd_config.d/10-sensible.conf"},
+		Notify: ResourceList{
+			ServiceAction{Name: "ssh", Action: "reload"},
+		},
 	}
 
 	require.NoError(t, r.Prune(context.Background(), sys, "/etc/ssh/sshd_config.d/10-sensible.conf"))
@@ -931,7 +977,9 @@ func TestOwnedDir_PruneRemovesThenNotifies(t *testing.T) {
 	r := OwnedDir{
 		Path:   "/etc/systemd/timesyncd.conf.d",
 		Header: "# Managed",
-		Notify: ResourceList{ServiceAction{Name: "systemd-timesyncd", Action: "restart"}},
+		Notify: ResourceList{
+			ServiceAction{Name: "systemd-timesyncd", Action: "restart"},
+		},
 	}
 
 	require.NoError(t, r.Prune(context.Background(), sys, "/etc/systemd/timesyncd.conf.d/local.conf"))

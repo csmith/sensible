@@ -28,11 +28,31 @@ func TestPackage_Pacman(t *testing.T) {
 		inSync   bool
 		apply    string
 	}{
-		{name: "installed", resource: Package{Name: "zsh"}, inSync: true},
-		{name: "provided", resource: Package{Name: "vi"}, inSync: true},
-		{name: "missing", resource: Package{Name: "git"}, apply: "pacman -S --needed --noconfirm git"},
-		{name: "absent", resource: Package{Name: "git", Absent: true}, inSync: true},
-		{name: "only provided, so not removed", resource: Package{Name: "xxd", Absent: true}, inSync: true},
+		{
+			name:     "installed",
+			resource: Package{Name: "zsh"},
+			inSync:   true,
+		},
+		{
+			name:     "provided",
+			resource: Package{Name: "vi"},
+			inSync:   true,
+		},
+		{
+			name:     "missing",
+			resource: Package{Name: "git"},
+			apply:    "pacman -S --needed --noconfirm git",
+		},
+		{
+			name:     "absent",
+			resource: Package{Name: "git", Absent: true},
+			inSync:   true,
+		},
+		{
+			name:     "only provided, so not removed",
+			resource: Package{Name: "xxd", Absent: true},
+			inSync:   true,
+		},
 		{
 			name:     "installed and unwanted",
 			resource: Package{Name: "zsh", Absent: true},
@@ -93,12 +113,23 @@ func TestPackage_PacmanInstallFailures(t *testing.T) {
 		argv     string
 		resource Resource
 	}{
-		{"package", "pacman -S --needed --noconfirm git", Package{Name: "git"}},
-		{"aur package", "paru *", AURPackage{Name: "pam_rssh", BuildUser: "bob"}},
+		{
+			"package",
+			"pacman -S --needed --noconfirm git",
+			Package{Name: "git"},
+		},
+		{
+			"aur package",
+			"paru *",
+			AURPackage{Name: "pam_rssh", BuildUser: "bob"},
+		},
 		{
 			"command",
 			"sh -c pacman -S docker",
-			Command{Name: "docker", ApplyArgv: []string{"sh", "-c", "pacman -S docker"}},
+			Command{
+				Name:      "docker",
+				ApplyArgv: []string{"sh", "-c", "pacman -S docker"},
+			},
 		},
 	}
 	for _, tt := range tests {
@@ -316,9 +347,18 @@ func TestPackage_PacmanWaitsForLock(t *testing.T) {
 		pacmanFor time.Duration
 		wantErr   string
 	}{
-		{name: "unlocked"},
-		{name: "locked by no running pacman", lock: true},
-		{name: "locked by a pacman that finishes", lock: true, pacmanFor: time.Minute},
+		{
+			name: "unlocked",
+		},
+		{
+			name: "locked by no running pacman",
+			lock: true,
+		},
+		{
+			name:      "locked by a pacman that finishes",
+			lock:      true,
+			pacmanFor: time.Minute,
+		},
 		{
 			name:      "locked throughout",
 			lock:      true,
@@ -559,7 +599,10 @@ func TestParseOSRelease(t *testing.T) {
 		want    Facts
 		wantErr bool
 	}{
-		{data: "ID=arch\n", want: Facts{OSFamily: "arch", Distro: "arch"}},
+		{
+			data: "ID=arch\n",
+			want: Facts{OSFamily: "arch", Distro: "arch"},
+		},
 		{
 			data: "ID=debian\nVERSION_CODENAME=bookworm\n",
 			want: Facts{OSFamily: "debian", Distro: "debian", Release: "bookworm"},
@@ -568,8 +611,14 @@ func TestParseOSRelease(t *testing.T) {
 			data: "ID=ubuntu\nID_LIKE=debian\nVERSION_CODENAME=\"noble\"\n",
 			want: Facts{OSFamily: "debian", Distro: "ubuntu", Release: "noble"},
 		},
-		{data: "ID=endeavouros\nID_LIKE=\"arch\"\n", want: Facts{OSFamily: "arch", Distro: "endeavouros"}},
-		{data: "ID=fedora\n", wantErr: true},
+		{
+			data: "ID=endeavouros\nID_LIKE=\"arch\"\n",
+			want: Facts{OSFamily: "arch", Distro: "endeavouros"},
+		},
+		{
+			data:    "ID=fedora\n",
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		facts, err := parseOSRelease(tt.data)
@@ -672,8 +721,13 @@ func TestDisownedPackages_ListsPackagesInstalledByHandOnPacman(t *testing.T) {
 	st.declare(Package{Name: "zsh"})
 	st.declare(Package{Name: "cron"})
 	st.declare(AURPackage{Name: "tmux"})
-	st.declare(Command{Name: "install paru", Packages: []string{"paru"}})
-	st.ignored = map[string][]string{"disowned-packages": {"package vim"}}
+	st.declare(Command{
+		Name:     "install paru",
+		Packages: []string{"paru"},
+	})
+	st.ignored = map[string][]string{
+		"disowned-packages": {"package vim"},
+	}
 	ctx := withRunState(context.Background(), st)
 	r := DisownedPackages{}
 
@@ -718,7 +772,9 @@ func TestDisownedPackages_ListsPackagesInstalledByHandOnApt(t *testing.T) {
 	)
 	st := newRunState()
 	st.declare(Package{Name: "zsh"})
-	st.ignored = map[string][]string{"disowned-packages": {"package git"}}
+	st.ignored = map[string][]string{
+		"disowned-packages": {"package git"},
+	}
 	ctx := withRunState(context.Background(), st)
 
 	got, err := DisownedPackages{}.Leftovers(ctx, sys)
@@ -790,7 +846,10 @@ func TestPackageUpdate_ArchUpgradesBeforeOtherResources(t *testing.T) {
 	sys.on("pacman -Syu --noconfirm", "", 0)
 	sys.on("pacman -S --needed --noconfirm git", "", 0)
 
-	_, failed := applyAll(t, sys, ResourceList{PackageUpdate{}, Package{Name: "git"}})
+	_, failed := applyAll(t, sys, ResourceList{
+		PackageUpdate{},
+		Package{Name: "git"},
+	})
 
 	assert.False(t, failed)
 	assert.Equal(
@@ -815,7 +874,10 @@ func TestPackageUpdate_DebianUpgradesBeforeOtherResources(t *testing.T) {
 	sys.on("apt-cache policy git", "  Candidate: 1:2.47-1\n", 0)
 	sys.on("apt-get -y -q -o DPkg::Lock::Timeout=300 install *", "", 0)
 
-	_, failed := applyAll(t, sys, ResourceList{PackageUpdate{}, Package{Name: "git"}})
+	_, failed := applyAll(t, sys, ResourceList{
+		PackageUpdate{},
+		Package{Name: "git"},
+	})
 
 	assert.False(t, failed)
 	assert.Equal(
@@ -843,7 +905,10 @@ func TestPackageUpdate_DefersPackagesMissingFromTheSyncDatabase(t *testing.T) {
 	var checked []Status
 	failedAt, err := e.check(
 		context.Background(),
-		ResourceList{PackageUpdate{}, Package{Name: "strace"}},
+		ResourceList{
+			PackageUpdate{},
+			Package{Name: "strace"},
+		},
 		func(c Checked) error {
 			checked = append(checked, c.Status)
 			return nil
@@ -897,7 +962,9 @@ func TestPackageUpdate_WarnsWhenTheHostNeedsAReboot(t *testing.T) {
 				withKernels(sys, tt.running, tt.installed...)
 				sys.on("pacman -Syu --noconfirm", "", 0)
 
-				applied, failed := applyAll(t, sys, ResourceList{PackageUpdate{}})
+				applied, failed := applyAll(t, sys, ResourceList{
+					PackageUpdate{},
+				})
 
 				require.False(t, failed)
 				require.Len(t, applied, 1)
@@ -915,7 +982,9 @@ func TestPackageUpdate_FailedUpgradeDoesNotCheckTheKernel(t *testing.T) {
 	sys := newArchSys(t)
 	sys.on("pacman -Syu --noconfirm", "", 1)
 
-	applied, failed := applyAll(t, sys, ResourceList{PackageUpdate{}})
+	applied, failed := applyAll(t, sys, ResourceList{
+		PackageUpdate{},
+	})
 
 	assert.True(t, failed)
 	assert.Empty(t, applied[0].Warning)
@@ -1016,7 +1085,8 @@ func TestPacmanRepo(t *testing.T) {
 		t,
 		strings.HasSuffix(
 			sys.read(PacmanConf),
-			"[core]\nInclude = /etc/pacman.d/mirrorlist\nInclude = "+PacmanReposDir+"/chris.forgejo.git.example.com.conf\n",
+			"[core]\nInclude = /etc/pacman.d/mirrorlist\nInclude = "+PacmanReposDir+
+				"/chris.forgejo.git.example.com.conf\n",
 		),
 	)
 
@@ -1034,7 +1104,11 @@ func TestPacmanRepo(t *testing.T) {
 func TestPacmanRepo_RefreshFails(t *testing.T) {
 	sys, _ := pacmanRepoSys(t)
 	sys.on("pacman --config /dev/stdin --arch auto -Sy --noconfirm", "", 1)
-	r := PacmanRepo{Name: "example", Servers: []string{"https://example.com/$arch"}, SigLevel: "Never"}
+	r := PacmanRepo{
+		Name:     "example",
+		Servers:  []string{"https://example.com/$arch"},
+		SigLevel: "Never",
+	}
 	ctx := withRunState(context.Background(), newRunState())
 
 	require.Error(t, r.Apply(ctx, sys))
