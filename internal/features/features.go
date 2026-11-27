@@ -148,24 +148,34 @@ const SensibleHome = "/var/lib/sensible"
 
 const sensibleAuthorizedKeysDir = "/etc/ssh/authorized_keys"
 
-// AccessFiles are the root-owned files that let the controller reach a
-// host's agent. Bootstrap and the access feature both write them.
-// They don't notify anything, as the sshd unit's name depends on the OS.
-// Each of sensibleKeys may log in, so a rotation can authorize the new key
-// before the old one is dropped.
+// AccessFiles are the root-owned files that let any of sensibleKeys reach
+// the host's agent. They notify nothing, as sshd's unit name varies by OS.
 func AccessFiles(sensibleKeys ...string) []host.File {
+	return accessFiles(
+		[]string{
+			fmt.Sprintf("Defaults:%s passwd_tries=1, passwd_timeout=1", SensibleUser),
+			fmt.Sprintf("%s ALL=(root) %s agent", SensibleUser, host.AgentPath),
+		},
+		sensibleKeys,
+	)
+}
+
+// BootstrapAccessFiles are AccessFiles whose sudo needs no password, for a
+// bootstrap binary, which locks the account's password instead.
+func BootstrapAccessFiles(bootstrapKey string) []host.File {
+	return accessFiles(
+		[]string{fmt.Sprintf("%s ALL=(root) NOPASSWD: %s agent", SensibleUser, host.AgentPath)},
+		[]string{bootstrapKey},
+	)
+}
+
+func accessFiles(sudoers, sensibleKeys []string) []host.File {
 	var keys strings.Builder
 	for _, k := range sensibleKeys {
 		_, _ = fmt.Fprintf(&keys, "restrict,command=\"/usr/bin/sudo -k -S -p '' %s agent\" %s\n", host.AgentPath, k)
 	}
 	return []host.File{
-		sudoersFile(
-			SensibleUser,
-			[]string{
-				fmt.Sprintf("Defaults:%s passwd_tries=1, passwd_timeout=1", SensibleUser),
-				fmt.Sprintf("%s ALL=(root) %s agent", SensibleUser, host.AgentPath),
-			},
-		),
+		sudoersFile(SensibleUser, sudoers),
 		{
 			Path: "/etc/ssh/sshd_config.d/05-sensible.conf",
 			Content: managedHeader + strings.Join(

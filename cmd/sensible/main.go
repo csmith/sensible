@@ -22,7 +22,8 @@ var (
 const usage = `Usage: sensible [flags] <command> [args]
 
 Commands:
-  bootstrap <host> [--user account] [--rotate] [--host-key SHA256:...]
+  bootstrap <host> [--user account | --bootstrap-key] [--rotate] [--host-key SHA256:...]
+  bootstrap-binary -o <file> [--arch amd64|arm64]
   apply [hosts...] [--yes] [--update-packages]
   prune [hosts...]
   facts [hosts...]
@@ -44,6 +45,13 @@ func main() {
 	run.Debug = *debug
 
 	args := flag.Args()
+	if len(args) == 0 && run.IsBootstrapBinary() {
+		if err := run.SetUpForBootstrapKey(context.Background(), os.Stdout); err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(args) == 0 {
 		flag.Usage()
 		os.Exit(2)
@@ -72,11 +80,20 @@ func command(ctx context.Context, name string, args []string) error {
 	user, rotate, yes, hostKey, raw := new(string), new(bool), new(bool), new(string), new(bool)
 	updatePackages := new(bool)
 	facts, asJSON := new(string), new(bool)
+	bootstrapKey, output, arch := new(bool), new(string), new(string)
 	switch name {
 	case "bootstrap":
 		user = fs.String("user", "", "Account to set a remote host up through: root, or one with sudo")
 		rotate = fs.Bool("rotate", false, "Replace existing credentials")
 		hostKey = fs.String("host-key", "", "Expected SHA256 fingerprint of a new host's key, instead of asking")
+		bootstrapKey = fs.Bool(
+			"bootstrap-key",
+			false,
+			"Connect with the bootstrap key, for a host set up by a bootstrap binary",
+		)
+	case "bootstrap-binary":
+		output = fs.String("o", "", "Write the binary to this `file`")
+		arch = fs.String("arch", "amd64", "Architecture to build for: amd64 or arm64")
 	case "apply":
 		yes = fs.Bool("yes", false, "Apply without asking")
 		updatePackages = fs.Bool("update-packages", false, "Bring each host's packages up to date first")
@@ -103,7 +120,14 @@ func command(ctx context.Context, name string, args []string) error {
 				User:      *user,
 				Rotate:    *rotate,
 				HostKey:   *hostKey,
+
+				BootstrapKey: *bootstrapKey,
 			},
+		)
+	case name == "bootstrap-binary" && len(args) == 0 && *output != "":
+		return run.BootstrapBinary(
+			ctx,
+			run.BootstrapBinaryOptions{ConfigDir: *configDir, Output: *output, Arch: *arch},
 		)
 	case name == "apply":
 		return run.Run(

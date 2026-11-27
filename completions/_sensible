@@ -35,6 +35,7 @@ _sensible() {
 
   local -a commands=(
     'bootstrap:set up a host for sensible to manage'
+    'bootstrap-binary:make a binary that sets up new machines'
     'apply:apply the configuration to hosts'
     'prune:remove what hosts have left over, such as old volumes'
     'facts:print facts gathered from hosts'
@@ -55,7 +56,13 @@ _sensible() {
             '--user=[account to set the host up through]:account:_users' \
             '--rotate[replace existing credentials]' \
             '--host-key=[expected SHA256 fingerprint of the host key]:fingerprint:' \
+            '--bootstrap-key[connect with the bootstrap key]' \
             '1:host:_sensible_hosts' && ret=0
+          ;;
+        bootstrap-binary)
+          _arguments \
+            '-o[file to write the binary to]:file:_files' \
+            '--arch=[architecture to build for]:arch:(amd64 arm64)' && ret=0
           ;;
         apply)
           _arguments \

@@ -38,7 +38,11 @@ fi
 mkdir -p {{q .Home}}
 chown root:root {{q .Home}}
 chmod 0755 {{q .Home}}
+{{if .Password -}}
 printf '%s\n' {{q (print .User ":" .Password)}} | chpasswd
+{{- else -}}
+usermod -p '*' {{q .User}}
+{{- end}}
 
 # The upload is checked once copied, as its owner could change it after.
 mkdir -p {{q .AgentDir}}

@@ -72,6 +72,10 @@ The machine sensible runs on is managed like any other host, over SSH to
 loopback. Bootstrap it without `--user`: it only needs sudo, and installs sshd
 if it's missing.
 
+A new physical machine can instead be set up with a bootstrap binary from
+your install media, so you don't need to log in to it first. See
+[Running](running.md#from-install-media).
+
 ## Applying
 
 Apply shows what would change on each host, and makes the changes once you

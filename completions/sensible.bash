@@ -58,7 +58,7 @@ _sensible() {
             esac
         else
             case $w in
-                -user | --user | -host-key | --host-key | -facts | --facts) ((i++)) ;;
+                -user | --user | -host-key | --host-key | -facts | --facts | -o | --o | -arch | --arch) ((i++)) ;;
                 -*) ;;
                 *) args+=("$w") ;;
             esac
@@ -75,13 +75,24 @@ _sensible() {
         if [[ $cur == -* ]]; then
             COMPREPLY=($(compgen -W '--config --debug' -- "$cur"))
         else
-            COMPREPLY=($(compgen -W 'bootstrap apply prune facts render secret' -- "$cur"))
+            COMPREPLY=($(compgen -W 'bootstrap bootstrap-binary apply prune facts render secret' -- "$cur"))
         fi
         return
     fi
 
     case $prev in
         -user | --user | -host-key | --host-key) [[ $cmd == bootstrap ]] && return ;;
+        -o | --o)
+            if [[ $cmd == bootstrap-binary ]]; then
+                compopt -o filenames 2>/dev/null
+                COMPREPLY=($(compgen -f -- "$cur"))
+                return
+            fi
+            ;;
+        -arch | --arch)
+            [[ $cmd == bootstrap-binary ]] && COMPREPLY=($(compgen -W 'amd64 arm64' -- "$cur"))
+            return
+            ;;
         -facts | --facts)
             if [[ $cmd == render ]]; then
                 compopt -o filenames 2>/dev/null
@@ -94,10 +105,13 @@ _sensible() {
     case $cmd in
         bootstrap)
             if [[ $cur == -* ]]; then
-                COMPREPLY=($(compgen -W '--user --rotate --host-key' -- "$cur"))
+                COMPREPLY=($(compgen -W '--user --rotate --host-key --bootstrap-key' -- "$cur"))
             elif ((${#args[@]} == 0)); then
                 COMPREPLY=($(compgen -W "$(_sensible_hosts "$config")" -- "$cur"))
             fi
+            ;;
+        bootstrap-binary)
+            [[ $cur == -* ]] && COMPREPLY=($(compgen -W '-o --arch' -- "$cur"))
             ;;
         apply | prune | facts | render)
             if [[ $cur == -* ]]; then

@@ -976,7 +976,8 @@ type Repo struct {
 	vhosts map[string][]string
 	// dnsState maps each name sensible has set records for to the types it
 	// manages there.
-	dnsState map[string][]string
+	dnsState     map[string][]string
+	bootstrapKey BootstrapKey
 	// caNames are sensible.yml's cas.
 	caNames []string
 	// cas are the CAs in the CA state file.
@@ -1002,6 +1003,9 @@ func Open(dir string, identity IdentitySource) (*Repo, error) {
 		return nil, err
 	}
 	if err := r.readDNSState(); err != nil {
+		return nil, err
+	}
+	if err := r.readBootstrapKey(); err != nil {
 		return nil, err
 	}
 	if err := r.readHosts(); err != nil {
@@ -1313,6 +1317,35 @@ func (r *Repo) AddHostKey(name string, key ssh.PublicKey) error {
 	return nil
 }
 
+// BootstrapKey is the key bootstrap binaries authorize on the hosts they set
+// up, until bootstrap replaces it with the host's own.
+type BootstrapKey struct {
+	// PublicKey is its authorized_keys line, without options.
+	PublicKey string `yaml:"public_key"`
+	SSHKey    Secret `yaml:"ssh_key"`
+}
+
+// BootstrapKey is the repo's bootstrap key, which is zero until one is saved.
+func (r *Repo) BootstrapKey() BootstrapKey {
+	return r.bootstrapKey
+}
+
+// SaveBootstrapKey encrypts the private key into the bootstrap state file.
+func (r *Repo) SaveBootstrapKey(publicKey, sshKey string) error {
+	secret, err := r.encryptSecret(sshKey)
+	if err != nil {
+		return err
+	}
+	out := "# Managed by sensible. Local changes will be overwritten.\n" +
+		"public_key: " + strconv.Quote(publicKey) + "\n" +
+		"ssh_key: " + secret.yaml() + "\n"
+	if err := file.Write(r.path(bootstrapStateFile), []byte(out), 0o600); err != nil {
+		return err
+	}
+	r.bootstrapKey = BootstrapKey{PublicKey: publicKey, SSHKey: secret}
+	return nil
+}
+
 func (r *Repo) encryptCredentials(name, sshKey, sudoPassword string) (Secret, Secret, error) {
 	if err := r.CheckCredentials(name); err != nil {
 		return Secret{}, Secret{}, err
@@ -1326,6 +1359,22 @@ func (r *Repo) encryptCredentials(name, sshKey, sudoPassword string) (Secret, Se
 		return Secret{}, Secret{}, err
 	}
 	return key, password, nil
+}
+
+const bootstrapStateFile = "bootstrap.state.yml"
+
+func (r *Repo) readBootstrapKey() error {
+	node, err := r.readLayer(bootstrapStateFile, true)
+	if err != nil || node == nil {
+		return err
+	}
+	if err := decode(r.keys.context(), node, &r.bootstrapKey); err != nil {
+		return fmt.Errorf("%s: %w", r.path(bootstrapStateFile), err)
+	}
+	if r.bootstrapKey.PublicKey == "" || r.bootstrapKey.SSHKey.IsZero() {
+		return fmt.Errorf("%s: needs public_key and ssh_key", r.path(bootstrapStateFile))
+	}
+	return nil
 }
 
 const dnsStateFile = "dns.state.yml"

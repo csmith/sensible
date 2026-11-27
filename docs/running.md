@@ -2,6 +2,7 @@
 
 ```sh
 sensible bootstrap web1 --user root   # Set up a new host for management
+sensible bootstrap-binary -o FILE     # Make a binary that sets up new machines
 sensible apply web1                   # Show the changes for a host and apply them
 sensible apply                        # The same, for all hosts
 sensible apply web1 --update-packages # Update all its packages first
@@ -103,6 +104,38 @@ The machine sensible runs on is bootstrapped without `--user`, with sudo
 directly. It installs and starts sshd if it's missing, as that's how it's
 reached afterwards, over loopback. A host counts as this machine when its
 name in `hosts.d` is the machine's hostname.
+
+### From install media
+
+A new physical machine can be set up without logging in to it first, using a
+bootstrap binary kept on the install media:
+
+```sh
+sensible bootstrap-binary -o /mnt/usb/sensible-bootstrap
+sensible bootstrap-binary -o /mnt/usb/sensible-bootstrap-arm64 --arch arm64
+```
+
+The binary is the agent with the public half of the repo's bootstrap key
+embedded. The first build makes the key, and saves it, encrypted, in
+`bootstrap.state.yml`. Nothing in the binary is specific to a host, so build it
+once and use it for every machine; building it again gives the same file.
+
+After installing the OS, run the binary as root on the new machine. It sets
+the machine up as bootstrap does, installing and starting sshd if it's
+missing, but authorizes the bootstrap key, and sudo needs no password, as the
+account's password is locked. It finishes by printing the machine's host key
+fingerprints and the command to run on the controller:
+
+```sh
+sensible bootstrap web1 --bootstrap-key --host-key SHA256:...
+```
+
+That connects with the bootstrap key, checking the host key as bootstrap
+always does, then rotates to the host's own key and sudo password the way
+`--rotate` does, and only then drops the bootstrap key. Afterwards the host is
+like any other, and the bootstrap key no longer gets in. A run that stops part
+way can be run again, as with `--rotate`; if it stopped after saving the new
+credentials, the next apply drops the bootstrap key.
 
 ## Apply
 

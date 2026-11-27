@@ -39,6 +39,9 @@ type BootstrapOptions struct {
 	// with sudo directly.
 	User   string
 	Rotate bool
+	// BootstrapKey connects with the repo's bootstrap key, which a bootstrap
+	// binary set the host up for, instead of an account on it.
+	BootstrapKey bool
 	// HostKey is the SHA256 fingerprint the host's key must have when it
 	// has no host_keys yet. Empty means asking on the terminal.
 	HostKey string
@@ -60,16 +63,20 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 		return unknownHost(repo.Inventory(), opts.Host)
 	case address == "":
 		return fmt.Errorf("%s has no address", opts.Host)
+	case opts.BootstrapKey && opts.User != "":
+		return errors.New("--bootstrap-key and --user can't be used together")
+	case opts.BootstrapKey && repo.BootstrapKey().SSHKey.IsZero():
+		return errors.New("there's no bootstrap key yet; bootstrap-binary makes one")
 	case local && opts.User != "":
 		return fmt.Errorf("%s is this machine, which is set up with sudo; remove --user", opts.Host)
-	case !local && opts.User == "" && !opts.Rotate:
+	case !local && opts.User == "" && !opts.Rotate && !opts.BootstrapKey:
 		return errors.New("--user is required")
 	}
 	bootstrapped := !entry.SSHKey.IsZero()
 	if bootstrapped && !opts.Rotate {
 		return fmt.Errorf("%s already has credentials; use --rotate to replace them", opts.Host)
 	}
-	if !local && !bootstrapped && opts.User == "" {
+	if !local && !bootstrapped && opts.User == "" && !opts.BootstrapKey {
 		return fmt.Errorf("%s has no credentials to rotate; use --user", opts.Host)
 	}
 
@@ -78,11 +85,16 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 		return err
 	}
 
-	// Fetched before the section, as fetching it prints its own.
-	if !local && opts.User == "" {
-		if err := repo.LoadIdentity(); err != nil {
-			return err
-		}
+	// Revealed before the section, as fetching the identity prints its own.
+	var current credentials
+	switch {
+	case opts.BootstrapKey:
+		current, err = revealBootstrapKey(repo.BootstrapKey())
+	case !local && opts.User == "":
+		current, err = revealCredentials(opts.Host, entry.SSHKey, entry.SudoPassword)
+	}
+	if err != nil {
+		return err
 	}
 
 	creds, err := newCredentials(opts.Host)
@@ -100,14 +112,19 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) error {
 		confirm:            confirmOnTerminal,
 		askPassword:        passwordFromTerminal,
 		hostKeyFingerprint: opts.HostKey,
+		hostKeySource:      "the provider console",
 		repo:               repo,
 		done:               func(step string) { r.item(r.p.ok("✓") + " " + step) },
 	}
 	switch {
+	case opts.BootstrapKey:
+		b.hostKeySource = "what the bootstrap binary printed"
+		b.passwordFirst = true
+		return b.rotate(ctx, current, entry)
 	case local:
 		return b.setUp(ctx, b.installLocal)
 	case opts.User == "":
-		return b.rotate(ctx, entry)
+		return b.rotate(ctx, current, entry)
 	default:
 		keyring := sshAgent(ctx)
 		return b.setUp(ctx, func(ctx context.Context) error { return b.install(ctx, opts.User, keyring) })
@@ -127,12 +144,12 @@ func (b *bootstrapper) setUp(ctx context.Context, install func(context.Context) 
 	return b.save(ctx)
 }
 
-// rotate replaces the key and password through the host's existing agent.
-// Each step can be recovered from if the next fails: the new pair is saved
-// as pending before the host has it, and the old key is only dropped once
-// the new pair is saved as current.
-func (b *bootstrapper) rotate(ctx context.Context, entry config.HostEntry) error {
-	a, old, err := b.connectExisting(ctx, entry)
+// rotate replaces the key and password through the host's existing agent,
+// reached with current. Each step can be recovered from if the next fails:
+// the new pair is saved as pending before the host has it, and the old key
+// is only dropped once the new pair is saved as current.
+func (b *bootstrapper) rotate(ctx context.Context, current credentials, entry config.HostEntry) error {
+	a, old, err := b.connectExisting(ctx, current, entry)
 	if err != nil {
 		return err
 	}
@@ -142,9 +159,14 @@ func (b *bootstrapper) rotate(ctx context.Context, entry config.HostEntry) error
 		for _, f := range features.AccessFiles(old.authorizedKey, b.creds.authorizedKey) {
 			resources = append(resources, f)
 		}
-		// The password goes last, so the old one still works if the files
-		// fail.
-		resources = append(resources, setPassword(b.creds.password))
+		// The password normally goes last, so the old one still works if
+		// the files fail. A host on its bootstrap key has no password, and
+		// the files make sudo ask for one, so it goes first there.
+		if b.passwordFirst {
+			resources = append(host.ResourceList{setPassword(b.creds.password)}, resources...)
+		} else {
+			resources = append(resources, setPassword(b.creds.password))
+		}
 		err = applyAccess(a, resources)
 	}
 	a.bye()
@@ -186,23 +208,34 @@ func (b *bootstrapper) save(ctx context.Context) error {
 		return err
 	}
 	b.done("saved credentials")
-	if b.newHostKey != nil {
-		if err := b.repo.AddHostKey(b.name, b.newHostKey); err != nil {
-			return err
-		}
-		b.done("saved host key")
+	return b.saveHostKey()
+}
+
+// saveHostKey saves a host key accepted during this bootstrap, after which
+// it's known like any other.
+func (b *bootstrapper) saveHostKey() error {
+	if b.newHostKey == nil {
+		return nil
 	}
+	if err := b.repo.AddHostKey(b.name, b.newHostKey); err != nil {
+		return err
+	}
+	b.known = append(b.known, config.HostKey{PublicKey: b.newHostKey})
+	b.newHostKey = nil
+	b.done("saved host key")
 	return nil
 }
 
-// connectExisting connects with the host's current credentials or, if
-// they're rejected, with pending ones an earlier bootstrap left. Pending
-// ones that work are saved as current, as the host has them.
-func (b *bootstrapper) connectExisting(ctx context.Context, entry config.HostEntry) (*agent, credentials, error) {
-	current, err := revealCredentials(b.name, entry.SSHKey, entry.SudoPassword)
-	if err != nil {
-		return nil, credentials{}, err
-	}
+// connectExisting connects with current or, if it's rejected, with pending
+// credentials an earlier bootstrap left. Pending ones that work are saved as
+// current, as the host has them. A bootstrap that stopped after setting the
+// pending password but before authorizing the pending key leaves the host
+// with current's key and the pending password, so that's tried last.
+func (b *bootstrapper) connectExisting(
+	ctx context.Context,
+	current credentials,
+	entry config.HostEntry,
+) (*agent, credentials, error) {
 	a, _, err := connect(ctx, b.transport(current.signer, current.password), b.builds)
 	if err == nil || !errors.Is(err, errCredentialsRejected) || entry.PendingSSHKey.IsZero() {
 		return a, current, err
@@ -211,7 +244,14 @@ func (b *bootstrapper) connectExisting(ctx context.Context, entry config.HostEnt
 	if perr != nil {
 		return nil, credentials{}, err
 	}
-	if a, _, err = connect(ctx, b.transport(pending.signer, pending.password), b.builds); err != nil {
+	a, _, err = connect(ctx, b.transport(pending.signer, pending.password), b.builds)
+	if errors.Is(err, errCredentialsRejected) {
+		mixed := current
+		mixed.password = pending.password
+		a, _, err = connect(ctx, b.transport(mixed.signer, mixed.password), b.builds)
+		return a, mixed, err
+	}
+	if err != nil {
 		return nil, credentials{}, err
 	}
 	if err := b.repo.WriteCredentials(b.name, pending.keyPEM, pending.password, time.Now()); err != nil {
@@ -219,6 +259,10 @@ func (b *bootstrapper) connectExisting(ctx context.Context, entry config.HostEnt
 		return nil, credentials{}, err
 	}
 	b.done("saved the pending credentials an earlier bootstrap left")
+	if err := b.saveHostKey(); err != nil {
+		a.bye()
+		return nil, credentials{}, err
+	}
 	return a, pending, nil
 }
 
@@ -230,6 +274,13 @@ type credentials struct {
 }
 
 func newCredentials(name string) (credentials, error) {
+	creds, err := newKey(name)
+	creds.password = rand.Text()
+	return creds, err
+}
+
+// newKey is credentials with no password.
+func newKey(name string) (credentials, error) {
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return credentials{}, err
@@ -245,7 +296,6 @@ func newCredentials(name string) (credentials, error) {
 	return credentials{
 		keyPEM:        string(pem.EncodeToMemory(block)),
 		signer:        signer,
-		password:      rand.Text(),
 		authorizedKey: authorizedKey(signer.PublicKey(), name),
 	}, nil
 }
@@ -273,6 +323,11 @@ type bootstrapper struct {
 	askPassword func(prompt string) (string, error)
 	// hostKeyFingerprint, if set, replaces the confirmation of a new key.
 	hostKeyFingerprint string
+	// hostKeySource is where to check a new key's fingerprint.
+	hostKeySource string
+	// passwordFirst sets the new password before the access files when
+	// rotating, for a host with no password yet.
+	passwordFirst bool
 	// newHostKey is a key accepted during this bootstrap, to be saved once
 	// it has worked.
 	newHostKey ssh.PublicKey
@@ -373,7 +428,12 @@ func (b *bootstrapper) install(ctx context.Context, user string, keyring sshagen
 			return err
 		}
 	}
-	input += bootstrapScript(b.creds.password, strings.TrimSpace(tmp), build.Hash, b.creds.authorizedKey, false)
+	input += setupScript{
+		Password:  b.creds.password,
+		AgentTmp:  strings.TrimSpace(tmp),
+		AgentHash: build.Hash,
+		Access:    features.AccessFiles(b.creds.authorizedKey),
+	}.String()
 	if _, err := runRemote(client, command, strings.NewReader(input), forward); err != nil {
 		return fmt.Errorf("running setup: %w", err)
 	}
@@ -425,7 +485,13 @@ func (b *bootstrapper) installLocal(ctx context.Context) error {
 
 	cmd := exec.CommandContext(ctx, "sudo", "sh", "-s")
 	cmd.Stdin = strings.NewReader(
-		bootstrapScript(b.creds.password, tmp.Name(), build.Hash, b.creds.authorizedKey, true),
+		setupScript{
+			Password:   b.creds.password,
+			AgentTmp:   tmp.Name(),
+			AgentHash:  build.Hash,
+			Access:     features.AccessFiles(b.creds.authorizedKey),
+			EnsureSSHD: true,
+		}.String(),
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("running setup: %w\n%s", err, strings.TrimSpace(string(out)))
@@ -472,10 +538,11 @@ func (b *bootstrapper) hostKey() ssh.HostKeyCallback {
 		}
 		ok, err := b.confirm(
 			fmt.Sprintf(
-				"%s host key is %s %s\nDoes it match the provider console? [y/N] ",
+				"%s host key is %s %s\nDoes it match %s? [y/N] ",
 				b.name,
 				key.Type(),
 				ssh.FingerprintSHA256(key),
+				b.hostKeySource,
 			),
 		)
 		if err != nil {
@@ -584,7 +651,7 @@ var (
 )
 
 func (b *bootstrapper) transport(signer ssh.Signer, password string) *OpenSSH {
-	hostKey := checkHostKey(b.name, b.known)
+	hostKey := b.hostKey()
 	algos := hostKeyAlgorithms(b.known)
 	if b.newHostKey != nil {
 		hostKey = ssh.FixedHostKey(b.newHostKey)
@@ -607,34 +674,44 @@ var bootstrapTemplate = template.Must(
 	template.New("bootstrap").Funcs(template.FuncMap{"q": quote}).Parse(bootstrapTemplateText),
 )
 
-// bootstrapScript is run as root with sh. It's idempotent, so re-running
-// bootstrap repairs a host whose access has broken. With ensureSSHD it also
-// installs and starts sshd, for a machine that wasn't reached through it.
-func bootstrapScript(password, agentTmp, agentHash, authorizedKey string, ensureSSHD bool) string {
-	access := features.AccessFiles(authorizedKey)
-	files := make([]string, len(access))
-	for i, f := range access {
+type setupScript struct {
+	// Password is the account's sudo password. Empty locks it, for
+	// BootstrapAccessFiles.
+	Password  string
+	AgentTmp  string
+	AgentHash string
+	Access    []host.File
+	// EnsureSSHD installs and starts sshd, for a machine that wasn't
+	// reached through it.
+	EnsureSSHD bool
+}
+
+// String is the script, which is run as root with sh. It's idempotent, so
+// re-running bootstrap repairs a host whose access has broken.
+func (s setupScript) String() string {
+	files := make([]string, len(s.Access))
+	for i, f := range s.Access {
 		files[i] = writeFileScript(f)
 	}
-	var s strings.Builder
+	var out strings.Builder
 	err := bootstrapTemplate.Execute(
-		&s,
+		&out,
 		map[string]any{
 			"User":       features.SensibleUser,
 			"Home":       features.SensibleHome,
-			"Password":   password,
-			"AgentTmp":   agentTmp,
-			"AgentHash":  agentHash,
+			"Password":   s.Password,
+			"AgentTmp":   s.AgentTmp,
+			"AgentHash":  s.AgentHash,
 			"AgentDir":   path.Dir(host.AgentPath),
 			"AgentPath":  host.AgentPath,
 			"Files":      files,
-			"EnsureSSHD": ensureSSHD,
+			"EnsureSSHD": s.EnsureSSHD,
 		},
 	)
 	if err != nil {
 		panic(err)
 	}
-	return s.String()
+	return out.String()
 }
 
 // writeFileScript writes a file through a temporary copy in the same

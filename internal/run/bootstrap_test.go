@@ -89,22 +89,27 @@ func TestWriteFileScript_validatesBeforeReplacing(t *testing.T) {
 }
 
 func TestBootstrapScript_isValidShell(t *testing.T) {
-	for _, ensureSSHD := range []bool{false, true} {
-		out, err := exec.CommandContext(
-			t.Context(),
-			"sh",
-			"-n",
-			"-c",
-			bootstrapScript("PASSWORD'", "/tmp/tmp.abc", "deadbeef", "ssh-ed25519 AAAA sensible@x", ensureSSHD),
-		).CombinedOutput()
+	for _, s := range []setupScript{
+		{Password: "PASSWORD'", Access: features.AccessFiles("ssh-ed25519 AAAA sensible@x")},
+		{Password: "PASSWORD'", Access: features.AccessFiles("ssh-ed25519 AAAA sensible@x"), EnsureSSHD: true},
+		{Access: features.BootstrapAccessFiles("ssh-ed25519 AAAA sensible@bootstrap"), EnsureSSHD: true},
+	} {
+		s.AgentTmp, s.AgentHash = "/tmp/tmp.abc", "deadbeef"
+		out, err := exec.CommandContext(t.Context(), "sh", "-n", "-c", s.String()).CombinedOutput()
 		assert.NoError(t, err, string(out))
 	}
 }
 
 func TestBootstrapScript_onlyEnsuresSSHDWhenAsked(t *testing.T) {
 	const enable = `systemctl enable --now "$sshd"`
-	assert.Contains(t, bootstrapScript("p", "/tmp/t", "h", "k", true), enable)
-	assert.NotContains(t, bootstrapScript("p", "/tmp/t", "h", "k", false), enable)
+	assert.Contains(t, setupScript{Password: "p", EnsureSSHD: true}.String(), enable)
+	assert.NotContains(t, setupScript{Password: "p"}.String(), enable)
+}
+
+func TestBootstrapScript_locksThePasswordWithoutOne(t *testing.T) {
+	assert.Contains(t, setupScript{}.String(), "usermod -p '*' 'sensible'")
+	assert.NotContains(t, setupScript{}.String(), "chpasswd")
+	assert.NotContains(t, setupScript{Password: "p"}.String(), "usermod -p")
 }
 
 func TestReadLocalHostKey(t *testing.T) {
@@ -293,6 +298,8 @@ func (f *rotateFixture) reopen(t *testing.T) *config.Repo {
 
 func (f *rotateFixture) rotate(t *testing.T) error {
 	entry := f.repo.Inventory().Hosts["acidburn"]
+	current, err := revealCredentials("acidburn", entry.SSHKey, entry.SudoPassword)
+	require.NoError(t, err)
 	b := &bootstrapper{
 		name:    "acidburn",
 		address: entry.Address,
@@ -302,7 +309,7 @@ func (f *rotateFixture) rotate(t *testing.T) error {
 		repo:    f.repo,
 		done:    func(step string) { f.steps = append(f.steps, step) },
 	}
-	return b.rotate(t.Context(), entry)
+	return b.rotate(t.Context(), current, entry)
 }
 
 // saved is the key and password the repo has for acidburn, and its pending
