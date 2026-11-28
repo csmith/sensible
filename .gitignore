@@ -1,2 +1,5 @@
 .idea
 /sensible
+/src/
+/pkg/
+*.pkg.tar.*
