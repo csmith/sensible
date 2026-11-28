@@ -33,6 +33,8 @@ build() {
 
 package() {
   cd "$srcdir/$pkgname"
-  make install DESTDIR="$pkgdir" PREFIX=/usr
+  install -Dm755 sensible "$pkgdir/usr/bin/sensible"
+  install -Dm644 completions/sensible.bash "$pkgdir/usr/share/bash-completion/completions/sensible"
+  install -Dm644 completions/_sensible "$pkgdir/usr/share/zsh/site-functions/_sensible"
   install -Dm644 LICENCE "$pkgdir/usr/share/licenses/$pkgname/LICENCE"
 }

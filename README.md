@@ -13,9 +13,9 @@ and applies it once you confirm. Debian, Ubuntu and Arch hosts are supported.
 
 ## Quick start
 
-```sh
-make && sudo make install
-```
+On Arch, install the `sensible` package from the
+`packages.main.git.yak-wall.ts.net` pacman repository; elsewhere, build it with
+`make`. See [Getting started](docs/getting-started.md#installing).
 
 ```yaml
 # hosts.d/web1.yml

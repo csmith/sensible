@@ -2,14 +2,23 @@
 
 ## Installing
 
-Building needs Go, at the version in `go.mod` or newer. The build embeds
-agent binaries for amd64 and arm64, which `make` generates; a plain `go build`
-skips that step.
+On Arch, install the `sensible` package from the
+`packages.main.git.yak-wall.ts.net` pacman repository, which also provides
+shell completions:
 
-```sh
-make
-sudo make install   # Installs sensible and its shell completions under /usr/local
+```ini
+[packages.main.git.yak-wall.ts.net]
+SigLevel = Required
+Server = https://git.yak-wall.ts.net/api/packages/packages/arch/main/$arch
 ```
+
+The repository's signing key is at
+`https://git.yak-wall.ts.net/api/packages/packages/arch/repository.key`.
+
+Elsewhere, build it from source with `make`, which leaves the binary at
+`./sensible`. Building needs Go, at the version in `go.mod` or newer. The build
+embeds agent binaries for amd64 and arm64, which `make` generates; a plain
+`go build` skips that step.
 
 ## A first configuration
 

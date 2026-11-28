@@ -190,5 +190,6 @@ sensible render --facts facts.json web1
 
 ## Shell completion
 
-`make install` installs completions for bash and zsh, which complete
-commands, flags, host names and the paths `secret show` takes.
+The Arch package installs completions for bash and zsh, which complete
+commands, flags, host names and the paths `secret show` takes. From a source
+build, they're in `completions/`.
