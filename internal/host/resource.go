@@ -68,6 +68,13 @@ type Change struct {
 	// Warning describes drift that won't be changed, e.g. because changing
 	// it would be disruptive.
 	Warning string
+	// Remote is set for a File with a Record that's been changed on the host.
+	Remote *Remote
+}
+
+// Remote is what a file that's been changed on the host holds.
+type Remote struct {
+	Content []byte `json:"content"`
 }
 
 // Facts describe a host, as gathered by its agent.
@@ -155,6 +162,12 @@ type File struct {
 	Secrets []string `json:"secrets,omitempty"`
 	// Hidden leaves the content out of diffs entirely.
 	Hidden bool `json:"hidden,omitempty"`
+	// Record, if set, is the path of the file's WrittenRecord, and the file
+	// isn't overwritten once it's been changed on the host: if it's neither
+	// Content nor as Record says, Check leaves it as it is and reports what
+	// it holds, unless its SHA-256 is Overwrite.
+	Record    string `json:"record,omitempty"`
+	Overwrite string `json:"overwrite,omitempty"`
 }
 
 // Dir manages a directory. Missing parents are created too.

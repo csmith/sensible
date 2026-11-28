@@ -56,6 +56,10 @@ as the plan:
   still shown, but clean-ups that remove what nothing declares are skipped, as
   they can't tell what's declared.
 
+Before asking to confirm, apply asks about each file marked
+`accept_remote` that's been changed on its host, and plans the host again
+if the answer changes it. See [Files](files.md#changes-made-on-the-host).
+
 Once confirmed, or straight away with `--yes`, the hosts are applied in
 parallel, stopping at the first failure on each. Changes that aren't bound to
 one host, such as DNS records and OIDC clients, are planned from every host's

@@ -2318,6 +2318,35 @@ func TestResources_files(t *testing.T) {
 	}
 }
 
+func TestResources_filesAcceptingRemoteChangesKnowTheirRecord(t *testing.T) {
+	for _, osFamily := range []string{archLinux, debian} {
+		t.Run(
+			osFamily,
+			func(t *testing.T) {
+				h := testHost(osFamily)
+				h.Config.AUR = nil
+				h.Config.Files = []config.FileConfig{
+					{Path: "/etc/app.conf", Data: "a\n", AcceptRemote: true},
+					{Path: "/etc/other.conf", Data: "b\n"},
+				}
+				rs, err := Resources(h)
+				require.NoError(t, err)
+
+				app, ok := find[host.File](rs, "file:/etc/app.conf")
+				require.True(t, ok)
+				d, ok := find[host.Disowned](rs, "disowned:files")
+				require.True(t, ok)
+				record := host.WrittenRecordIn(d.Records, app)
+				assert.Equal(t, record.Path, app.Record)
+				assert.Contains(t, rs, record)
+				other, ok := find[host.File](rs, "file:/etc/other.conf")
+				require.True(t, ok)
+				assert.Empty(t, other.Record)
+			},
+		)
+	}
+}
+
 func TestResources_fileAlsoWrittenByAFeature(t *testing.T) {
 	h := testHost(debian)
 	h.Config.AUR = nil

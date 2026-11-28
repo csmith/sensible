@@ -60,6 +60,9 @@ func (r *File) UnmarshalJSON(data []byte) error {
 }
 
 func (r File) Check(ctx context.Context, sys Sys) (Change, error) {
+	if state(ctx).unrecorded[r.Path] {
+		return Change{InSync: true}, nil
+	}
 	owner, err := resolveOwnership(sys, r.Owner, r.Group)
 	if err != nil {
 		return Change{}, err
@@ -83,8 +86,42 @@ func (r File) Check(ctx context.Context, sys Sys) (Change, error) {
 	if err != nil {
 		return Change{}, err
 	}
+	remote, err := r.changedOnHost(sys, current)
+	if err != nil {
+		return Change{}, err
+	}
+	if remote {
+		state(ctx).unrecorded[r.Record] = true
+		return Change{
+			InSync:  true,
+			Warning: "changed on the host since sensible last wrote it, so it's left as it is\n",
+			Remote:  &Remote{Content: current},
+		}, nil
+	}
 	diff := owner.diff(info, r.Mode) + r.contentDiff(string(current))
 	return Change{InSync: diff == "", Diff: diff}, nil
+}
+
+// changedOnHost reports whether current, what the file holds, is neither
+// its Content nor what its Record says sensible last wrote, and isn't what
+// Overwrite allows replacing. A file sensible has never written counts as
+// changed.
+func (r File) changedOnHost(sys Sys, current []byte) (bool, error) {
+	if r.Record == "" || string(current) == r.Content {
+		return false, nil
+	}
+	sum := contentSum(current)
+	if sum == r.Overwrite {
+		return false, nil
+	}
+	record, err := sys.ReadFile(r.Record)
+	if errors.Is(err, fs.ErrNotExist) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(record)) != sum, nil
 }
 
 // contentDiff describes replacing current with the file's content, keeping

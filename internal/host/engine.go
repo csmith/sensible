@@ -47,7 +47,7 @@ func (e *engine) check(ctx context.Context, list ResourceList, send func(Checked
 			res.Status = StatusSkipped
 		} else {
 			change, err := r.Check(ctx, e.sys)
-			res.Warning = change.Warning
+			res.Warning, res.Remote = change.Warning, change.Remote
 			switch {
 			case errors.Is(err, ErrNotYetCheckable) && pending:
 				res.Status, res.Error = StatusDeferred, err.Error()
@@ -472,6 +472,10 @@ type runState struct {
 	owed     *owedJournal
 	// networks holds the names of every DockerNetwork seen so far.
 	networks map[string]bool
+	// unrecorded holds the Records of the Files that were left as they are
+	// because they've been changed on the host, so they're left as they
+	// are too.
+	unrecorded map[string]bool
 	// users holds the names of every User seen so far that isn't Absent.
 	users map[string]bool
 	// packages holds the names of every Package seen so far that isn't
@@ -501,12 +505,13 @@ type runState struct {
 
 func newRunState() *runState {
 	return &runState{
-		declared: map[string]bool{},
-		modified: map[string]bool{},
-		networks: map[string]bool{},
-		users:    map[string]bool{},
-		packages: map[string]bool{},
-		owed:     newOwedJournal(),
+		declared:   map[string]bool{},
+		modified:   map[string]bool{},
+		networks:   map[string]bool{},
+		unrecorded: map[string]bool{},
+		users:      map[string]bool{},
+		packages:   map[string]bool{},
+		owed:       newOwedJournal(),
 	}
 }
 

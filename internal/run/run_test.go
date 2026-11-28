@@ -59,6 +59,9 @@ type fakeAgent struct {
 	previews map[string]host.Previewed
 	// applied, if set, is called with each resource applied as changed.
 	applied func(host.Resource)
+	// remote maps the paths of Files with a Record to what the host has
+	// changed them to.
+	remote map[string]string
 
 	mu       sync.Mutex
 	received []string
@@ -162,6 +165,16 @@ func (f *fakeAgent) check(conn *host.Conn, resources host.ResourceList) []host.C
 		c := host.Checked{ID: res.ID(), Status: host.StatusInSync}
 		if f.status != nil {
 			c.Status = f.status(res)
+		}
+		if file, ok := res.(host.File); ok && file.Record != "" {
+			if content, ok := f.remote[file.Path]; ok && content != file.Content {
+				sum := sha256.Sum256([]byte(content))
+				if file.Overwrite == hex.EncodeToString(sum[:]) {
+					c.Status = host.StatusDrifted
+				} else {
+					c.Warning, c.Remote = "changed on the host\n", &host.Remote{Content: []byte(content)}
+				}
+			}
 		}
 		if c.Status == host.StatusDrifted {
 			c.Diff = "- old\n+ new\n"
@@ -1415,4 +1428,112 @@ func TestExecute_packagesAreOnlyUpdatedOnRequest(t *testing.T) {
 
 	require.Len(t, agent.checks, 1)
 	assert.Equal(t, testResources, agent.checks[0])
+}
+
+// remoteFixture runs a host whose file, from a source in the config, has
+// been changed on the host, answering each question with answer.
+func remoteFixture(t *testing.T, answer string) (*runnerFixture, *fakeAgent, string) {
+	t.Helper()
+	source := filepath.Join(t.TempDir(), "app.conf")
+	require.NoError(t, os.WriteFile(source, []byte("config\n"), 0o644))
+	f := newRunnerFixture(t, nil)
+	f.runner.Compile = func(target, host.Facts) (compiled, error) {
+		content, err := os.ReadFile(source)
+		if err != nil {
+			return compiled{}, err
+		}
+		return compiled{
+			resources: host.ResourceList{
+				host.File{Path: "/etc/app.conf", Content: string(content), Record: "/rec"},
+			},
+			remoteSources: map[string]string{"/etc/app.conf": source},
+		}, nil
+	}
+	f.runner.Ask = func(prompt string) (string, error) {
+		f.confirmed = append(f.confirmed, prompt)
+		return answer, nil
+	}
+	return f, &fakeAgent{
+		remote: map[string]string{"/etc/app.conf": "edited\n"},
+	}, source
+}
+
+const remotePrompt = "Take the host's version into the config, overwrite it, or leave it? [t/o/L] "
+
+func TestExecute_takesTheHostsVersionIntoTheConfig(t *testing.T) {
+	f, agent, source := remoteFixture(t, "t")
+
+	require.NoError(t, f.runner.Execute(t.Context(), []target{f.target("acidburn", agent)}, false))
+
+	content, err := os.ReadFile(source)
+	require.NoError(t, err)
+	assert.Equal(t, "edited\n", string(content))
+	assert.Equal(t, []string{remotePrompt}, f.confirmed)
+	assert.Equal(t, []string{"FactsRequest", "Check", "Check", "Bye"}, agent.messages())
+	out := f.out.String()
+	assert.Contains(t, out, "> Resolving changes made on hosts\n  ! acidburn: file /etc/app.conf\n")
+	assert.Contains(t, out, "    -edited\n    +config\n")
+	assert.Contains(t, out, "wrote the host's version to "+source)
+	assert.Contains(t, out, "No changes")
+}
+
+func TestExecute_overwritesTheHostsVersionOnceAsked(t *testing.T) {
+	f, agent, source := remoteFixture(t, "o")
+
+	require.NoError(t, f.runner.Execute(t.Context(), []target{f.target("acidburn", agent)}, false))
+
+	content, err := os.ReadFile(source)
+	require.NoError(t, err)
+	assert.Equal(t, "config\n", string(content))
+	assert.Equal(t, []string{remotePrompt, "Apply 1 change on 1 target? [y/N] "}, f.confirmed)
+	assert.Equal(t, []string{"FactsRequest", "Check", "Check", "Apply", "Bye"}, agent.messages())
+}
+
+func TestExecute_leavesTheHostsVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		answer string
+		yes    bool
+		asked  []string
+	}{
+		{
+			name:   "by default",
+			answer: "",
+			asked:  []string{remotePrompt},
+		},
+		{
+			name:   "when asked",
+			answer: "l",
+			asked:  []string{remotePrompt},
+		},
+		{
+			name:   "without asking with --yes",
+			answer: "o",
+			yes:    true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, agent, _ := remoteFixture(t, tc.answer)
+
+			require.NoError(t, f.runner.Execute(t.Context(), []target{f.target("acidburn", agent)}, tc.yes))
+
+			assert.Equal(t, tc.asked, f.confirmed)
+			assert.Equal(t, []string{"FactsRequest", "Check", "Bye"}, agent.messages())
+			assert.Contains(t, f.out.String(), "  ! file /etc/app.conf\n    changed on the host\n")
+		})
+	}
+}
+
+func TestExecute_asksAgainUntilAnswered(t *testing.T) {
+	f, agent, _ := remoteFixture(t, "")
+	answers := []string{"maybe", "l"}
+	f.runner.Ask = func(prompt string) (string, error) {
+		f.confirmed = append(f.confirmed, prompt)
+		a := answers[0]
+		answers = answers[1:]
+		return a, nil
+	}
+
+	require.NoError(t, f.runner.Execute(t.Context(), []target{f.target("acidburn", agent)}, false))
+	assert.Equal(t, []string{remotePrompt, remotePrompt}, f.confirmed)
 }

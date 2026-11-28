@@ -1,7 +1,10 @@
 package run
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -16,7 +19,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
+	"chameth.com/x/text"
 	"filippo.io/age"
 	"golang.org/x/crypto/ssh"
 
@@ -57,6 +62,7 @@ func Run(ctx context.Context, opts Options) error {
 	r := &Runner{
 		Out:         out,
 		Confirm:     confirmOnTerminal,
+		Ask:         askOnTerminal,
 		Builds:      builder,
 		Compile:     compiler(repo),
 		DNS:         newDNSProvider,
@@ -96,6 +102,14 @@ func compiler(repo *config.Repo) func(target, host.Facts) (compiled, error) {
 			return compiled{}, err
 		}
 		c := compiled{resources: resources}
+		for _, f := range cfg.Files {
+			if f.AcceptRemote {
+				if c.remoteSources == nil {
+					c.remoteSources = map[string]string{}
+				}
+				c.remoteSources[f.Path] = f.Source
+			}
+		}
 		generated := slices.ContainsFunc(cfg.Stacks, func(s config.Stack) bool { return len(s.Generated) > 0 })
 		if generated || slices.ContainsFunc(cfg.IssuedCerts, config.Cert.Unsaved) {
 			c.save = func() error {
@@ -352,6 +366,9 @@ type compiled struct {
 	oidcClients map[string]config.OIDCClientConfig
 	oidcAPIs    map[string]config.OIDCAPIConfig
 	oidc        oidcRecords
+	// remoteSources maps the path of each file that's asked about when
+	// it's been changed on the host to its source in the config.
+	remoteSources map[string]string
 }
 
 // savedSecrets are the generated values saved for one of a host's stacks.
@@ -409,6 +426,10 @@ type hostRun struct {
 	oidcClients   map[string]config.OIDCClientConfig
 	oidcAPIs      map[string]config.OIDCAPIConfig
 	oidc          oidcRecords
+	remoteSources map[string]string
+	// overwrite maps the path of each file whose changes on the host are to
+	// be overwritten to the SHA-256 of what it held.
+	overwrite map[string]string
 	// oidcChanged is set when the OIDC changes register a secret generated
 	// for the host, and saveFailed when its generated values couldn't be
 	// saved.
@@ -437,6 +458,9 @@ func (r *Runner) Execute(ctx context.Context, targets []target, yes bool) error 
 
 	r.checkAll(runs)
 	out.plan(runs)
+	if !yes {
+		r.askAboutRemoteChanges(runs, out)
+	}
 	var dns dnsPlan
 	if names, warnings := r.managedNames(runs); len(names) > 0 || len(warnings) > 0 {
 		t := out.beginSection("Resolving DNS changes")
@@ -491,6 +515,119 @@ func (r *Runner) Execute(ctx context.Context, targets []target, yes bool) error 
 		}
 	}
 	return failedErr(failed || anyFailed(runs))
+}
+
+// askAboutRemoteChanges asks what to do with each file that's been changed
+// on its host since sensible last wrote it, then plans again the hosts whose
+// answers change their plans. Files not asked about are left as they are.
+func (r *Runner) askAboutRemoteChanges(runs []*hostRun, out *renderer) {
+	type remote struct {
+		h       *hostRun
+		path    string
+		content []byte
+	}
+	var remotes []remote
+	for _, h := range runs {
+		for _, c := range h.checked {
+			path, ok := strings.CutPrefix(c.ID, "file:")
+			if ok && c.Remote != nil && h.remoteSources[path] != "" {
+				remotes = append(remotes, remote{h: h, path: path, content: c.Remote.Content})
+			}
+		}
+	}
+	if len(remotes) == 0 || r.Ask == nil {
+		return
+	}
+
+	out.section("Resolving changes made on hosts")
+	replan := map[*hostRun]bool{}
+	taken := map[string]bool{}
+	for _, rc := range remotes {
+		source := rc.h.remoteSources[rc.path]
+		name := rc.h.name + ": file " + rc.path
+		// Read again, as an earlier answer may have taken another host's
+		// version.
+		config, err := os.ReadFile(source)
+		if err != nil {
+			out.item(out.p.failure(name + ": " + err.Error())...)
+			continue
+		}
+		if bytes.Equal(config, rc.content) {
+			continue
+		}
+		out.item(
+			append(
+				[]string{
+					out.p.change("!") + " " + name,
+					out.p.dim("  overwriting the host's version would make these changes:"),
+				},
+				out.p.diff(remoteDiff(rc.content, config), "  ")...,
+			)...,
+		)
+		answer, err := r.askRemote()
+		if err != nil {
+			out.item(out.p.failure(err.Error() + "; leaving the rest as they are")...)
+			break
+		}
+		switch answer {
+		case "take":
+			if err := os.WriteFile(source, rc.content, 0o644); err != nil {
+				out.item(out.p.failure(name + ": " + err.Error())...)
+				continue
+			}
+			taken[source] = true
+			out.item(out.p.ok("✓") + " wrote the host's version to " + source)
+		case "overwrite":
+			if rc.h.overwrite == nil {
+				rc.h.overwrite = map[string]string{}
+			}
+			sum := sha256.Sum256(rc.content)
+			rc.h.overwrite[rc.path] = hex.EncodeToString(sum[:])
+			replan[rc.h] = true
+		default:
+		}
+	}
+
+	var again []*hostRun
+	for _, h := range runs {
+		if replan[h] ||
+			slices.ContainsFunc(slices.Collect(maps.Values(h.remoteSources)), func(s string) bool { return taken[s] }) {
+			again = append(again, h)
+		}
+	}
+	if len(again) > 0 {
+		r.checkAll(again)
+		out.plan(again)
+	}
+}
+
+// askRemote asks what to do with a file that's been changed on its host,
+// until it gets an answer: "take", "overwrite" or "leave".
+func (r *Runner) askRemote() (string, error) {
+	for {
+		answer, err := r.Ask("Take the host's version into the config, overwrite it, or leave it? [t/o/L] ")
+		if err != nil {
+			return "", err
+		}
+		switch answer {
+		case "t", "take":
+			return "take", nil
+		case "o", "overwrite":
+			return "overwrite", nil
+		case "", "l", "leave":
+			return "leave", nil
+		default:
+		}
+	}
+}
+
+// remoteDiff describes replacing remote, what a file on a host holds, with
+// config, what the config gives it.
+func remoteDiff(remote, config []byte) string {
+	if !utf8.Valid(remote) || !utf8.Valid(config) {
+		return "change binary content\n"
+	}
+	return text.UnifiedDiff(printable(string(remote)), printable(string(config)), 3)
 }
 
 // crossHostStep is a change worked out from the configuration of every
@@ -575,28 +712,42 @@ func (r *Runner) checkAll(runs []*hostRun) {
 			close(h.done)
 			continue
 		}
-		c, err := r.Compile(h.target, h.facts)
-		if err != nil {
+		if err := r.compile(h); err != nil {
 			h.err = err
 			close(h.done)
 			continue
 		}
-		if r.UpdatePackages {
-			c.resources = append(
-				host.ResourceList{
-					host.PackageUpdate{},
-				},
-				c.resources...,
-			)
-		}
-		h.resources, h.save, h.unusedSecrets = c.resources, c.save, c.unusedSecrets
-		h.ignored, h.ignore = c.ignored, c.ignore
-		h.oidcClients, h.oidcAPIs, h.oidc = c.oidcClients, c.oidcAPIs, c.oidc
 		go func() {
 			defer close(h.done)
 			h.check()
 		}()
 	}
+}
+
+func (r *Runner) compile(h *hostRun) error {
+	c, err := r.Compile(h.target, h.facts)
+	if err != nil {
+		return err
+	}
+	if r.UpdatePackages {
+		c.resources = append(
+			host.ResourceList{
+				host.PackageUpdate{},
+			},
+			c.resources...,
+		)
+	}
+	for i, res := range c.resources {
+		if f, ok := res.(host.File); ok && f.Record != "" && h.overwrite[f.Path] != "" {
+			f.Overwrite = h.overwrite[f.Path]
+			c.resources[i] = f
+		}
+	}
+	h.resources, h.save, h.unusedSecrets = c.resources, c.save, c.unusedSecrets
+	h.ignored, h.ignore = c.ignored, c.ignore
+	h.oidcClients, h.oidcAPIs, h.oidc = c.oidcClients, c.oidcAPIs, c.oidc
+	h.remoteSources = c.remoteSources
+	return nil
 }
 
 func (h *hostRun) check() {
@@ -605,7 +756,7 @@ func (h *hostRun) check() {
 		h.err = err
 		return
 	}
-	h.checked = checked
+	h.checked, h.failed = checked, false
 	for _, c := range checked {
 		if c.Status == host.StatusFailed {
 			h.failed = true

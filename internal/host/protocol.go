@@ -11,7 +11,7 @@ import (
 // ProtocolVersion is bumped whenever a message or resource changes, so a
 // controller can refuse an agent built from older code. Hello and Upgrade
 // must never change shape, so any controller can upgrade any agent.
-const ProtocolVersion = 34
+const ProtocolVersion = 35
 
 // Hello is the first message an agent sends, and the first after it re-execs
 // following an Upgrade.
@@ -51,6 +51,9 @@ type Checked struct {
 	Diff    string `json:"diff,omitempty"`
 	Warning string `json:"warning,omitempty"`
 	Error   string `json:"error,omitempty"`
+	// Remote is set, with an in-sync Status and a Warning, for a file that's
+	// been changed on the host and is left as it is.
+	Remote *Remote `json:"remote,omitempty"`
 }
 
 // Apply applies the resources from the preceding Check, replying with one

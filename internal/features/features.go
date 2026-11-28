@@ -288,13 +288,17 @@ func files(h Host) ([]host.Resource, error) {
 			Mode:    f.Mode,
 			Hidden:  f.Hidden,
 		}
+		record := host.WrittenRecordIn(filesRecords, file)
+		if f.AcceptRemote {
+			file.Record = record.Path
+		}
 		// Without an owner or mode, a directory that already exists is left
 		// alone, and a missing one is created like its parents, as root:root
 		// 0755.
 		if !declared[path.Dir(f.Path)] {
 			rs = append(rs, host.Dir{Path: path.Dir(f.Path)})
 		}
-		rs = append(rs, file, host.WrittenRecordIn(filesRecords, file))
+		rs = append(rs, file, record)
 	}
 	return rs, nil
 }

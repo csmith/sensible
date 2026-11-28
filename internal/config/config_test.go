@@ -1490,8 +1490,9 @@ files:
     owner: chris
     mode: 0755
 `,
-			"roles/tools/files/tool":            "\x7fELF\x00\xff",
-			"partials/shared/partial.yml":       "files:\n  - {path: /etc/shared.conf, source: shared.conf, group: wheel}\n",
+			"roles/tools/files/tool": "\x7fELF\x00\xff",
+			"partials/shared/partial.yml": "files:\n" +
+				"  - {path: /etc/shared.conf, source: shared.conf, group: wheel, accept_remote: true}\n",
 			"partials/shared/files/shared.conf": "shared\n",
 		},
 	)
@@ -1529,6 +1530,9 @@ files:
 	shared := byPath["/etc/shared.conf"]
 	assert.Equal(t, "shared\n", shared.Data)
 	assert.Equal(t, Perms{Owner: "root", Group: "wheel", Mode: 0o644}, shared.Perms)
+	assert.True(t, shared.AcceptRemote)
+	assert.Equal(t, filepath.Join(tr.dir, "partials/shared/files/shared.conf"), shared.Source)
+	assert.False(t, tool.AcceptRemote)
 
 	assert.Equal(t, "hunter2", byPath["/etc/password"].Data)
 	assert.True(t, byPath["/etc/password"].Hidden)
@@ -1619,6 +1623,23 @@ func TestHostConfig_fileErrors(t *testing.T) {
 				"roles/b/role.yml": "",
 			},
 			`source "../role.yml" isn't a path in files`,
+		},
+		{
+			"accepting remote changes to content",
+			map[string]string{
+				"roles/a/role.yml": "files: [{path: /etc/x, content: a, accept_remote: true}]\n",
+				"roles/b/role.yml": "",
+			},
+			"accept_remote needs a source that isn't encrypted",
+		},
+		{
+			"accepting remote changes to an encrypted source",
+			map[string]string{
+				"roles/a/role.yml":    "files: [{path: /etc/x, source: x.age, accept_remote: true}]\n",
+				"roles/a/files/x.age": "",
+				"roles/b/role.yml":    "",
+			},
+			"accept_remote needs a source that isn't encrypted",
 		},
 		{
 			"missing source",

@@ -1079,3 +1079,94 @@ func TestPreviewPath_DoesNotFollowUserLinks(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{".profile", ".ssh → ../../etc"}, lines)
 }
+
+// remoteFile is a File that's asked about once it's changed on the host,
+// followed by its record, as features declares them. The record is owned by
+// whoever runs the test, as the test host has no root.
+func remoteFile(content string) (File, File) {
+	file := File{Path: "/etc/app.conf", Content: content}
+	record := WrittenRecordIn("/var/lib/sensible/files", file)
+	record.Owner, record.Group = "", ""
+	file.Record = record.Path
+	return file, record
+}
+
+func TestFile_LeavesChangesOnTheHostAndTheirRecord(t *testing.T) {
+	sys := newTestSys(t)
+	file, record := remoteFile("new\n")
+	_, old := remoteFile("old\n")
+	sys.write(record.Path, old.Content)
+	sys.write(file.Path, "edited\n")
+
+	checked, applied := run(t, sys, ResourceList{file, record})
+
+	assert.Equal(t, []string{"file:/etc/app.conf in-sync", "file:" + record.Path + " in-sync"}, statuses(checked))
+	require.NotNil(t, checked[0].Remote)
+	assert.Equal(t, "edited\n", string(checked[0].Remote.Content))
+	assert.Contains(t, checked[0].Warning, "changed on the host")
+	assert.Nil(t, checked[1].Remote)
+	assert.Equal(t, []string{"file:/etc/app.conf in-sync", "file:" + record.Path + " in-sync"}, statuses(applied))
+	assert.Equal(t, "edited\n", sys.read(file.Path))
+	assert.Equal(t, old.Content, sys.read(record.Path))
+}
+
+func TestFile_OverwritesWhatSensibleLastWrote(t *testing.T) {
+	sys := newTestSys(t)
+	file, record := remoteFile("new\n")
+	_, old := remoteFile("old\n")
+	sys.write(record.Path, old.Content)
+	sys.write(file.Path, "old\n")
+
+	checked, _ := run(t, sys, ResourceList{file, record})
+
+	assert.Nil(t, checked[0].Remote)
+	assert.Equal(t, StatusDrifted, checked[0].Status)
+	assert.Equal(t, "new\n", sys.read(file.Path))
+	assert.Equal(t, record.Content, sys.read(record.Path))
+}
+
+func TestFile_TreatsAFileSensibleNeverWroteAsChanged(t *testing.T) {
+	sys := newTestSys(t)
+	file, record := remoteFile("new\n")
+	sys.write(file.Path, "mine\n")
+
+	checked, _ := run(t, sys, ResourceList{file, record})
+
+	require.NotNil(t, checked[0].Remote)
+	assert.Equal(t, "mine\n", sys.read(file.Path))
+	assert.False(t, sys.exists(record.Path))
+}
+
+func TestFile_OverwritesTheChangeItWasToldTo(t *testing.T) {
+	sys := newTestSys(t)
+	file, record := remoteFile("new\n")
+	sys.write(file.Path, "edited\n")
+	require.NoError(t, sys.MkdirAll(filepath.Dir(record.Path), 0o700))
+	sum := sha256.Sum256([]byte("edited\n"))
+	file.Overwrite = hex.EncodeToString(sum[:])
+
+	checked, _ := run(t, sys, ResourceList{file, record})
+
+	assert.Nil(t, checked[0].Remote)
+	assert.Equal(t, "new\n", sys.read(file.Path))
+	assert.Equal(t, record.Content, sys.read(record.Path))
+
+	// A change made since isn't the one it was told to overwrite.
+	sys.write(file.Path, "edited again\n")
+	file.Content = "newer\n"
+	checked, _ = run(t, sys, ResourceList{file, record})
+	require.NotNil(t, checked[0].Remote)
+	assert.Equal(t, "edited again\n", sys.read(file.Path))
+}
+
+func TestFile_RemoteSurvivesTheProtocol(t *testing.T) {
+	binary := string([]byte{0, 0xff, 0x1b, '\n'})
+	data, err := json.Marshal(Checked{
+		ID:     "file:/x",
+		Remote: &Remote{Content: []byte(binary)},
+	})
+	require.NoError(t, err)
+	var got Checked
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, binary, string(got.Remote.Content))
+}

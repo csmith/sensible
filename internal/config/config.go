@@ -617,6 +617,9 @@ type FileConfig struct {
 	// if its name ends in .age.
 	Source string `yaml:"source"`
 	Perms  `yaml:",inline"`
+	// AcceptRemote asks what to do when the file's been changed on the host,
+	// rather than overwriting it. It needs a Source that isn't encrypted.
+	AcceptRemote bool `yaml:"accept_remote"`
 
 	// Data is the file's content, decrypted. HostConfig sets it.
 	Data string `yaml:"-"`
@@ -748,6 +751,8 @@ func (f *FileConfig) reveal(keys *keyring) error {
 	switch {
 	case f.Content != nil && f.Source != "":
 		return errors.New("set content or source, not both")
+	case f.AcceptRemote && (f.Source == "" || strings.HasSuffix(f.Source, ageSuffix)):
+		return errors.New("accept_remote needs a source that isn't encrypted")
 	case f.Content != nil:
 		var err error
 		if f.Data, f.Hidden, err = f.Content.reveal(); err != nil {
