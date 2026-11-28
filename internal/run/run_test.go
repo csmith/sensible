@@ -833,9 +833,9 @@ func TestPaletteDiff(t *testing.T) {
 			"  \x1b[32m+new\x1b[0m",
 			"   same",
 		},
-		palette(true).diff(text, "  "),
+		palette(true).diff(text),
 	)
-	assert.Equal(t, indent(text, "  "), palette(false).diff(text, "  "))
+	assert.Equal(t, indent(text, "  "), palette(false).diff(text))
 }
 
 func TestRendererGroupsConcurrentApplies(t *testing.T) {

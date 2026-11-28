@@ -75,8 +75,9 @@ func marked(mark, text string, paint func(string) string) []string {
 	return lines
 }
 
-// diff indents a change description, colouring the unified diff parts of it.
-func (p palette) diff(text, prefix string) []string {
+// diff indents a change description by two spaces, colouring the unified
+// diff parts of it.
+func (p palette) diff(text string) []string {
 	lines := indent(text, "")
 	for i, l := range lines {
 		switch {
@@ -92,7 +93,7 @@ func (p palette) diff(text, prefix string) []string {
 			l = p.dim(l)
 		default:
 		}
-		lines[i] = prefix + l
+		lines[i] = "  " + l
 	}
 	return lines
 }
@@ -492,7 +493,7 @@ func hostPlanLines(h *hostRun, p palette) []string {
 			unchanged++
 		case c.Status == host.StatusDrifted:
 			lines = append(lines, p.change("~")+" "+name)
-			lines = append(lines, p.diff(c.Diff, "  ")...)
+			lines = append(lines, p.diff(c.Diff)...)
 			if n, ok := h.resources[i].(host.Notifier); ok {
 				for _, handler := range n.Notifies() {
 					lines = append(lines, "  "+p.handler("↻")+" then "+displayID(handler.ID()))

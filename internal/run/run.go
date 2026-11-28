@@ -561,7 +561,7 @@ func (r *Runner) askAboutRemoteChanges(runs []*hostRun, out *renderer) {
 					out.p.change("!") + " " + name,
 					out.p.dim("  overwriting the host's version would make these changes:"),
 				},
-				out.p.diff(remoteDiff(rc.content, config), "  ")...,
+				out.p.diff(remoteDiff(rc.content, config))...,
 			)...,
 		)
 		answer, err := r.askRemote()
